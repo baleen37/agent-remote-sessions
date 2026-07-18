@@ -8,33 +8,37 @@
 ## Purpose
 
 `ars` gives the user one searchable list of existing Claude Code and Codex
-sessions across managed SSH hosts. Selecting a row resumes that native session
-on its original host.
+root sessions across managed SSH hosts. Selecting a row resumes that native
+session on its original host.
 
-Only the local machine installs `ars`. Remote hosts need SSH, a POSIX shell,
-standard file utilities, and the provider CLI that created the session. There
-is no `arsd`, remote package, service, cache, socket, or persistent script.
+Only the local machine installs `ars`. A remote host needs an SSH server, a
+POSIX shell, an executable temporary directory, and the provider CLI that
+created the session. It does not need Python, a Go toolchain, `arsd`, or an
+installed `ars` helper.
 
 ## V1 success criteria
 
-- `ars` queries every configured host concurrently and opens a searchable TUI.
+- `ars` queries every configured host concurrently and opens one searchable
+  TUI containing all natively resumable root/user sessions.
 - `ars <host>` performs the same operation for one configured host.
 - Claude Code and Codex sessions appear together, newest first.
+- Internal Claude and Codex subagent transcripts do not appear.
 - Each row shows host, provider, updated time, project or working directory,
   native title when available, and an abbreviated session ID.
-- Typing filters the rows; Enter resumes the selected session with its native
-  provider command over an interactive SSH connection.
+- Enter resumes the selected session with its native provider command over an
+  interactive SSH connection.
 - Failure of one host does not hide results from healthy hosts. The command
   fails when no host returned sessions.
-- Querying and resuming leave no `ars` state on remote hosts.
+- Normal collection and failure paths remove the temporary remote helper and
+  retain no remote `ars` service, configuration, cache, or index.
 
 ## Scope
 
 Included:
 
 - a plain managed-host inventory
-- one-shot SSH metadata collection
-- Claude Code and Codex session discovery
+- a bundled, one-shot Go metadata collector for three remote targets
+- Claude Code and Codex root-session discovery
 - concurrent multi-host aggregation
 - an `fzf`-based local TUI
 - native remote resume
@@ -42,11 +46,13 @@ Included:
 
 Excluded:
 
-- `arsd` or any remote installation
+- `arsd` or any persistent remote installation
+- Python or a Go toolchain as a remote prerequisite
 - tmux, mosh, Tailscale, PTY attach, or relay implementations other than SSH
 - starting, stopping, deleting, forking, or sending input to sessions
 - worktrees, tasks, queues, conductor agents, and provider conversion
-- prompt, response, tool-output, credential, or environment-body collection
+- prompt, response, tool-output, credential, environment-body, or source-path
+  collection
 - persistent local indexing, caching, and background refresh
 
 V1 calls the action `resume`, not `attach`: it starts the provider's native
@@ -55,7 +61,7 @@ running PTY.
 
 ## User interface
 
-The host inventory is `~/.config/ars/hosts`. Each non-empty line is an SSH
+The host inventory is `~/.config/ars/hosts`. Each non-empty line is one SSH
 target or alias; leading and trailing whitespace is ignored and lines beginning
 with `#` are comments.
 
@@ -75,15 +81,19 @@ ars list --json     print all normalized sessions without opening the TUI
 
 `ars` invokes the system `ssh` executable so `~/.ssh/config`, ProxyJump, host
 keys, and the user's authentication agent remain authoritative. It invokes the
-system `fzf` executable for the TUI. These are local runtime prerequisites;
-only the single `ars` binary is supplied by this repository.
+system `fzf` executable for the TUI. These are local runtime prerequisites; the
+repository supplies one fat `ars` binary.
+
+An inventory entry is data, not an SSH option. `ars` rejects a target that
+starts with `-` or contains whitespace or control characters before invoking
+SSH.
 
 The picker receives an opaque numeric row index followed by display columns.
 After selection, `ars` maps the index back to the structured session object;
-it never reparses display text. Escape and Enter keep their normal `fzf`
-semantics: Escape cancels without resuming, and Enter resumes one row.
+it never reparses display text. Escape cancels without resuming, and Enter
+resumes exactly one row.
 
-## Data model
+## Data model and boundaries
 
 ```go
 type Session struct {
@@ -97,116 +107,191 @@ type Session struct {
 }
 ```
 
-`Provider` is a small static adapter used to parse records and construct a
-fixed resume command. V1 registers only `claude` and `codex`; there is no plugin
-loader.
+Provider handling is a fixed allowlist for `claude` and `codex`. It validates
+collector records and constructs native resume commands; there is no plugin
+loader or user-supplied executable name.
 
-```go
-type Provider interface {
-    Name() string
-    Parse(ProbeRecord) (Session, error)
-    ResumeCommand(Session) (name string, args []string, err error)
-}
-```
+The relay boundary keeps session discovery and resume independent from SSH so
+a later version can add another transport without changing the session model.
+V1 has exactly one relay implementation, `SSHRelay`.
 
-The relay boundary keeps provider parsing independent from SSH without adding
-configuration for relays that do not exist yet.
+## Bundled Go collector
 
-```go
-type Relay interface {
-    Collect(context.Context, Host) ([]ProbeRecord, error)
-    Resume(context.Context, Host, Session) error
-}
-```
+The collector source lives in this repository and uses only the Go standard
+library. The release build cross-compiles it for exactly these V1 targets:
 
-V1 has one implementation, `SSHRelay`.
+| Remote `uname` result | Embedded target |
+| --- | --- |
+| `Darwin arm64` | `darwin/arm64` |
+| `Linux x86_64` or `Linux amd64` | `linux/amd64` |
+| `Linux aarch64` or `Linux arm64` | `linux/arm64` |
 
-## Collection flow
+The three binaries are compressed and embedded into the final local `ars`
+binary. Generated helper artifacts are build inputs, not committed files. The
+release build creates them in a temporary build area before compiling `ars` and
+ships only the resulting `ars` binary.
 
-For each selected host, `SSHRelay.Collect` runs:
+The helper reads provider session files locally on the remote host and writes
+only the bounded protocol described below. It never accepts a command or path
+from the session data and never modifies provider files.
+
+### Root-session discovery
+
+Claude collection examines only direct files matching
+`~/.claude/projects/<project>/*.jsonl`. It does not recurse into nested agent
+directories. It reads `sessionId`, `cwd`, and the latest explicit `aiTitle` or
+`agentName`; it does not derive a title from prompt text.
+
+Codex collection examines saved rollout JSONL files under
+`~/.codex/sessions`, reads their `session_meta` record, and excludes records
+whose `thread_source` is `subagent`. A missing explicit title remains empty;
+the helper does not copy or summarize a prompt into `title`.
+
+Within one host, the helper deduplicates by `(provider, native_id)` and keeps
+the newest record. File modification time supplies `updated_at` when native
+metadata has no usable timestamp.
+
+## Collection protocol
+
+For each host, `SSHRelay` first runs a fixed `uname` probe over system SSH and
+maps its result to one embedded target. Unsupported OS or architecture is a
+host-local error.
+
+The helper protocol begins with this version line:
 
 ```text
-ssh -T -o BatchMode=yes -o ConnectTimeout=5 <target> sh -s
+ARS-PROBE/1
 ```
 
-The embedded probe is written to stdin. It scans:
+Each following line is one JSON object with exactly the public metadata fields:
 
-- Claude Code: `~/.claude/projects/**/*.jsonl`
-- Codex: `~/.codex/sessions/**/*.jsonl`
+```json
+{"provider":"claude","native_id":"id-1","cwd":"/work/app","title":"Fix login","updated_at":"2026-07-18T09:00:00Z"}
+```
 
-The probe uses `find`, `grep`, `sed`, `tail`, `stat`, and `printf`. It extracts
-and emits only NUL-delimited scalar fields: provider, source path, mtime,
-native ID, CWD, and explicit title/name. It never emits a complete JSONL line;
-this is important because a Codex `session_meta` record can also contain base
-instructions. GNU and BSD `stat` forms are both supported.
+The protocol never contains a provider source path or a complete transcript
+line. Local parsing ignores at most 64 KiB of remote startup noise while
+looking for the version header, then accepts at most 16 MiB and 10,000 records
+per host. An absent or unknown header, an oversized response, or malformed
+framing fails that host. A malformed provider session file is skipped by the
+helper and counted in a path-free stderr diagnostic.
 
-Local Go code parses JSON and normalizes records. A malformed session file is
-skipped and reported in the host diagnostic count; it does not abort the host.
-Sessions are sorted by `UpdatedAt` descending, using source mtime only when the
-provider metadata has no valid timestamp.
+Local code validates every record again, including the provider allowlist,
+non-empty native ID and CWD, timestamp, field sizes, and total limits. It does
+not execute or render raw record values without the relevant shell or display
+escaping.
 
-Host collection uses a small fixed concurrency limit. Each host has an
-independent timeout and captured stderr. Healthy results remain usable when
-other hosts time out, reject authentication, lack a provider directory, or
-contain malformed files. Diagnostics are written to stderr before the picker;
-they are not inserted as fake session rows.
+## Temporary helper lifecycle
 
-No local cache is included in V1. Real latency will be measured before adding
-state or a daemon.
+Collection uses a fixed remote shell launcher. The launcher creates a private
+directory with `umask 077` and `mktemp`, reports its exact path in one bounded
+`ARS-TEMP/1` stderr control record, writes the selected helper from SSH stdin,
+marks it executable, runs it once, and installs `EXIT`, `HUP`, `INT`, and
+`TERM` cleanup traps before execution.
+
+The local side applies a five-second SSH connect timeout and a 60-second total
+collection timeout per host. On any failure after allocation, it also attempts
+a second cleanup command for only the exact quoted path received in that
+control record. It removes the helper with `rm -f` and the private directory
+with `rmdir`; cleanup uses neither a glob nor recursive deletion.
+
+The expected steady state is no remote `ars` file. A remote power loss or
+`SIGKILL` between temporary-file creation and cleanup can still leave the
+private temporary file behind; a disk-backed executable cannot make that case
+impossible. V1 documents this crash-only limitation rather than claiming an
+absolute guarantee.
+
+An executable temporary directory is therefore a V1 prerequisite. A `noexec`
+temporary mount produces a concise host-local error. V1 does not add a second
+shell parser, interpreter dependency, or persistent fallback to bypass it.
+
+Host collection uses a fixed small concurrency limit. Healthy results remain
+usable when another host times out, rejects authentication, lacks a provider
+directory, has an unsupported target, or returns invalid data. Diagnostics go
+to stderr before the picker and never appear as fake session rows. There is no
+local cache.
 
 ## Resume flow
 
-After the user selects a session, `SSHRelay.Resume` gives the terminal to:
+After selection, `SSHRelay.Resume` gives the terminal to:
 
 ```text
 ssh -tt <target> <fixed provider resume command>
 ```
 
-The remote command changes to the recorded CWD and then executes exactly one
-of these provider operations:
+The fixed remote command changes to the recorded CWD and then executes exactly
+one provider operation:
 
 ```text
 Claude Code: claude --resume <native-id>
 Codex:       codex resume <native-id>
 ```
 
-Host, CWD, and session ID are shell-quoted as data. Provider names never become
-arbitrary executable names, and the client cannot supply an arbitrary command.
-If the CWD no longer exists or the provider binary is unavailable, SSH returns
-the native failure to the user. `ars` does not silently choose another CWD or
-session.
+The CWD and native ID are single-quote escaped as data. Provider names never
+become arbitrary executable names, and the client cannot supply an arbitrary
+remote command. If the CWD no longer exists or the provider binary is
+unavailable, SSH returns the native failure. `ars` does not choose another CWD
+or session.
 
 ## Error handling
 
 - Missing or empty host inventory: fail with the expected path and an example.
 - Unknown `ars <host>` value: fail before opening SSH.
 - Missing `ssh` or `fzf`: fail with the exact missing executable.
-- Some hosts fail: show concise host diagnostics and continue with valid rows.
+- Unsupported remote target or non-executable temp directory: fail that host.
+- Some hosts fail: show concise host diagnostics and keep valid rows.
 - All hosts fail or return no valid sessions: fail without opening `fzf`.
 - Picker cancellation: exit successfully without starting SSH resume.
 - Resume failure: preserve the SSH exit status when possible.
 
-## Verification
+## Build and verification
 
-Implementation follows test-first development. Required automated coverage:
+Implementation follows strict RED-GREEN-REFACTOR. The build keeps collector
+source separate from generated target artifacts and verifies that every
+embedded target was produced from the current source. CI creates artifacts in
+a temporary build area and checks the final fat binary; helper binaries are not
+committed.
 
-- host-file parsing, comments, duplicates, empty inventory, and host selection
-- Claude and Codex metadata fixtures without prompt-body fallback
-- six-field NUL-framed probe parsing and malformed-record isolation
-- BSD/GNU stat fallback in the embedded probe
-- SSH collection argv and probe stdin using a fake `ssh` executable
-- bounded aggregation, partial host failure, sorting, and race testing
-- `fzf` row-index mapping and cancellation using a fake `fzf` executable
-- shell-safe, provider-fixed resume argv for hostile CWD and ID values
-- CLI flow from host inventory through selection to fake SSH resume
-- `go test ./...`, `go test -race ./...`, `go vet ./...`, and cross-builds for
-  macOS and Linux
+Required automated coverage:
+
+- host parsing, duplicate rejection, target selection, and SSH option-injection
+  rejection
+- Claude direct/root fixtures and nested subagent exclusion
+- Codex root/user fixtures and `thread_source=subagent` exclusion
+- per-host deduplication and newest-record selection
+- proof that source paths and sensitive transcript markers never reach stdout
+- protocol header/noise recovery, NDJSON validation, and output/record limits
+- target mapping for the three supported OS/architecture combinations
+- helper upload, timeout, trap launcher, exact-path cleanup, and `noexec` errors
+  using a fake `ssh` executable
+- partial host failure, bounded aggregation, deterministic sorting, and race
+  testing
+- `fzf` opaque-index mapping, display sanitization, and cancellation
+- shell-safe, provider-fixed resume commands for hostile CWD and ID values
+- end-to-end CLI flow from inventory through selection to fake SSH resume
+- cross-compiled helper execution against fixture homes where the runner can
+  execute that target
+
+Final commands include:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+The release build additionally produces and embeds `darwin/arm64`,
+`linux/amd64`, and `linux/arm64` helpers, cross-builds the local `ars` targets,
+and verifies that the fat binary contains exactly those helper entries.
 
 Manual acceptance uses at least two SSH aliases with real Claude/Codex history:
 
 1. Run `ars list --json` and confirm both hosts/providers are normalized.
-2. Run `ars`, search by host/project/title, and select one Claude session.
-3. Confirm the remote Claude process resumes the exact native ID and CWD.
-4. Repeat for Codex.
-5. Make one host unreachable and confirm healthy sessions remain selectable.
-6. Confirm no `ars` binary, service, cache, socket, or script remains remotely.
+2. Confirm internal subagent transcripts are absent.
+3. Run `ars`, search by host/project/title, and resume one Claude session.
+4. Confirm the remote Claude process resumes the exact native ID and CWD.
+5. Repeat for Codex.
+6. Make one host unreachable and confirm healthy sessions remain selectable.
+7. Confirm the helper path is removed after success and forced failure.
+8. Confirm no remote `ars` service, cache, socket, configuration, or installed
+   binary exists.
