@@ -15,6 +15,9 @@ import (
 
 const maxProviderLineBytes = 1 << 20
 
+// candidateTextValidationID is used only for independent CWD/title validation.
+const candidateTextValidationID = "00000000-0000-0000-0000-000000000000"
+
 type claudeAdapter struct{}
 
 func (claudeAdapter) Name() session.Provider { return session.Claude }
@@ -136,14 +139,14 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 			}
 		}
 		if record.CWD != "" {
-			if validCandidateText(adapter.Name(), firstNonEmpty(id, canonicalID), record.CWD, "") {
+			if validClaudeCandidateText(record.CWD, "") {
 				cwd = record.CWD
 			} else {
 				errorCode = strongerError(errorCode, "incompatible")
 			}
 		}
 		value, rank := claudeNativeTitle(record)
-		if rank >= titleRank && value != "" && validCandidateText(adapter.Name(), firstNonEmpty(id, canonicalID), "/", value) {
+		if rank >= titleRank && value != "" && validClaudeCandidateText("/", value) {
 			title = value
 			titleRank = rank
 		}
@@ -193,10 +196,10 @@ func claudeNativeTitle(record claudeRecord) (string, int) {
 	}
 }
 
-func validCandidateText(provider session.Provider, id, cwd, title string) bool {
+func validClaudeCandidateText(cwd, title string) bool {
 	return session.ValidateCandidate(session.Candidate{
-		Provider:  provider,
-		NativeID:  id,
+		Provider:  session.Claude,
+		NativeID:  candidateTextValidationID,
 		UpdatedAt: time.Unix(1, 0),
 		CWD:       cwd,
 		Title:     title,
