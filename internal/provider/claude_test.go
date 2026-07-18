@@ -92,6 +92,25 @@ func TestClaudeDiscoverExcludesMixedSessionIDs(t *testing.T) {
 	}
 }
 
+func TestClaudeDiscoverSkipsMetadataFromInvalidExplicitSessionID(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	writeFile(t, filepath.Join(home, ".claude", "projects", "project", "invalid-id.jsonl"),
+		"{\"type\":\"user\",\"sessionId\":\"5d5d5d5d-5d5d-5d5d-5d5d-5d5d5d5d5d5d\",\"cwd\":\"/synthetic/claude/session-a\"}\n"+
+			"{\"type\":\"custom-title\",\"sessionId\":\"5d5d5d5d-5d5d-5d5d-5d5d-5d5d5d5d5d5d\",\"customTitle\":\"Synthetic session A title\"}\n"+
+			"{\"type\":\"custom-title\",\"sessionId\":\"invalid-explicit-id\",\"cwd\":\"/synthetic/claude/invalid-id\",\"customTitle\":\"Synthetic invalid ID title\"}\n")
+
+	result := (claudeAdapter{}).Discover(context.Background(), home)
+	if result.Status != Partial || result.ErrorCode != "incompatible" || len(result.Sessions) != 1 {
+		t.Fatalf("Discover() = %#v, want one partial/incompatible session", result)
+	}
+	got := result.Sessions[0]
+	if got.NativeID != "5d5d5d5d-5d5d-5d5d-5d5d-5d5d5d5d5d5d" ||
+		got.CWD != "/synthetic/claude/session-a" || got.Title != "Synthetic session A title" {
+		t.Fatalf("Discover().Sessions[0] = %#v, want only valid-ID metadata", got)
+	}
+}
+
 func TestClaudeDiscoverIsAbsentWithoutExecutableOrMetadata(t *testing.T) {
 	t.Run("executable", func(t *testing.T) {
 		home := t.TempDir()

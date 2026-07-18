@@ -126,6 +126,7 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 		if record.SessionID != "" {
 			if err := adapter.ValidateID(record.SessionID); err != nil {
 				errorCode = strongerError(errorCode, "incompatible")
+				continue
 			} else if id == "" {
 				id = record.SessionID
 			} else if id != record.SessionID {
