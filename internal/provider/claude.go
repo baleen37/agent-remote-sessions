@@ -110,6 +110,7 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 	var id, cwd, title string
 	titleRank := 0
 	excluded := false
+	mixedIDs := false
 	errorCode := ""
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxProviderLineBytes)
@@ -128,7 +129,9 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 			} else if id == "" {
 				id = record.SessionID
 			} else if id != record.SessionID {
+				mixedIDs = true
 				errorCode = strongerError(errorCode, "incompatible")
+				continue
 			}
 		}
 		if record.CWD != "" {
@@ -149,6 +152,9 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 	}
 	if excluded {
 		return session.Candidate{}, false, errorCode
+	}
+	if mixedIDs {
+		return session.Candidate{}, false, "incompatible"
 	}
 	if id == "" || cwd == "" {
 		if errorCode == "" {

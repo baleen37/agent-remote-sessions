@@ -76,6 +76,22 @@ func TestClaudeDiscoverKeepsLatestValidCWDAndReportsInvalidRecord(t *testing.T) 
 	}
 }
 
+func TestClaudeDiscoverExcludesMixedSessionIDs(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	writeFile(t, filepath.Join(home, ".claude", "projects", "project", "mixed.jsonl"),
+		"{\"type\":\"user\",\"sessionId\":\"5b5b5b5b-5b5b-5b5b-5b5b-5b5b5b5b5b5b\",\"cwd\":\"/synthetic/claude/session-a\"}\n"+
+			"{\"type\":\"custom-title\",\"sessionId\":\"5c5c5c5c-5c5c-5c5c-5c5c-5c5c5c5c5c5c\",\"cwd\":\"/synthetic/claude/session-b\",\"customTitle\":\"Synthetic session B title\"}\n")
+
+	result := (claudeAdapter{}).Discover(context.Background(), home)
+	if result.Status != Error || result.ErrorCode != "incompatible" {
+		t.Fatalf("Discover() summary = %#v, want error/incompatible", result)
+	}
+	if len(result.Sessions) != 0 || result.Seen != 1 || result.Skipped != 1 {
+		t.Fatalf("Discover() = %#v, want mixed-ID history excluded", result)
+	}
+}
+
 func TestClaudeDiscoverIsAbsentWithoutExecutableOrMetadata(t *testing.T) {
 	t.Run("executable", func(t *testing.T) {
 		home := t.TempDir()
