@@ -134,11 +134,11 @@ The embedded probe is written to stdin. It scans:
 - Claude Code: `~/.claude/projects/**/*.jsonl`
 - Codex: `~/.codex/sessions/**/*.jsonl`
 
-The probe uses `find`, `grep`, `head`, `tail`, `stat`, and `printf`. It emits
-NUL-delimited records containing provider, source path, mtime, and only native
-metadata JSON lines required for ID, CWD, timestamp, and explicit title/name.
-It does not emit arbitrary JSONL lines or prompt/response bodies. GNU and BSD
-`stat` forms are both supported.
+The probe uses `find`, `grep`, `sed`, `tail`, `stat`, and `printf`. It extracts
+and emits only NUL-delimited scalar fields: provider, source path, mtime,
+native ID, CWD, and explicit title/name. It never emits a complete JSONL line;
+this is important because a Codex `session_meta` record can also contain base
+instructions. GNU and BSD `stat` forms are both supported.
 
 Local Go code parses JSON and normalizes records. A malformed session file is
 skipped and reported in the host diagnostic count; it does not abort the host.
@@ -192,7 +192,7 @@ Implementation follows test-first development. Required automated coverage:
 
 - host-file parsing, comments, duplicates, empty inventory, and host selection
 - Claude and Codex metadata fixtures without prompt-body fallback
-- NUL-framed probe parsing and malformed-record isolation
+- six-field NUL-framed probe parsing and malformed-record isolation
 - BSD/GNU stat fallback in the embedded probe
 - SSH collection argv and probe stdin using a fake `ssh` executable
 - bounded aggregation, partial host failure, sorting, and race testing
