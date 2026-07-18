@@ -2,503 +2,652 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build one local `ars` binary that searches Claude Code and Codex sessions across configured SSH hosts in an `fzf` TUI and natively resumes the selected session without installing anything remotely.
+**Goal:** Build a small ars CLI that discovers Claude Code and Codex sessions on configured SSH hosts, returns stable JSON, offers fzf selection, and resumes the selected native session.
 
-**Architecture:** `ars` sends an embedded read-only shell probe to each host through the system SSH client, parses six-field NUL-framed metadata locally, and merges healthy host results. The system `fzf` client selects an opaque row index, then `ars` starts a fixed provider resume command through `ssh -tt` using the selected host, CWD, and native session ID.
+**Architecture:** One Go module builds the local ars command and three embedded, one-shot collector binaries. Provider adapters normalize local metadata on each remote host. A bounded private protocol returns only validated session metadata. Collection and resume use separate SSH paths.
 
-**Tech Stack:** Go 1.26, Go standard library only, system OpenSSH, POSIX shell utilities, local `fzf`.
+**Tech Stack:** Go standard library, system OpenSSH, system fzf, GitHub Actions.
 
 ## Global Constraints
 
-- Module and repository: `github.com/baleen37/agent-remote-sessions`.
-- Produce one local binary named `ars`; do not create `arsd`.
-- Remote hosts receive the probe through stdin and retain no binary, script, daemon, service, cache, socket, or configuration.
-- V1 providers are exactly Claude Code and Codex; V1 relay is exactly SSH.
-- Collect only provider, source path, mtime, native ID, CWD, and explicit native title/name. Never transfer a complete session JSONL line.
-- V1 action is native `resume`; do not implement tmux, attach, start, stop, delete, fork, prompt sending, worktrees, tasks, queues, or conductor behavior.
-- Invoke system `ssh` and `fzf`; do not add a Go SSH client or TUI dependency.
-- Isolate host failures and continue when at least one host returns sessions.
-- Use strict RED-GREEN-REFACTOR for every production behavior.
+- Keep one module and one user-facing binary. Do not add a daemon, cache, index, plugin system, remote installer, or background cleanup process.
+- Compile in exactly two providers: Claude Code and Codex.
+- Support exactly darwin/arm64, linux/amd64, and linux/arm64 collectors.
+- Never transfer prompts, responses, tool output, credentials, raw transcript lines, or provider source paths.
+- Add an interface only when this plan names at least two implementations or a test double is required.
+- Treat inventory values, collector output, session metadata, and fzf output as untrusted.
+- Keep collection non-interactive and bounded. Keep resume interactive and compatible with the user's normal SSH authentication and forwarding.
+- Use test-first RED, GREEN, REFACTOR steps. Commit after every task passes its focused tests.
 
 ---
 
-## File map
+## File Map
 
-```text
-go.mod                              module declaration; no third-party modules
-cmd/ars/main.go                     process wiring and exit status
-internal/model/model.go             Host and normalized Session values
-internal/hosts/hosts.go             ~/.config/ars/hosts parser and selection
-internal/hosts/hosts_test.go        inventory behavior
-internal/probe/script.go            embedded read-only remote shell probe
-internal/probe/decode.go            six-field NUL frame decoder
-internal/probe/probe_test.go        probe integration and decoder tests
-internal/provider/provider.go       record normalization and provider allowlist
-internal/provider/provider_test.go  Claude/Codex normalization tests
-internal/command/runner.go          injectable os/exec boundary
-internal/relay/relay.go             Relay interface
-internal/relay/ssh.go               collection and shell-safe native resume
-internal/relay/ssh_test.go          SSH argv/stdin/resume tests
-internal/aggregate/aggregate.go     bounded fan-out, diagnostics, sorting
-internal/aggregate/aggregate_test.go partial failure and concurrency tests
-internal/picker/fzf.go              row rendering, selection, cancellation
-internal/picker/fzf_test.go         opaque-index mapping tests
-internal/app/app.go                 CLI parsing and end-to-end orchestration
-internal/app/app_test.go            list/TUI/resume flow with fakes
-README.md                           install, inventory, usage, security boundary
-.github/workflows/ci.yml            test, race, vet, macOS/Linux builds
-```
+~~~text
+go.mod
+cmd/
+  ars/main.go
+  ars-build/main.go
+  ars-build/main_test.go
+  ars-collector/main.go
+  ars-collector/main_test.go
+internal/
+  app/app.go
+  app/app_test.go
+  app/aggregate.go
+  app/aggregate_test.go
+  app/e2e_test.go
+  app/inventory.go
+  app/inventory_test.go
+  output/fzf.go
+  output/fzf_test.go
+  output/json.go
+  output/json_test.go
+  protocol/protocol.go
+  protocol/protocol_test.go
+  protocol/fuzz_test.go
+  provider/provider.go
+  provider/provider_test.go
+  provider/claude.go
+  provider/claude_test.go
+  provider/codex.go
+  provider/codex_test.go
+  provider/testdata/claude/*
+  provider/testdata/codex/*
+  session/session.go
+  session/session_test.go
+  ssh/runner.go
+  ssh/assets.go
+  ssh/generated/.keep
+  ssh/collect.go
+  ssh/collect_test.go
+  ssh/resume.go
+  ssh/resume_test.go
+  ssh/sshd_integration_test.go
+.github/workflows/ci.yml
+.gitignore
+README.md
+~~~
 
-### Task 1: Bootstrap model and host inventory
-
-**Files:**
-- Create: `go.mod`
-- Create: `internal/model/model.go`
-- Create: `internal/hosts/hosts.go`
-- Create: `internal/hosts/hosts_test.go`
-
-**Interfaces:**
-- Produces: `model.Host{Target string}` and `model.Session{Host, Provider, NativeID, UpdatedAt, CWD, Project, Title}`.
-- Produces: `hosts.Load(path string) ([]model.Host, error)` and `hosts.Select([]model.Host, string) ([]model.Host, error)`.
-- Consumes: no earlier interfaces.
-
-- [ ] **Step 1: Write failing inventory tests**
-
-Create tests that write this exact inventory and assert comments/whitespace are ignored while order is preserved:
-
-```go
-func TestLoad(t *testing.T) {
-    path := filepath.Join(t.TempDir(), "hosts")
-    err := os.WriteFile(path, []byte("# managed\n devbox \nuser@agent-mac\n"), 0o600)
-    if err != nil { t.Fatal(err) }
-    got, err := Load(path)
-    if err != nil { t.Fatal(err) }
-    want := []model.Host{{Target: "devbox"}, {Target: "user@agent-mac"}}
-    if !reflect.DeepEqual(got, want) { t.Fatalf("got %#v want %#v", got, want) }
-}
-
-func TestLoadRejectsDuplicateAndEmptyInventory(t *testing.T) {
-    for _, body := range []string{"# none\n", "devbox\ndevbox\n"} {
-        path := filepath.Join(t.TempDir(), "hosts")
-        if err := os.WriteFile(path, []byte(body), 0o600); err != nil { t.Fatal(err) }
-        if _, err := Load(path); err == nil { t.Fatalf("Load(%q) succeeded", body) }
-    }
-}
-
-func TestSelect(t *testing.T) {
-    all := []model.Host{{Target: "devbox"}, {Target: "user@agent-mac"}}
-    got, err := Select(all, "devbox")
-    if err != nil { t.Fatal(err) }
-    if !reflect.DeepEqual(got, all[:1]) { t.Fatalf("got %#v", got) }
-    if _, err := Select(all, "missing"); err == nil { t.Fatal("missing host accepted") }
-}
-```
-
-- [ ] **Step 2: Run `go test ./internal/hosts` and verify RED**
-
-Expected: build failure because `Load`, `Select`, and model types do not exist.
-
-- [ ] **Step 3: Implement the minimum model and parser**
-
-`go.mod`:
-
-```go
-module github.com/baleen37/agent-remote-sessions
-
-go 1.26.0
-```
-
-`hosts.Load` must scan line-by-line, trim whitespace, skip empty/comment lines, reject duplicate targets with the line number, and include the expected path in read/empty errors. `hosts.Select` returns all hosts for an empty name and exactly one host for an exact target match.
-
-- [ ] **Step 4: Run `gofmt -w internal && go test ./internal/hosts` and verify GREEN**
-
-Expected: `ok .../internal/hosts`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add go.mod internal/model internal/hosts
-git commit -m "feat: add host inventory"
-```
-
-### Task 2: Add the one-shot probe and provider normalization
+## Task 1: Establish the session model and inventory boundary
 
 **Files:**
-- Create: `internal/probe/script.go`
-- Create: `internal/probe/decode.go`
-- Create: `internal/probe/probe_test.go`
-- Create: `internal/provider/provider.go`
-- Create: `internal/provider/provider_test.go`
+
+- Create: go.mod
+- Create: internal/session/session.go
+- Create: internal/session/session_test.go
+- Create: internal/app/inventory.go
+- Create: internal/app/inventory_test.go
 
 **Interfaces:**
-- Consumes: `model.Session` from Task 1.
-- Produces: `probe.Script string`, `probe.Record`, and `probe.Decode([]byte) ([]probe.Record, error)`.
-- Produces: `provider.Normalize(host model.Host, record probe.Record) (model.Session, error)`.
 
-- [ ] **Step 1: Write failing NUL-frame tests**
+~~~go
+type Provider string
 
-Use a complete six-field record and a truncated record:
+const (
+    Claude Provider = "claude"
+    Codex  Provider = "codex"
+)
 
-```go
-func TestDecode(t *testing.T) {
-    raw := []byte("claude\x00/home/me/a.jsonl\x001721234567\x00id-1\x00/work/app\x00Fix login\x00")
-    got, err := Decode(raw)
-    if err != nil { t.Fatal(err) }
-    want := []Record{{Provider: "claude", Path: "/home/me/a.jsonl", MTime: "1721234567", NativeID: "id-1", CWD: "/work/app", Title: "Fix login"}}
-    if !reflect.DeepEqual(got, want) { t.Fatalf("got %#v want %#v", got, want) }
+type Candidate struct {
+    Provider  Provider
+    NativeID  string
+    UpdatedAt time.Time
+    CWD       string
+    Title     string
 }
 
-func TestDecodeRejectsTruncatedFrame(t *testing.T) {
-    if _, err := Decode([]byte("claude\x00path\x001\x00id\x00cwd\x00")); err == nil {
-        t.Fatal("truncated frame accepted")
-    }
+type Session struct {
+    Host string
+    Candidate
 }
-```
 
-- [ ] **Step 2: Run `go test ./internal/probe` and verify RED**
+func ValidateCandidate(Candidate) error
+func Bind(host string, Candidate) (Session, error)
+func Project(cwd string) string
 
-Expected: build failure because `Record` and `Decode` do not exist.
-
-- [ ] **Step 3: Implement strict six-field decoding**
-
-`Decode` splits on NUL, requires a trailing NUL and a field count divisible by
-six, JSON-unescapes the native ID/CWD/title scalars with `strconv.Unquote`,
-returns records in input order, and never guesses missing fields.
-
-- [ ] **Step 4: Write failing local probe integration test**
-
-Create temporary Claude and Codex trees under a temporary `HOME`. Fixtures must include sensitive marker strings outside the scalar fields and JSON-escaped quotes in the title/CWD. Execute `sh -s` with `probe.Script` on stdin, decode stdout, and assert:
-
-```go
-if bytes.Contains(stdout.Bytes(), []byte("SECRET_BODY_MARKER")) {
-    t.Fatal("probe leaked a complete JSONL body")
+type Host struct {
+    Target string
 }
-if len(records) != 2 { t.Fatalf("records=%d", len(records)) }
-```
 
-Also run `sh -n` against `Script` and require success. The integration test must assert that removing both provider directories still exits zero with empty stdout.
+func ConfigPath() (string, error)
+func Load(path string) ([]Host, error)
+func Select(hosts []Host, target string) ([]Host, error)
+~~~
 
-- [ ] **Step 5: Run `go test ./internal/probe` and verify RED**
+Candidate and Session belong to internal/session. Host and the inventory
+functions belong to internal/app.
 
-Expected: failure because `Script` is empty or missing.
+- [ ] **Step 1: Write failing session validation tests**
 
-- [ ] **Step 6: Implement the embedded POSIX shell probe**
+Cover registered providers, canonical UUID native IDs, non-zero timestamps, absolute Unix CWD values, control characters, bounded UTF-8 title fields, host binding, and CWD basename project derivation.
 
-The script must:
+- [ ] **Step 2: Implement the minimum session model**
 
-```text
-1. use find for ~/.claude/projects and ~/.codex/sessions
-2. use an awk JSON-string extractor that respects backslash escapes
-3. extract Claude sessionId, cwd, and last aiTitle or agentName
-4. extract Codex session_meta payload id and cwd; title is empty
-5. use stat -f %m first and stat -c %Y as fallback
-6. printf exactly provider/path/mtime/id/cwd/title plus NUL after every field
-```
+Use one shared UUID validator. Limit Host, NativeID, CWD, and Title by explicit constants. Validate before constructing Session. Project returns the final cleaned CWD component and never becomes part of identity.
 
-It must not print source lines, shell traces, or diagnostics to stdout. Missing roots are normal and produce no record.
+- [ ] **Step 3: Write failing inventory tests**
 
-- [ ] **Step 7: Write failing provider normalization tests**
+Cover XDG and home fallback paths, blank lines and comments, preserved order, duplicates, targets beginning with a dash, whitespace, control characters, an unknown host selector, and passing each target as one value.
 
-Cover both allowlisted providers, Unix-seconds conversion, `path.Base(CWD)` project derivation, missing ID/CWD rejection, and unknown provider rejection:
+- [ ] **Step 4: Implement inventory parsing and selection**
 
-```go
-func TestNormalizeClaude(t *testing.T) {
-    rec := probe.Record{Provider: "claude", MTime: "1721234567", NativeID: "id-1", CWD: "/work/app", Title: "Fix login"}
-    got, err := Normalize(model.Host{Target: "devbox"}, rec)
-    if err != nil { t.Fatal(err) }
-    if got.Host != "devbox" || got.Project != "app" || got.Provider != "claude" { t.Fatalf("got %#v", got) }
-}
-```
+The default path is $XDG_CONFIG_HOME/ars/hosts when XDG_CONFIG_HOME is set, otherwise ~/.config/ars/hosts. Reject the entire file on the first invalid or duplicate target.
 
-- [ ] **Step 8: Run `go test ./internal/provider` and verify RED**
-
-Expected: build failure because `Normalize` does not exist.
-
-- [ ] **Step 9: Implement normalization and verify GREEN**
+- [ ] **Step 5: Verify and commit**
 
 Run:
 
-```bash
-gofmt -w internal/probe internal/provider
-go test ./internal/probe ./internal/provider
-```
+~~~sh
+go test ./internal/session ./internal/app
+~~~
 
-Expected: both packages pass and the sensitive marker never appears in probe output.
+Commit:
 
-- [ ] **Step 10: Commit**
+~~~sh
+git add go.mod internal/session internal/app/inventory.go internal/app/inventory_test.go
+git commit -m "feat: add session model and host inventory"
+~~~
 
-```bash
-git add internal/probe internal/provider
-git commit -m "feat: discover native agent sessions"
-```
-
-### Task 3: Implement system-command and SSH relay boundaries
+## Task 2: Add compile-time provider adapters
 
 **Files:**
-- Create: `internal/command/runner.go`
-- Create: `internal/relay/relay.go`
-- Create: `internal/relay/ssh.go`
-- Create: `internal/relay/ssh_test.go`
+
+- Create: internal/provider/provider.go
+- Create: internal/provider/provider_test.go
+- Create: internal/provider/claude.go
+- Create: internal/provider/claude_test.go
+- Create: internal/provider/codex.go
+- Create: internal/provider/codex_test.go
+- Create: internal/provider/testdata/claude/*
+- Create: internal/provider/testdata/codex/*
 
 **Interfaces:**
-- Consumes: `model.Host`, `model.Session`, `probe.Script`, `probe.Decode`, and `provider.Normalize`.
-- Produces: `command.Runner.Run(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error`.
-- Produces: `relay.Relay` and `relay.SSH{Runner command.Runner}`.
 
-- [ ] **Step 1: Write failing SSH collection tests**
+~~~go
+type Status string
 
-Use a recording fake runner. Assert the call is exactly:
+const (
+    Absent  Status = "absent"
+    OK      Status = "ok"
+    Partial Status = "partial"
+    Error   Status = "error"
+)
 
-```go
-wantName := "ssh"
-wantArgs := []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "devbox", "sh", "-s"}
-```
-
-The fake writes two encoded probe records to stdout and a warning to stderr. Assert `Collect` returns two normalized sessions with `Host == "devbox"`; assert a nonzero runner error contains the host and captured stderr.
-
-- [ ] **Step 2: Run `go test ./internal/relay -run Collect` and verify RED**
-
-Expected: build failure because `SSH.Collect` does not exist.
-
-- [ ] **Step 3: Implement the runner and collection path**
-
-The production runner uses `exec.CommandContext`, assigns the supplied streams, and returns `cmd.Run()`. `SSH.Collect` sends only `probe.Script` as stdin, captures stdout/stderr separately, decodes complete frames, skips individually invalid normalized records while counting them, and returns an error only for command or frame failure.
-
-- [ ] **Step 4: Write failing resume safety tests**
-
-Table-test Claude, Codex, unknown provider, and hostile values such as:
-
-```go
-session := model.Session{
-    Host: "devbox", Provider: "claude", NativeID: "id'; touch /tmp/pwned; '",
-    CWD: "/work/it's here",
+type Result struct {
+    Provider  session.Provider
+    Sessions  []session.Candidate
+    Status    Status
+    Seen      int
+    Skipped   int
+    ErrorCode string
 }
-```
 
-Assert the runner receives `ssh`, `[]string{"-tt", "devbox", remoteCommand}`, the process stdin/stdout/stderr, and a remote command whose single-quote escaping is:
+type ResumeSpec struct {
+    Executable string
+    Args       []string
+}
 
-```text
-cd -- '/work/it'"'"'s here' && exec claude --resume 'id'"'"'; touch /tmp/pwned; '"'"''
-```
+type Adapter interface {
+    Name() session.Provider
+    Discover(context.Context, string) Result
+    ValidateID(string) error
+    Resume(string) (ResumeSpec, error)
+}
 
-Unknown providers must fail before invoking the runner. Codex must use `exec codex resume`, never `claude --resume`.
+func Builtin() []Adapter
+func Lookup(session.Provider) (Adapter, bool)
+~~~
 
-- [ ] **Step 5: Run `go test ./internal/relay -run Resume` and verify RED**
+ErrorCode is empty for OK and absent, otherwise one of unavailable,
+incompatible, corrupt, or resource_limit.
 
-Expected: failure because `SSH.Resume` and shell quoting do not exist.
+- [ ] **Step 1: Create sanitized fixture trees**
 
-- [ ] **Step 6: Implement fixed resume commands and verify GREEN**
+Represent only schema shapes needed by the adapters. Use synthetic UUIDs, CWDs, titles, timestamps, and content. Include malformed, internal, sidechain, exec, subagent, and unknown-source records. Do not copy real prompts or paths.
 
-Use one unexported `shellQuote(string) string` function that wraps values in single quotes and replaces each single quote with `'"'"'`. Select the executable and verb with a `switch` over exactly `claude` and `codex`; do not concatenate the provider into an executable name.
+- [ ] **Step 2: Write failing provider registry tests**
+
+Assert Builtin returns Claude then Codex, names are unique, Lookup rejects unknown values, every adapter accepts only canonical UUIDs, and resume specs are fixed to claude --resume UUID or codex resume UUID.
+
+- [ ] **Step 3: Write failing Claude discovery tests**
+
+Using a temporary home, cover direct ~/.claude/projects/project/*.jsonl files only, internal and sidechain exclusion, latest valid CWD selection, explicit native title precedence, mtime UpdatedAt, absent executable, malformed lines, partial status, and no prompt-derived title.
+
+- [ ] **Step 4: Implement streaming Claude discovery**
+
+Read one JSONL line at a time with a 1 MiB scanner limit. Decode only fields required for ID, CWD, native title, and exclusion. Never retain or return raw lines or file names. Return absent when Claude metadata or executable is missing; use partial when valid sessions coexist with skipped corrupt records.
+
+- [ ] **Step 5: Write failing Codex discovery tests**
+
+Cover recursive session_meta records under ~/.codex/sessions, thread_source=user, source=cli or vscode, exclusion of exec, subagent, and unknown sources, mtime UpdatedAt, empty Title, corrupt records, and absent executable.
+
+- [ ] **Step 6: Implement streaming Codex discovery**
+
+Decode only session_meta fields. Do not populate preview text. Keep the same status and error-code rules as Claude.
+
+- [ ] **Step 7: Verify and commit**
 
 Run:
 
-```bash
-gofmt -w internal/command internal/relay
-go test ./internal/relay
-```
+~~~sh
+go test ./internal/provider
+~~~
 
-Expected: collection and hostile-value resume tests pass.
+Commit:
 
-- [ ] **Step 7: Commit**
+~~~sh
+git add internal/provider
+git commit -m "feat: discover Claude and Codex sessions"
+~~~
 
-```bash
-git add internal/command internal/relay
-git commit -m "feat: collect and resume sessions over ssh"
-```
-
-### Task 4: Add bounded multi-host aggregation
+## Task 3: Define and implement the bounded collector protocol
 
 **Files:**
-- Create: `internal/aggregate/aggregate.go`
-- Create: `internal/aggregate/aggregate_test.go`
+
+- Create: internal/protocol/protocol.go
+- Create: internal/protocol/protocol_test.go
+- Create: internal/protocol/fuzz_test.go
+- Create: cmd/ars-collector/main.go
+- Create: cmd/ars-collector/main_test.go
 
 **Interfaces:**
-- Consumes: `relay.Relay`, `model.Host`, and `model.Session`.
-- Produces: `aggregate.Collect(context.Context, relay.Relay, []model.Host, int) ([]model.Session, []aggregate.HostError, error)`.
+
+~~~go
+type Limits struct {
+    StartupBytes int64
+    LineBytes    int
+    TotalBytes   int64
+    Sessions     int
+}
+
+func DefaultLimits() Limits
+func Encode(io.Writer, string, []session.Candidate, []provider.Result) error
+func Decode(io.Reader, string, Limits) ([]session.Candidate, []provider.Result, error)
+~~~
+
+**Wire contract:**
+
+~~~text
+ARS/1 BEGIN <nonce>
+{"type":"session", ...normalized fields...}
+{"type":"summary", ...provider status and counts...}
+ARS/1 END <nonce> <session-count>
+~~~
+
+- [ ] **Step 1: Write failing encoder and decoder tests**
+
+Cover a valid round trip, wrong or missing nonce, unknown major version, unknown frame type, invalid UTF-8, overlong line, startup garbage above 64 KiB, total output above 16 MiB, more than 10,000 sessions, truncated END, mismatched count, and invalid Candidate data.
+
+- [ ] **Step 2: Implement fail-closed decoding**
+
+Use 64 KiB startup, 64 KiB line, 16 MiB total, and 10,000-session defaults. Buffer decoded sessions privately until END validates. Reject any unknown version or frame. Require the caller to separately confirm successful SSH and collector exits.
+
+- [ ] **Step 3: Add fuzz coverage**
+
+Seed the valid transcript and each malformed boundary case. The fuzz property is no panic, no unbounded allocation, and no returned sessions unless the entire transcript validates.
+
+- [ ] **Step 4: Write failing collector command tests**
+
+Extract command execution into a testable run function. Cover required hexadecimal nonce, deterministic session ordering, provider summaries, partial provider failure, and non-zero exit when encoding fails.
+
+- [ ] **Step 5: Implement ars-collector**
+
+Run both built-in adapters against the remote home, validate and sort Candidates, emit one ARS/1 transcript, and write diagnostics only to stderr. Do not expose provider file paths.
+
+- [ ] **Step 6: Verify and commit**
+
+Run:
+
+~~~sh
+go test ./internal/protocol ./cmd/ars-collector
+go test -fuzz=FuzzDecode -fuzztime=10s ./internal/protocol
+~~~
+
+Commit:
+
+~~~sh
+git add internal/protocol cmd/ars-collector
+git commit -m "feat: add bounded collector protocol"
+~~~
+
+## Task 4: Embed collectors and implement bounded SSH collection
+
+**Files:**
+
+- Create: internal/ssh/assets.go
+- Create: internal/ssh/generated/.keep
+- Create: cmd/ars-build/main.go
+- Create: cmd/ars-build/main_test.go
+- Create: internal/ssh/runner.go
+- Create: internal/ssh/collect.go
+- Create: internal/ssh/collect_test.go
+- Modify: .gitignore
+
+**Interfaces:**
+
+~~~go
+type Runner interface {
+    Run(
+        context.Context,
+        string,
+        []string,
+        io.Reader,
+        io.Writer,
+        io.Writer,
+    ) error
+}
+
+type CollectorAssets interface {
+    ForTarget(goos, goarch string) ([]byte, error)
+}
+
+type CollectOptions struct {
+    ConnectTimeout time.Duration
+    HostTimeout    time.Duration
+    ProtocolLimits protocol.Limits
+}
+
+func Collect(
+    context.Context,
+    Runner,
+    CollectorAssets,
+    string,
+    CollectOptions,
+) ([]session.Candidate, []provider.Result, error)
+~~~
+
+- [ ] **Step 1: Write failing target and SSH argv tests**
+
+Map Darwin arm64, Linux x86_64 or amd64, and Linux aarch64 or arm64 to the three supported collectors. Reject every other pair. Assert collection uses batch mode, no agent or port forwarding, one connection attempt, host-key verification, a five-second connect timeout, and the host target as exactly one argv element.
+
+- [ ] **Step 2: Write failing remote lifecycle tests with a fake Runner**
+
+Model the uname probe and collector invocation. Assert a random 128-bit hexadecimal nonce, a nonce-specific directory below TMPDIR or /tmp, umask 077, immediate EXIT/HUP/INT/TERM traps, executable upload by stdin, the nonce passed to the collector, exact path cleanup, and no glob or recursive deletion.
+
+- [ ] **Step 3: Write failing failure-path tests**
+
+Cover probe failure, unsupported target, upload failure, collector timeout at 60 seconds, stdout above 16 MiB, bounded stderr, protocol failure, non-zero remote exit, context cancellation, and a secondary five-second exact cleanup attempt after an interrupted primary run.
+
+- [ ] **Step 4: Implement the system SSH Runner**
+
+Use exec.CommandContext without a shell locally. Pass inventory targets and every SSH option as separate argv values. Capture bounded stdout and stderr. Collection must remain non-interactive.
+
+- [ ] **Step 5: Implement the two-stage collection flow**
+
+First probe uname -s and uname -m. Then choose and stream the embedded collector. Validate the remote temp path echoed by the bootstrap before using it. Quote only the fixed bootstrap values and validated nonce. Document that SIGKILL can leave one nonce directory; do not add a janitor.
+
+- [ ] **Step 6: Write failing build-tool tests**
+
+Assert ars-build compiles ars-collector with CGO_ENABLED=0 for the exact three targets, writes deterministic assets into internal/ssh/generated, and fails if any target is absent. The default mode then builds the local ars; --assets-only stops after asset generation.
+
+- [ ] **Step 7: Implement asset generation and embedding**
+
+Keep generated collector blobs ignored except for .keep. ssh/assets.go embeds the exact generated names and exposes only the supported target lookup.
+
+- [ ] **Step 8: Verify and commit**
+
+Run:
+
+~~~sh
+go test ./internal/ssh ./cmd/ars-build
+go run ./cmd/ars-build --assets-only
+go test ./internal/ssh
+~~~
+
+Commit:
+
+~~~sh
+git add .gitignore cmd/ars-build internal/ssh
+git commit -m "feat: collect sessions through bounded SSH"
+~~~
+
+## Task 5: Aggregate hosts and publish JSON schema version 1
+
+**Files:**
+
+- Create: internal/app/aggregate.go
+- Create: internal/app/aggregate_test.go
+- Create: internal/output/json.go
+- Create: internal/output/json_test.go
+
+**Interfaces:**
+
+~~~go
+type HostStatus string
+
+const (
+    HostOK    HostStatus = "ok"
+    HostError HostStatus = "error"
+)
+
+type HostResult struct {
+    Target string
+    Status HostStatus
+}
+
+type HostError struct {
+    Host    string
+    Code    string
+    Message string
+}
+
+type Result struct {
+    Hosts    []output.HostResult
+    Sessions []session.Session
+    Errors   []output.HostError
+}
+
+type Collector func(context.Context, string) (
+    []session.Candidate,
+    []provider.Result,
+    error,
+)
+
+func CollectHosts(context.Context, []Host, int, Collector) Result
+func WriteJSON(io.Writer, []HostResult, []session.Session, []HostError) error
+~~~
+
+HostStatus, HostResult, HostError, and WriteJSON belong to internal/output.
+Result, Collector, and CollectHosts belong to internal/app.
 
 - [ ] **Step 1: Write failing aggregation tests**
 
-Use a blocking fake relay with atomic active/max counters. With six hosts and limit two, assert `maxActive <= 2`. Return sessions in deliberately mixed timestamps and assert newest-first ordering. Make one host fail and assert healthy sessions plus one `HostError` remain. Make every host fail and assert the final error is non-nil.
+Cover a worker limit of four, one attempt per host, per-host timeout propagation, healthy empty hosts, partial provider results, failed hosts beside healthy sessions, all-host failure, deduplication by host plus provider plus native ID, and deterministic sorting by UpdatedAt descending with stable tie breakers.
 
-- [ ] **Step 2: Run `go test ./internal/aggregate` and verify RED**
+- [ ] **Step 2: Implement aggregation**
 
-Expected: build failure because `Collect` does not exist.
+Bind validated Candidates to their inventory host only after a successful protocol result. Record every configured host exactly once. Keep healthy data when peers fail. Sanitize error messages and assign stable machine codes such as ssh_timeout, ssh_failed, unsupported_target, protocol_error, and resource_limit.
 
-- [ ] **Step 3: Implement the minimum worker pool**
+- [ ] **Step 3: Write failing JSON contract tests**
 
-Reject `limit < 1`. Start `min(limit, len(hosts))` workers, send hosts through one channel, collect one result per host, and sort successful sessions with `sort.SliceStable` by `UpdatedAt` descending. Do not retry or cache. Return host errors in inventory order for deterministic diagnostics.
+Golden-test schema_version 1 with hosts, sessions, and errors. Assert a healthy empty host is distinguishable from an unreachable host, timestamps use RFC3339Nano, unknown internal fields never leak, HTML escaping does not alter terminal text, and a trailing newline is present.
 
-- [ ] **Step 4: Verify GREEN and race safety**
+- [ ] **Step 4: Implement public JSON DTOs**
 
-```bash
-gofmt -w internal/aggregate
-go test ./internal/aggregate
-go test -race ./internal/aggregate
-```
+Define dedicated output structs with explicit JSON field names. Do not serialize internal structs directly. The command succeeds when at least one host is healthy, including healthy empty results; it fails when all selected hosts fail.
 
-Expected: all tests pass with no race report.
+- [ ] **Step 5: Verify and commit**
 
-- [ ] **Step 5: Commit**
+Run:
 
-```bash
-git add internal/aggregate
-git commit -m "feat: aggregate sessions across hosts"
-```
+~~~sh
+go test ./internal/app ./internal/output
+go test -race ./internal/app
+~~~
 
-### Task 5: Add the searchable `fzf` picker
+Commit:
 
-**Files:**
-- Create: `internal/picker/fzf.go`
-- Create: `internal/picker/fzf_test.go`
+~~~sh
+git add internal/app/aggregate.go internal/app/aggregate_test.go internal/output
+git commit -m "feat: aggregate hosts and emit stable JSON"
+~~~
 
-**Interfaces:**
-- Consumes: `command.Runner` and `[]model.Session`.
-- Produces: `picker.FZF.Select(context.Context, []model.Session) (*model.Session, error)`; nil selection means cancellation.
-
-- [ ] **Step 1: Write failing opaque-index tests**
-
-Use titles and paths containing tabs/control characters. Assert candidates are sanitized for display, begin with `0\t` and `1\t`, and use arguments:
-
-```go
-[]string{"--delimiter=\t", "--with-nth=2..", "--no-multi", "--header=host  updated  provider  project  title  id"}
-```
-
-Make the fake return `1\tmodified display text\n` and assert the second original structured session is selected. Return an exit error with code 130 and assert `(nil, nil)`. Return index 99 and assert an error.
-
-- [ ] **Step 2: Run `go test ./internal/picker` and verify RED**
-
-Expected: build failure because `FZF.Select` does not exist.
-
-- [ ] **Step 3: Implement rendering and selection**
-
-Render one line per session with opaque decimal index, host, local-time `2006-01-02 15:04`, provider, project/CWD, title or `-`, and at most the first 12 ID characters. Replace tabs/newlines/carriage returns and other control runes in display values with spaces. Parse only the first output field as an integer and index the original slice.
-
-- [ ] **Step 4: Verify GREEN**
-
-```bash
-gofmt -w internal/picker
-go test ./internal/picker
-```
-
-Expected: selection, cancellation, sanitization, and invalid-index tests pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add internal/picker
-git commit -m "feat: add searchable session picker"
-```
-
-### Task 6: Wire `ars`, JSON listing, and resume
+## Task 6: Add fzf selection, native resume, and CLI orchestration
 
 **Files:**
-- Create: `internal/app/app.go`
-- Create: `internal/app/app_test.go`
-- Create: `cmd/ars/main.go`
+
+- Create: internal/output/fzf.go
+- Create: internal/output/fzf_test.go
+- Create: internal/ssh/resume.go
+- Create: internal/ssh/resume_test.go
+- Create: internal/app/app.go
+- Create: internal/app/app_test.go
+- Create: cmd/ars/main.go
 
 **Interfaces:**
-- Consumes: host inventory, aggregator, `relay.Relay`, picker, and standard streams.
-- Produces: `app.Run(context.Context, []string, app.Dependencies) error` and the `ars` executable.
 
-- [ ] **Step 1: Write failing CLI flow tests**
+~~~go
+type CommandRunner interface {
+    Run(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error
+}
 
-Dependency-inject `LoadHosts`, `Relay`, `Picker`, stdout, and stderr. Cover:
+type FZF struct {
+    Runner CommandRunner
+}
 
-```text
-ars                    loads all hosts, aggregates, selects, resumes once
-ars devbox             selects only devbox before collection
-ars list --json        emits sorted JSON and never calls picker/resume
-ars unknown            fails before collection
-ars list --json extra  prints usage error
-picker cancellation    exits without resume
-partial host failure   prints warning and still opens picker
-zero sessions          fails without opening picker
-```
+func (FZF) Select(context.Context, []session.Session) (
+    session.Session,
+    bool,
+    error,
+)
 
-Decode JSON output into `[]model.Session` rather than comparing indentation.
+func Resume(
+    context.Context,
+    Runner,
+    string,
+    session.Session,
+    provider.Adapter,
+) error
 
-- [ ] **Step 2: Run `go test ./internal/app` and verify RED**
+type Dependencies struct {
+    LoadHosts func(string) ([]Host, error)
+    Collect   func(context.Context, []Host) Result
+    Pick      func(context.Context, []session.Session) (session.Session, bool, error)
+    Resume    func(context.Context, session.Session) error
+    Stdout    io.Writer
+    Stderr    io.Writer
+}
 
-Expected: build failure because `Run` and dependencies do not exist.
+func Run(context.Context, []string, Dependencies) int
+~~~
 
-- [ ] **Step 3: Implement exact CLI grammar and orchestration**
+Run maps resume errors implementing ExitCode() int to that exact process exit
+code; all other operational errors use the documented generic failure code.
 
-Use `~/.config/ars/hosts`, overridden only by `ARS_HOSTS_FILE` for tests and automation. Accept only zero args, one host arg, or exactly `list --json`. Use aggregation concurrency four. Print one concise `warning: <host>: <error>` per failed host before TUI launch. Encode JSON to stdout with `json.Encoder.SetIndent("", "  ")`.
+- [ ] **Step 1: Write failing fzf tests**
 
-Before interactive execution, `cmd/ars/main.go` verifies `exec.LookPath("ssh")` and `exec.LookPath("fzf")`; `list --json` requires only SSH. It builds the OS runner, SSH relay, and FZF picker, calls `app.Run`, prints one error to stderr, and maps cancellation to exit zero.
+Render a sanitized display row plus an opaque numeric index. Cover delimiter characters, tabs, newlines, ANSI escapes, duplicate labels, out-of-range output, malformed output, missing fzf, and exit 130 or 1 as successful cancellation. Selection must map only by the opaque index.
 
-- [ ] **Step 4: Verify unit and command behavior GREEN**
+- [ ] **Step 2: Implement fzf selection**
 
-```bash
-gofmt -w cmd internal/app
-go test ./...
-go run ./cmd/ars --bad
-```
+Invoke system fzf with fixed arguments. Send display text through stdin. Parse only the returned index. Never execute or parse a host, CWD, title, or project as a command.
 
-Expected: tests pass; invalid CLI prints usage and exits nonzero without SSH.
+- [ ] **Step 3: Write failing resume tests**
 
-- [ ] **Step 5: Commit**
+Assert ssh -tt, normal interactive SSH behavior, one target argv value, fixed provider executable and arguments, validated canonical UUID, absolute CWD, POSIX single-quote escaping, and preservation of the SSH exit code. Reject any Session not bound to the selected configured host.
 
-```bash
-git add cmd/ars internal/app
-git commit -m "feat: add ars command"
-```
+- [ ] **Step 4: Implement the separate resume path**
 
-### Task 7: Document, cross-build, and verify the finished V1
+Build one remote command from the validated CWD and adapter ResumeSpec:
+
+~~~text
+Claude: cd '<cwd>' && exec claude --resume '<uuid>'
+Codex:  cd '<cwd>' && exec codex resume '<uuid>'
+~~~
+
+Escape a single quote using the standard close-quote, escaped-quote, reopen sequence. Do not reuse collection flags that disable authentication or forwarding.
+
+- [ ] **Step 5: Write failing app tests**
+
+Cover ars, ars devbox, ars list --json, invalid arguments, unknown host, partial host failure, all-host failure without fzf, healthy empty JSON success, interactive no-sessions reporting, picker cancellation, picker failure, resume failure, and exact exit-code propagation.
+
+- [ ] **Step 6: Implement app and main**
+
+Keep parsing explicit for the three supported command shapes. Wire inventory, four-worker aggregation, five-second connect timeout, 60-second host timeout, JSON output, fzf, and resume. Main owns signals and os.Exit; app.Run remains unit-testable.
+
+- [ ] **Step 7: Verify and commit**
+
+Run:
+
+~~~sh
+go test ./internal/output ./internal/ssh ./internal/app ./cmd/ars
+~~~
+
+Commit:
+
+~~~sh
+git add internal/output internal/ssh/resume.go internal/ssh/resume_test.go internal/app cmd/ars
+git commit -m "feat: select and resume remote sessions"
+~~~
+
+## Task 7: Close integration, release, and operator documentation
 
 **Files:**
-- Create: `README.md`
-- Create: `.github/workflows/ci.yml`
 
-**Interfaces:**
-- Consumes: completed `ars` command.
-- Produces: installation/usage documentation and reproducible CI checks.
+- Create: internal/ssh/sshd_integration_test.go
+- Create: internal/app/e2e_test.go
+- Create: README.md
+- Create: .github/workflows/ci.yml
+- Modify: cmd/ars-build/main.go
+- Modify: internal/ssh/assets.go
 
-- [ ] **Step 1: Write README acceptance documentation**
+- [ ] **Step 1: Add an opt-in ephemeral sshd integration test**
 
-Document Go install/build, the exact `~/.config/ars/hosts` format, `ars`, `ars <host>`, and `ars list --json`. State local prerequisites (`ssh`, `fzf`), remote prerequisites (SSH, POSIX shell utilities, provider CLI/history), collected scalar fields, and the guarantee that no remote state is installed or retained.
+Start one disposable sshd using a generated host key and temporary authorized_keys. Exercise uname probing, collector upload, ARS/1 decoding, exact cleanup, and a fixed resume command. Skip with a clear reason when sshd is unavailable.
 
-- [ ] **Step 2: Add CI with exact checks**
+- [ ] **Step 2: Add a synthetic end-to-end app test**
 
-The workflow runs on pull requests and pushes to `main` with Go 1.26 and these commands:
+Create sanitized Claude and Codex homes, run the real collector protocol through the fake SSH boundary, verify ars list --json, choose one opaque fzf index, and assert the final resume argv. Also prove one unreachable host does not discard a healthy host.
 
-```bash
+- [ ] **Step 3: Add release checks**
+
+Make ars-build verify all three embedded collectors before producing ars. CI builds the assets first, then runs unit tests, race tests, vet, and local ars builds on Linux and macOS. It must not rely on network services after Go toolchain setup.
+
+- [ ] **Step 4: Document the operational contract**
+
+README covers installation, inventory examples, the three commands, prerequisites, JSON schema version 1, supported remote targets, provider inclusion rules, five-second and 60-second timeouts, limits, partial failures, host-key behavior, privacy exclusions, and SIGKILL temp-directory leftovers.
+
+- [ ] **Step 5: Run the complete automated verification**
+
+Run:
+
+~~~sh
+go run ./cmd/ars-build --assets-only
 go test ./...
 go test -race ./...
 go vet ./...
-GOOS=darwin GOARCH=arm64 go build ./cmd/ars
-GOOS=linux GOARCH=amd64 go build ./cmd/ars
-```
+go run ./cmd/ars-build
+~~~
 
-- [ ] **Step 3: Run final automated verification**
+Expected result: all commands exit zero and the local ars binary contains exactly the three supported collectors.
 
-```bash
-gofmt -w cmd internal
-go test ./...
-go test -race ./...
-go vet ./...
-GOOS=darwin GOARCH=arm64 go build -o /tmp/ars-darwin-arm64 ./cmd/ars
-GOOS=linux GOARCH=amd64 go build -o /tmp/ars-linux-amd64 ./cmd/ars
-git diff --check
-```
+- [ ] **Step 6: Run the manual acceptance checklist**
 
-Expected: every command exits zero and both `/tmp/ars-*` files are nonempty.
+On two real configured hosts:
 
-- [ ] **Step 4: Run manual live acceptance**
+1. Confirm one Claude session and one Codex session appear without raw content or source paths.
+2. Resume each session and confirm the provider starts in the saved CWD.
+3. Make one host unreachable and confirm the other host remains usable with a structured error.
+4. Confirm a healthy host with no sessions reports success and does not open fzf.
+5. Cancel fzf and confirm exit zero.
+6. Interrupt collection and inspect only the nonce-specific temp location for cleanup.
 
-With at least two configured SSH aliases containing real histories:
+- [ ] **Step 7: Commit the release surface**
 
-```bash
-go run ./cmd/ars list --json
-go run ./cmd/ars
-```
+~~~sh
+git add internal/app/e2e_test.go internal/ssh/sshd_integration_test.go README.md .github/workflows/ci.yml cmd/ars-build internal/ssh/assets.go
+git commit -m "test: verify remote session flow"
+~~~
 
-Verify both providers/hosts appear, search filters rows, Escape does not resume, Claude and Codex Enter selections resume the exact native ID in the recorded CWD, one unreachable host does not hide healthy results, and no remote `ars` artifact exists after the run.
+## Completion Gate
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add README.md .github/workflows/ci.yml
-git commit -m "docs: document agent remote sessions"
-```
+- [ ] Every design requirement maps to a task and focused test above.
+- [ ] Public JSON uses schema_version 1 and dedicated DTOs.
+- [ ] Protocol rejects nonce, count, version, truncation, UTF-8, and resource-limit violations.
+- [ ] Collection supports only the three named remote targets and never uses an unbounded read.
+- [ ] Provider fixtures are synthetic and no raw content or source path crosses the protocol.
+- [ ] Collection and resume have separate SSH option sets.
+- [ ] Partial failure, healthy empty, all-failed, cancellation, and resume exit behavior are verified.
+- [ ] go test ./..., go test -race ./..., go vet ./..., and the release build all pass.
+- [ ] The two-host manual checklist passes before release.

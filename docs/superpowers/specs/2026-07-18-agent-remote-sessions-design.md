@@ -2,7 +2,7 @@
 
 - Date: 2026-07-18
 - Updated: 2026-07-19
-- Status: simplified design pending written review
+- Status: approved for implementation
 - Command: ars
 
 ## Goal and scope
@@ -33,7 +33,8 @@ cmd/
   ars-collector/       one-shot remote helper
 
 internal/
-  app/                 orchestration and normalized Session
+  app/                 inventory, aggregation, and orchestration
+  session/             small validated metadata core
   provider/            Claude and Codex adapters
   protocol/            bounded helper wire format
   ssh/                 separate collect and resume paths
