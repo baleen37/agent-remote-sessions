@@ -1,0 +1,112 @@
+package provider
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"time"
+
+	"github.com/baleen37/agent-remote-sessions/internal/session"
+)
+
+type Status string
+
+const (
+	Absent  Status = "absent"
+	OK      Status = "ok"
+	Partial Status = "partial"
+	Error   Status = "error"
+)
+
+type Result struct {
+	Provider  session.Provider
+	Sessions  []session.Candidate
+	Status    Status
+	Seen      int
+	Skipped   int
+	ErrorCode string
+}
+
+type ResumeSpec struct {
+	Executable string
+	Args       []string
+}
+
+type Adapter interface {
+	Name() session.Provider
+	Discover(context.Context, string) Result
+	ValidateID(string) error
+	Resume(string) (ResumeSpec, error)
+}
+
+func Builtin() []Adapter {
+	return []Adapter{claudeAdapter{}, codexAdapter{}}
+}
+
+func Lookup(name session.Provider) (Adapter, bool) {
+	for _, adapter := range Builtin() {
+		if adapter.Name() == name {
+			return adapter, true
+		}
+	}
+	return nil, false
+}
+
+func validateID(provider session.Provider, id string) error {
+	candidate := session.Candidate{
+		Provider:  provider,
+		NativeID:  id,
+		UpdatedAt: time.Unix(1, 0),
+		CWD:       "/",
+	}
+	if err := session.ValidateCandidate(candidate); err != nil {
+		return fmt.Errorf("invalid %s session ID: %w", provider, err)
+	}
+	return nil
+}
+
+func finishResult(result Result, candidates map[string]session.Candidate, errorCode string) Result {
+	result.Sessions = make([]session.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		result.Sessions = append(result.Sessions, candidate)
+	}
+	sort.Slice(result.Sessions, func(i, j int) bool {
+		return result.Sessions[i].NativeID < result.Sessions[j].NativeID
+	})
+
+	if result.Seen == 0 && errorCode == "" {
+		result.Status = Absent
+		return result
+	}
+	if errorCode == "" {
+		result.Status = OK
+		return result
+	}
+	result.ErrorCode = errorCode
+	if len(result.Sessions) > 0 {
+		result.Status = Partial
+	} else {
+		result.Status = Error
+	}
+	return result
+}
+
+func strongerError(current, next string) string {
+	priority := map[string]int{
+		"unavailable":    1,
+		"corrupt":        2,
+		"incompatible":   3,
+		"resource_limit": 4,
+	}
+	if priority[next] > priority[current] {
+		return next
+	}
+	return current
+}
+
+func newerCandidate(candidates map[string]session.Candidate, candidate session.Candidate) {
+	current, ok := candidates[candidate.NativeID]
+	if !ok || candidate.UpdatedAt.After(current.UpdatedAt) {
+		candidates[candidate.NativeID] = candidate
+	}
+}
