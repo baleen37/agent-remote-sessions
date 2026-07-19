@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -16,6 +19,30 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
+
+func TestRemoteShellCommandSafelyQuotesSingleQuotes(t *testing.T) {
+	t.Parallel()
+
+	script := `printf '%s' "it's safe"`
+	command := remoteShellCommand(script)
+	want := `/bin/sh -c 'printf '\''%s'\'' "it'\''s safe"'`
+	if command != want {
+		t.Fatalf("remoteShellCommand() = %q, want %q", command, want)
+	}
+	shells := []string{"/bin/sh"}
+	if csh, err := exec.LookPath("csh"); err == nil {
+		shells = append(shells, csh)
+	}
+	for _, shell := range shells {
+		output, err := exec.Command(shell, "-c", command).Output()
+		if err != nil {
+			t.Fatalf("execute wrapped command through %s: %v", shell, err)
+		}
+		if got := string(output); got != "it's safe" {
+			t.Fatalf("wrapped output through %s = %q, want %q", shell, got, "it's safe")
+		}
+	}
+}
 
 type runnerCall struct {
 	name  string
@@ -155,6 +182,26 @@ func TestCollectMapsUnameAndUsesDedicatedSSHOptions(t *testing.T) {
 	}
 }
 
+func TestCollectWrapsEachRemoteCommandForBinSh(t *testing.T) {
+	t.Parallel()
+
+	target := "host"
+	runner := successfulRunner("Linux\namd64\n")
+	if _, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, target, CollectOptions{}); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("runner calls = %d, want probe and collector", len(runner.calls))
+	}
+	for _, call := range runner.calls {
+		assertCollectionSSHArgs(t, call.args, target, 5)
+		command := call.args[len(call.args)-1]
+		if !strings.HasPrefix(command, "/bin/sh -c '") || !strings.HasSuffix(command, "'") {
+			t.Errorf("remote command is not one /bin/sh wrapper: %q", command)
+		}
+	}
+}
+
 func TestCollectRemoteLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -170,7 +217,10 @@ func TestCollectRemoteLifecycle(t *testing.T) {
 			}
 			remoteCommand := call.args[len(call.args)-1]
 			nonce = extractNonce(t, remoteCommand)
-			assertRemoteLifecycleCommand(t, remoteCommand, nonce)
+			if remoteCommand != remoteShellCommand(collectorCommand(nonce)) {
+				t.Errorf("collector wrapper = %q, want exact /bin/sh wrapper", remoteCommand)
+			}
+			assertRemoteLifecycleCommand(t, collectorCommand(nonce), nonce)
 			_, _ = fmt.Fprintf(stdout, "/var/tmp/ars-%s\n", nonce)
 			writeValidProtocol(t, stdout, nonce)
 		default:
@@ -184,6 +234,74 @@ func TestCollectRemoteLifecycle(t *testing.T) {
 	}
 	if matched, _ := regexp.MatchString(`^[0-9a-f]{32}$`, nonce); !matched {
 		t.Fatalf("nonce = %q, want 128-bit lowercase hexadecimal", nonce)
+	}
+}
+
+func TestCollectorCommandNormalizesTrailingSlashTMPDIR(t *testing.T) {
+	t.Parallel()
+
+	nonce := strings.Repeat("a", 32)
+	tmpdir := filepath.Join(t.TempDir(), "var", "folders", "session", "T")
+	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shells := []string{"/bin/sh"}
+	if csh, err := exec.LookPath("csh"); err == nil {
+		shells = append(shells, csh)
+	}
+	for _, shell := range shells {
+		command := exec.Command(shell, "-c", remoteShellCommand(collectorCommand(nonce)))
+		command.Env = append(os.Environ(), "TMPDIR="+tmpdir+"/")
+		command.Stdin = strings.NewReader("#!/bin/sh\nexit 0\n")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("collector bootstrap through %s error = %v: %s", shell, err, output)
+		}
+		want := filepath.Join(tmpdir, "ars-"+nonce) + "\n"
+		if got := string(output); got != want {
+			t.Fatalf("temporary path through %s = %q, want normalized %q", shell, got, want)
+		}
+	}
+}
+
+func TestCollectorCommandPreservesRootTMPDIRWithoutDoubleSlash(t *testing.T) {
+	t.Parallel()
+
+	nonce := strings.Repeat("c", 32)
+	script := collectorCommand(nonce)
+	mkdir := strings.Index(script, "mkdir -- \"$dir\"")
+	if mkdir < 0 {
+		t.Fatalf("collector bootstrap missing mkdir: %q", script)
+	}
+	script = script[:mkdir] + "printf '%s\\n' \"$dir\"\n"
+	command := exec.Command("/bin/sh", "-c", script)
+	command.Env = append(os.Environ(), "TMPDIR=/")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("root path bootstrap error = %v", err)
+	}
+	if got, want := string(output), "/ars-"+nonce+"\n"; got != want {
+		t.Fatalf("root temporary path = %q, want %q", got, want)
+	}
+}
+
+func TestCollectorCommandCleansUpOnSignalImmediatelyAfterMkdir(t *testing.T) {
+	t.Parallel()
+
+	nonce := strings.Repeat("b", 32)
+	tmpdir := t.TempDir()
+	script := collectorCommand(nonce)
+	needle := "mkdir -- \"$dir\"; "
+	if !strings.Contains(script, needle) {
+		t.Fatalf("collector bootstrap missing mkdir: %q", script)
+	}
+	script = strings.Replace(script, needle, needle+"kill -HUP $$; ", 1)
+	command := exec.Command("/bin/sh", "-c", script)
+	command.Env = append(os.Environ(), "TMPDIR="+tmpdir)
+	_ = command.Run()
+	directory := filepath.Join(tmpdir, "ars-"+nonce)
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Fatalf("nonce directory remains after HUP: %s (stat error %v)", directory, err)
 	}
 }
 
@@ -314,6 +432,76 @@ func TestCollectRejectsFailures(t *testing.T) {
 	}
 }
 
+func TestCollectSanitizesUntrustedDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		wantEscape bool
+		run        func(context.Context, int, runnerCall, io.Writer, io.Writer) error
+	}{
+		{
+			name: "uname stdout",
+			run: func(_ context.Context, _ int, _ runnerCall, stdout, _ io.Writer) error {
+				_, _ = io.WriteString(stdout, "FreeBSD\x1b]0;SECRET-PATH\x07\namd64\n")
+				return nil
+			},
+		},
+		{
+			name:       "probe stderr and error",
+			wantEscape: true,
+			run: func(_ context.Context, _ int, _ runnerCall, _, stderr io.Writer) error {
+				_, _ = io.WriteString(stderr, "\x1b]0;owned\x07first\nsecond\t\x00")
+				return errors.New("probe\nerror\x1b")
+			},
+		},
+		{
+			name:       "combined diagnostic bound",
+			wantEscape: true,
+			run: func(_ context.Context, _ int, _ runnerCall, _, stderr io.Writer) error {
+				_, _ = io.WriteString(stderr, "\x1b\n"+strings.Repeat("s", 1<<20))
+				return errors.New("\x1b\n" + strings.Repeat("e", 1<<20))
+			},
+		},
+		{
+			name:       "collector stderr and error",
+			wantEscape: true,
+			run: func(_ context.Context, index int, call runnerCall, stdout, stderr io.Writer) error {
+				if index == 0 {
+					_, _ = io.WriteString(stdout, "Linux\namd64\n")
+					return nil
+				}
+				nonce := extractNonce(t, call.args[len(call.args)-1])
+				_, _ = fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonce)
+				_, _ = io.WriteString(stderr, "remote\x1b[31m failure\r\n\x1b]8;;file:///secret\x07path\x1b]8;;\x07")
+				return errors.New("remote\nexit")
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			runner := &fakeRunner{run: test.run}
+			_, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{})
+			if err == nil {
+				t.Fatal("Collect() error = nil")
+			}
+			message := err.Error()
+			assertSafeASCII(t, message)
+			if strings.Contains(message, "SECRET-PATH") {
+				t.Fatalf("uname metadata leaked in error: %q", message)
+			}
+			if test.wantEscape && (!strings.Contains(message, `\x1b`) || !strings.Contains(message, `\n`)) {
+				t.Fatalf("terminal controls were not visibly escaped: %q", message)
+			}
+			if len(message) > stderrOutputLimit {
+				t.Fatalf("sanitized error length = %d, want bounded", len(message))
+			}
+		})
+	}
+}
+
 func TestCollectAppliesSixtySecondHostDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -365,7 +553,10 @@ func TestCollectCancellationAttemptsBoundedExactCleanup(t *testing.T) {
 				t.Errorf("cleanup deadline remaining = %s, want about 5s", remaining)
 			}
 			command := call.args[len(call.args)-1]
-			if command != "rm -f -- '/tmp/custom/ars-"+extractPathNonce(t, command)+"/collector'; rmdir -- '/tmp/custom/ars-"+extractPathNonce(t, command)+"'" {
+			nonce := extractPathNonce(t, command)
+			path := "/tmp/custom/ars-" + nonce
+			want := remoteShellCommand("rm -f -- " + singleQuote(path+"/collector") + "; rmdir -- " + singleQuote(path))
+			if command != want {
 				t.Errorf("cleanup command is not exact: %q", command)
 			}
 			if strings.Contains(command, "*") || strings.Contains(command, "rm -r") {
@@ -384,6 +575,55 @@ func TestCollectCancellationAttemptsBoundedExactCleanup(t *testing.T) {
 	}
 	if len(runner.calls) != 3 {
 		t.Fatalf("runner calls = %d, want probe, collector, cleanup", len(runner.calls))
+	}
+}
+
+func TestCollectHostTimeoutAttemptsBoundedExactCleanup(t *testing.T) {
+	t.Parallel()
+
+	const hostTimeout = 25 * time.Millisecond
+	var temporaryPath string
+	runner := &fakeRunner{run: func(callCtx context.Context, index int, call runnerCall, stdout, _ io.Writer) error {
+		switch index {
+		case 0:
+			_, _ = io.WriteString(stdout, "Linux\namd64\n")
+			return nil
+		case 1:
+			nonce := extractNonce(t, call.args[len(call.args)-1])
+			temporaryPath = "/tmp/ars-" + nonce
+			_, _ = fmt.Fprintln(stdout, temporaryPath)
+			<-callCtx.Done()
+			return callCtx.Err()
+		case 2:
+			deadline, ok := callCtx.Deadline()
+			if !ok {
+				t.Fatal("cleanup context has no deadline")
+			}
+			remaining := time.Until(deadline)
+			if remaining < 4*time.Second || remaining > cleanupTimeout {
+				t.Errorf("cleanup deadline remaining = %s, want about 5s", remaining)
+			}
+			wantScript := "rm -f -- " + singleQuote(temporaryPath+"/collector") + "; rmdir -- " + singleQuote(temporaryPath)
+			if got, want := call.args[len(call.args)-1], remoteShellCommand(wantScript); got != want {
+				t.Errorf("cleanup command = %q, want exact wrapped %q", got, want)
+			}
+			return nil
+		default:
+			t.Fatalf("unexpected runner call %d", index)
+			return nil
+		}
+	}}
+
+	started := time.Now()
+	_, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{HostTimeout: hostTimeout})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Collect() error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed < hostTimeout || elapsed > time.Second {
+		t.Fatalf("Collect() elapsed = %s, want deadline-bound failure", elapsed)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("runner calls = %d, want probe, timed-out collector, cleanup", len(runner.calls))
 	}
 }
 
@@ -430,7 +670,7 @@ func successfulRunner(probe string) *fakeRunner {
 			_, _ = io.WriteString(stdout, probe)
 			return nil
 		}
-		nonceMatch := regexp.MustCompile(`nonce='([0-9a-f]{32})'`).FindStringSubmatch(call.args[len(call.args)-1])
+		nonceMatch := regexp.MustCompile(`([0-9a-f]{32})`).FindStringSubmatch(call.args[len(call.args)-1])
 		if len(nonceMatch) != 2 {
 			return errors.New("missing nonce")
 		}
@@ -474,14 +714,14 @@ func assertRemoteLifecycleCommand(t *testing.T, command, nonce string) {
 	required := []string{
 		"umask 077",
 		"base=${TMPDIR:-/tmp}",
-		"dir=\"$base/ars-$nonce\"",
+		"bin=\"$dir/collector\"",
 		"trap cleanup EXIT",
 		"trap 'exit 1' HUP INT TERM",
 		"mkdir -- \"$dir\"",
-		"cat > \"$dir/collector\"",
-		"chmod 700 \"$dir/collector\"",
-		"\"$dir/collector\" \"$nonce\"",
-		"rm -f -- \"$dir/collector\"",
+		"cat > \"$bin\"",
+		"chmod 700 \"$bin\"",
+		"\"$bin\" \"$nonce\"",
+		"rm -f -- \"$bin\"",
 		"rmdir -- \"$dir\"",
 	}
 	for _, value := range required {
@@ -489,8 +729,11 @@ func assertRemoteLifecycleCommand(t *testing.T, command, nonce string) {
 			t.Errorf("remote command missing %q:\n%s", value, command)
 		}
 	}
-	if exitTrap, signalTrap, mkdir := strings.Index(command, "trap cleanup"), strings.Index(command, "trap 'exit 1'"), strings.Index(command, "mkdir --"); exitTrap < 0 || signalTrap < 0 || mkdir < 0 || exitTrap > mkdir || signalTrap > mkdir {
-		t.Errorf("cleanup and signal traps must be installed before mkdir:\n%s", command)
+	if directory, binary, exitTrap, signalTrap, mkdir := strings.Index(command, "then dir="), strings.Index(command, "bin=\"$dir/collector\""), strings.Index(command, "trap cleanup"), strings.Index(command, "trap 'exit 1'"), strings.Index(command, "mkdir --"); directory < 0 || binary < 0 || exitTrap < 0 || signalTrap < 0 || mkdir < 0 || directory > mkdir || binary > mkdir || exitTrap > mkdir || signalTrap > mkdir {
+		t.Errorf("exact paths and traps must be established before mkdir:\n%s", command)
+	}
+	if strings.Contains(command, "created=") {
+		t.Errorf("collector bootstrap uses a cleanup race flag:\n%s", command)
 	}
 	if strings.Contains(command, "rm -r") || strings.Contains(command, "rm -f -- *") || strings.Contains(command, "rmdir -- *") {
 		t.Errorf("remote command contains broad cleanup:\n%s", command)
@@ -499,7 +742,7 @@ func assertRemoteLifecycleCommand(t *testing.T, command, nonce string) {
 
 func extractNonce(t *testing.T, command string) string {
 	t.Helper()
-	match := regexp.MustCompile(`nonce='([0-9a-f]{32})'`).FindStringSubmatch(command)
+	match := regexp.MustCompile(`([0-9a-f]{32})`).FindStringSubmatch(command)
 	if len(match) != 2 {
 		t.Fatalf("remote command nonce missing: %q", command)
 	}
@@ -526,5 +769,14 @@ func emptyResults() []provider.Result {
 	return []provider.Result{
 		{Provider: session.Claude, Status: provider.Absent},
 		{Provider: session.Codex, Status: provider.Absent},
+	}
+}
+
+func assertSafeASCII(t *testing.T, value string) {
+	t.Helper()
+	for index := range len(value) {
+		if value[index] < 0x20 || value[index] > 0x7e {
+			t.Fatalf("diagnostic contains unsafe byte 0x%02x at %d: %q", value[index], index, value)
+		}
 	}
 }

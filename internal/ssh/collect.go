@@ -56,7 +56,7 @@ func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target 
 
 	probeOutput := newBoundedBuffer(probeOutputLimit)
 	probeError := newBoundedBuffer(stderrOutputLimit)
-	if err := runner.Run(hostCtx, "ssh", collectionSSHArgs(target, options.ConnectTimeout, "uname -s; uname -m"), nil, probeOutput, probeError); err != nil {
+	if err := runner.Run(hostCtx, "ssh", collectionSSHArgs(target, options.ConnectTimeout, remoteShellCommand("uname -s; uname -m")), nil, probeOutput, probeError); err != nil {
 		return nil, nil, commandError("SSH target probe", err, probeError)
 	}
 	if probeOutput.exceeded {
@@ -80,7 +80,7 @@ func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target 
 	runErr := runner.Run(
 		hostCtx,
 		"ssh",
-		collectionSSHArgs(target, options.ConnectTimeout, collectorCommand(nonce)),
+		collectionSSHArgs(target, options.ConnectTimeout, remoteShellCommand(collectorCommand(nonce))),
 		bytes.NewReader(collector),
 		collectorOutput,
 		collectorError,
@@ -160,6 +160,14 @@ func collectionSSHArgs(target string, connectTimeout time.Duration, remoteComman
 	}
 }
 
+func remoteShellCommand(script string) string {
+	return "/bin/sh -c " + singleQuote(script)
+}
+
+func singleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 func parseTarget(output []byte) (string, string, error) {
 	lines := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
 	if len(lines) != 2 || lines[0] == "" || lines[1] == "" {
@@ -173,7 +181,7 @@ func parseTarget(output []byte) (string, string, error) {
 	case lines[0] == "Linux" && (lines[1] == "aarch64" || lines[1] == "arm64"):
 		return "linux", "arm64", nil
 	default:
-		return "", "", fmt.Errorf("unsupported SSH target %s/%s", lines[0], lines[1])
+		return "", "", fmt.Errorf("unsupported SSH target")
 	}
 }
 
@@ -186,27 +194,22 @@ func newNonce() (string, error) {
 }
 
 func collectorCommand(nonce string) string {
-	return "set -eu\n" +
-		"nonce='" + nonce + "'\n" +
-		"umask 077\n" +
-		"base=${TMPDIR:-/tmp}\n" +
-		"case \"$base\" in /*) ;; *) base=/tmp ;; esac\n" +
-		"dir=\"$base/ars-$nonce\"\n" +
-		"created=\n" +
-		"cleanup() {\n" +
-		"  if [ \"$created\" = 1 ]; then\n" +
-		"    rm -f -- \"$dir/collector\"\n" +
-		"    rmdir -- \"$dir\"\n" +
-		"  fi\n" +
-		"}\n" +
-		"trap cleanup EXIT\n" +
-		"trap 'exit 1' HUP INT TERM\n" +
-		"mkdir -- \"$dir\"\n" +
-		"created=1\n" +
-		"printf '%s\\n' \"$dir\"\n" +
-		"cat > \"$dir/collector\"\n" +
-		"chmod 700 \"$dir/collector\"\n" +
-		"\"$dir/collector\" \"$nonce\""
+	return "set -eu; " +
+		"nonce='" + nonce + "'; " +
+		"umask 077; " +
+		"base=${TMPDIR:-/tmp}; " +
+		"case \"$base\" in /*) ;; *) base=/tmp ;; esac; " +
+		"while [ \"$base\" != / ] && [ \"${base%/}\" != \"$base\" ]; do base=${base%/}; done; " +
+		"if [ \"$base\" = / ]; then dir=\"/ars-$nonce\"; else dir=\"$base/ars-$nonce\"; fi; " +
+		"bin=\"$dir/collector\"; " +
+		"cleanup() { rm -f -- \"$bin\" || :; rmdir -- \"$dir\" || :; }; " +
+		"trap cleanup EXIT; " +
+		"trap 'exit 1' HUP INT TERM; " +
+		"mkdir -- \"$dir\"; " +
+		"printf '%s\\n' \"$dir\"; " +
+		"cat > \"$bin\"; " +
+		"chmod 700 \"$bin\"; " +
+		"\"$bin\" \"$nonce\""
 }
 
 func parseTemporaryPath(output []byte, nonce string) (string, error) {
@@ -235,19 +238,76 @@ func attemptCleanup(runner Runner, target string, connectTimeout time.Duration, 
 	// leaving only this nonce-specific private directory. V1 has no janitor.
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
-	command := "rm -f -- " + quoteRemotePath(tempPath+"/collector") + "; rmdir -- " + quoteRemotePath(tempPath)
-	_ = runner.Run(cleanupCtx, "ssh", collectionSSHArgs(target, connectTimeout, command), nil, io.Discard, newBoundedBuffer(stderrOutputLimit))
-}
-
-func quoteRemotePath(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+	command := "rm -f -- " + singleQuote(tempPath+"/collector") + "; rmdir -- " + singleQuote(tempPath)
+	_ = runner.Run(cleanupCtx, "ssh", collectionSSHArgs(target, connectTimeout, remoteShellCommand(command)), nil, io.Discard, newBoundedBuffer(stderrOutputLimit))
 }
 
 func commandError(operation string, err error, stderr *boundedBuffer) error {
-	if diagnostic := strings.TrimSpace(stderr.String()); diagnostic != "" {
-		return fmt.Errorf("%s failed: %w: %s", operation, err, diagnostic)
+	return commandFailure{
+		operation: operation,
+		cause:     err,
+		stderr:    strings.TrimSpace(stderr.String()),
 	}
-	return fmt.Errorf("%s failed: %w", operation, err)
+}
+
+type commandFailure struct {
+	operation string
+	cause     error
+	stderr    string
+}
+
+func (failure commandFailure) Error() string {
+	message := failure.operation + " failed: "
+	message += sanitizeDiagnostic(failure.cause.Error(), stderrOutputLimit-len(message))
+	if failure.stderr == "" || len(message)+2 >= stderrOutputLimit {
+		return message
+	}
+	diagnostic := sanitizeDiagnostic(failure.stderr, stderrOutputLimit-len(message)-2)
+	if diagnostic == "" {
+		return message
+	}
+	return message + ": " + diagnostic
+}
+
+func (failure commandFailure) Unwrap() error {
+	return failure.cause
+}
+
+func sanitizeDiagnostic(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	var output strings.Builder
+	output.Grow(min(len(value), limit))
+	hexDigits := "0123456789abcdef"
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		var escaped string
+		switch character {
+		case '\n':
+			escaped = `\n`
+		case '\r':
+			escaped = `\r`
+		case '\t':
+			escaped = `\t`
+		case '\\':
+			escaped = `\\`
+		default:
+			if character >= 0x20 && character <= 0x7e {
+				escaped = string(character)
+			} else {
+				escaped = string([]byte{'\\', 'x', hexDigits[character>>4], hexDigits[character&0x0f]})
+			}
+		}
+		if output.Len()+len(escaped) > limit {
+			if output.Len()+3 <= limit {
+				output.WriteString("...")
+			}
+			break
+		}
+		output.WriteString(escaped)
+	}
+	return output.String()
 }
 
 type boundedBuffer struct {
