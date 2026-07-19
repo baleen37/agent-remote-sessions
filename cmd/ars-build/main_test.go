@@ -84,6 +84,42 @@ func TestRunDefaultBuildsLocalARSAfterAssets(t *testing.T) {
 	}
 }
 
+func TestRunDefaultVerifiesAllCollectorsTogetherBeforeLocalBuild(t *testing.T) {
+	t.Parallel()
+
+	root := newBuildRoot(t)
+	var calls []commandCall
+	command := func(_ context.Context, directory string, args, env []string) error {
+		calls = append(calls, commandCall{directory: directory, args: append([]string(nil), args...), env: append([]string(nil), env...)})
+		if len(calls) > len(collectorTargets) {
+			t.Fatal("local ars build ran without the complete collector set")
+		}
+		output := outputArgument(t, args)
+		if err := os.WriteFile(output, []byte("collector"), 0o755); err != nil {
+			return err
+		}
+		if len(calls) == len(collectorTargets) {
+			first := collectorTargets[0]
+			return os.Remove(filepath.Join(
+				root,
+				"internal",
+				"ssh",
+				"generated",
+				"ars-collector-"+first[0]+"-"+first[1],
+			))
+		}
+		return nil
+	}
+	var stderr strings.Builder
+
+	if code := run(context.Background(), nil, root, command, &stderr); code == 0 {
+		t.Fatal("run() = 0, want failure for incomplete collector set")
+	}
+	if !strings.Contains(stderr.String(), "missing collector asset") {
+		t.Fatalf("stderr = %q, want missing collector asset", stderr.String())
+	}
+}
+
 func TestRunFailsWhenACollectorAssetIsAbsent(t *testing.T) {
 	t.Parallel()
 

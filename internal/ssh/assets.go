@@ -5,10 +5,9 @@ import (
 	"fmt"
 )
 
-// The wildcard matches .keep on source checkouts and the exact collector
-// files after ars-build generates them.
-//
-//go:embed generated/*
+//go:embed generated/ars-collector-darwin-arm64
+//go:embed generated/ars-collector-linux-amd64
+//go:embed generated/ars-collector-linux-arm64
 var collectorFiles embed.FS
 
 type EmbeddedCollectorAssets struct{}

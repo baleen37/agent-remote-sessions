@@ -67,6 +67,10 @@ func run(
 			fmt.Fprintf(stderr, "ars-build: build collector %s/%s: %v\n", goos, goarch, err)
 			return 1
 		}
+	}
+	for _, target := range collectorTargets {
+		goos, goarch := target[0], target[1]
+		output := filepath.Join(generated, "ars-collector-"+goos+"-"+goarch)
 		info, err := os.Stat(output)
 		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 			fmt.Fprintf(stderr, "ars-build: missing collector asset %s/%s\n", goos, goarch)

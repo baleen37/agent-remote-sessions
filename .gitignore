@@ -1,2 +1,3 @@
 /internal/ssh/generated/*
 !/internal/ssh/generated/.keep
+/ars
