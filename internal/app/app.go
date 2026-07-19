@@ -17,8 +17,23 @@ const (
 	exitUsage   = 2
 )
 
+const topLevelHelp = `Usage:
+  ars [host]
+  ars list --json
+  ars remote add <host>
+
+Run "ars remote --help" for remote command help.
+`
+
+const remoteHelp = `Usage:
+  ars remote add <host>
+
+Add one SSH target to the ARS host inventory.
+`
+
 type Dependencies struct {
 	LoadHosts func(string) ([]Host, error)
+	AddHost   func(string, string) error
 	Collect   func(context.Context, []Host) Result
 	Pick      func(context.Context, []session.Session) (session.Session, bool, error)
 	Resume    func(context.Context, session.Session) error
@@ -27,18 +42,44 @@ type Dependencies struct {
 }
 
 func Run(ctx context.Context, args []string, dependencies Dependencies) int {
-	target, jsonMode, valid := parseArguments(args)
+	stdout := dependencies.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
 	stderr := dependencies.Stderr
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	if !valid {
+
+	if len(args) == 1 && args[0] == "--help" {
+		fmt.Fprint(stdout, topLevelHelp)
+		return exitSuccess
+	}
+	if len(args) == 2 && args[0] == "remote" && args[1] == "--help" {
+		fmt.Fprint(stdout, remoteHelp)
+		return exitSuccess
+	}
+	if len(args) == 3 && args[0] == "remote" && args[1] == "add" {
+		if dependencies.AddHost == nil {
+			fmt.Fprintln(stderr, "ars: invalid application dependencies")
+			return exitFailure
+		}
+		configPath, err := ConfigPath()
+		if err != nil {
+			fmt.Fprintln(stderr, "ars:", err)
+			return exitFailure
+		}
+		if err := dependencies.AddHost(configPath, args[2]); err != nil {
+			fmt.Fprintln(stderr, "ars:", err)
+			return exitFailure
+		}
+		return exitSuccess
+	}
+
+	target, jsonMode, valid := parseArguments(args)
+	if !valid || (len(args) > 0 && args[0] == "remote") {
 		fmt.Fprintln(stderr, "usage: ars [host] | ars list --json")
 		return exitUsage
-	}
-	stdout := dependencies.Stdout
-	if stdout == nil {
-		stdout = io.Discard
 	}
 	if dependencies.LoadHosts == nil || dependencies.Collect == nil ||
 		(!jsonMode && (dependencies.Pick == nil || dependencies.Resume == nil)) {

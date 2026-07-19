@@ -30,6 +30,7 @@ func main() {
 	}
 	dependencies := app.Dependencies{
 		LoadHosts: app.Load,
+		AddHost:   app.Add,
 		Collect: func(ctx context.Context, hosts []app.Host) app.Result {
 			return app.CollectHosts(ctx, hosts, 4, collector)
 		},

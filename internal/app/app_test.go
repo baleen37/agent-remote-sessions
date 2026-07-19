@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -77,12 +78,73 @@ func TestRunSupportsOnlyTheThreeCommandShapes(t *testing.T) {
 	}
 }
 
+func TestRunPrintsHelpWithoutApplicationDependencies(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"top level", []string{"--help"}, "ars remote add <host>"},
+		{"remote", []string{"remote", "--help"}, "Usage:\n  ars remote add <host>"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), test.args, Dependencies{
+				Stdout: &stdout,
+				Stderr: &stderr,
+			})
+			if code != 0 {
+				t.Fatalf("Run() = %d, want 0; stderr = %q", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), test.want) {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), test.want)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunAddsRemoteWithoutLoadingOrCollecting(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/ars-test-config")
+	var gotPath, gotTarget string
+	deps, stdout, stderr := appDependencies()
+	deps.AddHost = func(path string, target string) error {
+		gotPath, gotTarget = path, target
+		return nil
+	}
+	deps.LoadHosts = func(string) ([]Host, error) {
+		t.Fatal("LoadHosts called for remote add")
+		return nil, nil
+	}
+	deps.Collect = func(context.Context, []Host) Result {
+		t.Fatal("Collect called for remote add")
+		return Result{}
+	}
+
+	if code := Run(context.Background(), []string{"remote", "add", "devbox"}, deps); code != 0 {
+		t.Fatalf("Run() = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	wantPath := filepath.Join("/tmp/ars-test-config", "ars", "hosts")
+	if gotPath != wantPath || gotTarget != "devbox" {
+		t.Fatalf("AddHost(%q, %q), want (%q, %q)", gotPath, gotTarget, wantPath, "devbox")
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout = %q, stderr = %q; want empty", stdout.String(), stderr.String())
+	}
+}
+
 func TestRunRejectsInvalidUsageBeforeLoadingInventory(t *testing.T) {
 	tests := [][]string{
 		{"list"},
 		{"--json"},
 		{"list", "--json", "devbox"},
 		{"devbox", "extra"},
+		{"remote"},
+		{"remote", "add"},
+		{"remote", "add", "devbox", "extra"},
 	}
 	for _, args := range tests {
 		deps, _, stderr := appDependencies()
