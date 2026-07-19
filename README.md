@@ -60,8 +60,9 @@ ars list --json     # return all hosts, sessions, and errors as JSON
 Interactive rows contain a private numeric index followed by display-only
 metadata. `fzf` returns only that opaque index; titles, paths, and host names
 are never parsed back into identity. Enter resumes the selected session.
-Canceling `fzf` exits zero without starting SSH. A healthy result with no
-sessions prints `No sessions found.` and does not open `fzf`.
+Canceling `fzf` exits zero without starting the resume SSH connection. A
+healthy result with no sessions prints `No sessions found.` and does not open
+`fzf`.
 
 ## Session inclusion
 
