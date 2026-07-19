@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const config = require("../release.config.cjs");
+const npmPackage = require("../npm/package.json");
 
 test("release config is main-only and publishes generated assets", () => {
   assert.deepEqual(config.branches, ["main"]);
@@ -33,6 +34,11 @@ test("release config is main-only and publishes generated assets", () => {
   assert.equal(config.plugins[4][1].successComment, false);
   assert.equal(config.plugins[4][1].failComment, false);
   assert.equal(config.plugins[4][1].releasedLabels, false);
+});
+
+test("npm package relies on trusted publishing for provenance", () => {
+  assert.equal(npmPackage.publishConfig.access, "public");
+  assert.equal(npmPackage.publishConfig.provenance, undefined);
 });
 
 test("commit analyzer maps the accepted release contract", async () => {
