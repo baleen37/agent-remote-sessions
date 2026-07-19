@@ -144,6 +144,27 @@ func TestDecodeRejectsNonCanonicalLineEndings(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsNonCanonicalEnvelopeSpacing(t *testing.T) {
+	valid := validTranscript(t)
+	begin := []byte("ARS/1 BEGIN " + testNonce)
+	end := []byte("ARS/1 END " + testNonce + " 2")
+	tests := map[string][]byte{
+		"leading space in BEGIN":  bytes.Replace(valid, begin, append([]byte{' '}, begin...), 1),
+		"tab in BEGIN":            bytes.Replace(valid, begin, []byte("ARS/1\tBEGIN\t"+testNonce), 1),
+		"double space in BEGIN":   bytes.Replace(valid, begin, []byte("ARS/1  BEGIN "+testNonce), 1),
+		"trailing space in BEGIN": bytes.Replace(valid, begin, append(append([]byte(nil), begin...), ' '), 1),
+		"leading space in END":    bytes.Replace(valid, end, append([]byte{' '}, end...), 1),
+		"tab in END":              bytes.Replace(valid, end, []byte("ARS/1\tEND\t"+testNonce+"\t2"), 1),
+		"double space in END":     bytes.Replace(valid, end, []byte("ARS/1  END "+testNonce+" 2"), 1),
+		"trailing space in END":   bytes.Replace(valid, end, append(append([]byte(nil), end...), ' '), 1),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeFailsClosed(t, input, DefaultLimits())
+		})
+	}
+}
+
 func TestDecodeRejectsOverlongLine(t *testing.T) {
 	limits := DefaultLimits()
 	input := "ARS/1 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"

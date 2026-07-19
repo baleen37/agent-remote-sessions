@@ -156,10 +156,20 @@ func fuzzSeeds(t testing.TB) [][]byte {
 
 	invalidCandidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	invalidCandidate.CWD = "relative/path"
+	begin := []byte("ARS/1 BEGIN " + testNonce)
+	end := []byte("ARS/1 END " + testNonce + " 2")
 	seeds := [][]byte{
 		valid,
 		bytes.TrimSuffix(valid, []byte{'\n'}),
 		bytes.ReplaceAll(valid, []byte{'\n'}, []byte{'\r', '\n'}),
+		bytes.Replace(valid, begin, append([]byte{' '}, begin...), 1),
+		bytes.Replace(valid, begin, []byte("ARS/1\tBEGIN\t"+testNonce), 1),
+		bytes.Replace(valid, begin, []byte("ARS/1  BEGIN "+testNonce), 1),
+		bytes.Replace(valid, begin, append(append([]byte(nil), begin...), ' '), 1),
+		bytes.Replace(valid, end, append([]byte{' '}, end...), 1),
+		bytes.Replace(valid, end, []byte("ARS/1\tEND\t"+testNonce+"\t2"), 1),
+		bytes.Replace(valid, end, []byte("ARS/1  END "+testNonce+" 2"), 1),
+		bytes.Replace(valid, end, append(append([]byte(nil), end...), ' '), 1),
 		[]byte("ARS/1 BEGIN ffffffffffffffffffffffffffffffff\n"),
 		[]byte("ARS/1 BEGIN\n"),
 		[]byte("ARS/2 BEGIN " + testNonce + "\n"),

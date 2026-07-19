@@ -310,7 +310,7 @@ func parseBegin(line []byte, nonce string) error {
 	if len(fields) == 0 || fields[0] != "ARS/1" {
 		return fmt.Errorf("unsupported protocol version")
 	}
-	if len(fields) != 3 || fields[1] != "BEGIN" {
+	if len(fields) != 3 || fields[1] != "BEGIN" || string(line) != strings.Join(fields, " ") {
 		return fmt.Errorf("invalid protocol begin")
 	}
 	if fields[2] != nonce {
@@ -324,7 +324,7 @@ func parseEnd(line []byte, nonce string) (int, error) {
 	if len(fields) == 0 || fields[0] != "ARS/1" {
 		return 0, fmt.Errorf("unsupported protocol version")
 	}
-	if len(fields) != 4 || fields[1] != "END" {
+	if len(fields) != 4 || fields[1] != "END" || string(line) != strings.Join(fields, " ") {
 		return 0, fmt.Errorf("invalid protocol end")
 	}
 	if fields[2] != nonce {
