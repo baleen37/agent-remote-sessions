@@ -1,0 +1,28 @@
+{
+  "name": "@baleen37/ars",
+  "version": "0.0.0",
+  "description": "Search and resume Claude Code and Codex sessions across SSH hosts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baleen37/agent-remote-sessions.git"
+  },
+  "homepage": "https://github.com/baleen37/agent-remote-sessions#readme",
+  "bugs": "https://github.com/baleen37/agent-remote-sessions/issues",
+  "bin": {
+    "ars": "bin/ars.js"
+  },
+  "files": [
+    "bin/ars.js",
+    "vendor/ars-*",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
