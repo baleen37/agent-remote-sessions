@@ -2,7 +2,7 @@
 
 - Date: 2026-07-19
 - Status: approved for implementation
-- Package: `agent-remote-sessions`
+- Package: `@baleen37/ars`
 
 ## Goal and scope
 
@@ -14,7 +14,7 @@ The release contains native ars binaries for darwin/arm64, linux/amd64, and
 linux/arm64. Users may install a native archive or run:
 
 ~~~sh
-npm install -g agent-remote-sessions
+npm install -g @baleen37/ars
 ~~~
 
 The first release is `v1.0.0`. `feat` creates a minor release, `fix` and
@@ -102,7 +102,7 @@ package template supplies stable metadata and the launcher; release mode
 copies it into `dist/npm`, adds the native binaries and documentation, and
 semantic-release writes the actual version only into that generated package.
 
-The published package is named `agent-remote-sessions`, has public access, and
+The published package is named `@baleen37/ars`, has public access, and
 exposes one `ars` bin entry. The small Node launcher maps only these pairs:
 
 | Node platform | Node architecture | Native binary |
@@ -127,7 +127,7 @@ job uses a GitHub-hosted runner and a Node/npm version that supports npm OIDC.
 npm requires the package to exist before a trusted publisher can be attached,
 so setup has one explicit bootstrap:
 
-1. build and manually publish `agent-remote-sessions@0.0.0` with the non-default
+1. build and manually publish `@baleen37/ars@0.0.0` with the non-default
    `bootstrap` dist-tag
 2. configure the package's trusted publisher for this repository and
    `ci.yml`
@@ -201,8 +201,8 @@ The implementation is complete only after the real `v1.0.0` flow proves:
 2. GitHub Release `v1.0.0` contains the three named archives and
    `SHA256SUMS`
 3. downloaded archive checksums match
-4. npm reports `agent-remote-sessions@latest` as `1.0.0` with provenance
-5. `npm install -g agent-remote-sessions` succeeds in a disposable prefix
+4. npm reports `@baleen37/ars@latest` as `1.0.0` with provenance
+5. `npm install -g @baleen37/ars` succeeds in a disposable prefix
 6. the installed launcher starts the packaged native ars binary
 7. a documentation-only commit is classified as no release and a fix is
    classified as the next patch release without publishing synthetic test
