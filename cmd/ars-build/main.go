@@ -21,7 +21,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ars-build: determine repository root:", err)
 		os.Exit(1)
 	}
-	execute := func(ctx context.Context, directory string, args, environment []string) error {
+	var execute commandExecutor = func(ctx context.Context, directory string, args, environment []string) error {
 		command := exec.CommandContext(ctx, args[0], args[1:]...)
 		command.Dir = directory
 		command.Env = append(os.Environ(), environment...)
@@ -36,16 +36,23 @@ func run(
 	ctx context.Context,
 	args []string,
 	root string,
-	execute func(context.Context, string, []string, []string) error,
+	execute commandExecutor,
 	stderr io.Writer,
 ) int {
 	assetsOnly := false
+	releaseVersion := ""
 	switch {
 	case len(args) == 0:
 	case len(args) == 1 && args[0] == "--assets-only":
 		assetsOnly = true
+	case len(args) == 2 && args[0] == "--release":
+		if err := validateReleaseVersion(args[1]); err != nil {
+			fmt.Fprintln(stderr, "ars-build:", err)
+			return 2
+		}
+		releaseVersion = args[1]
 	default:
-		fmt.Fprintln(stderr, "usage: ars-build [--assets-only]")
+		fmt.Fprintln(stderr, "usage: ars-build [--assets-only | --release MAJOR.MINOR.PATCH]")
 		return 2
 	}
 
@@ -78,6 +85,13 @@ func run(
 		}
 	}
 	if assetsOnly {
+		return 0
+	}
+	if releaseVersion != "" {
+		if err := buildRelease(ctx, root, releaseVersion, execute); err != nil {
+			fmt.Fprintln(stderr, "ars-build: build release:", err)
+			return 1
+		}
 		return 0
 	}
 
