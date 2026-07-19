@@ -158,6 +158,11 @@ func fuzzSeeds(t testing.TB) [][]byte {
 	invalidCandidate.CWD = "relative/path"
 	begin := []byte("ARS/1 BEGIN " + testNonce)
 	end := []byte("ARS/1 END " + testNonce + " 2")
+	empty := rawTranscript(t, nil, []provider.Result{
+		{Provider: session.Claude, Status: provider.OK},
+		{Provider: session.Codex, Status: provider.OK},
+	})
+	emptyEnd := []byte("ARS/1 END " + testNonce + " 0")
 	seeds := [][]byte{
 		valid,
 		bytes.TrimSuffix(valid, []byte{'\n'}),
@@ -170,6 +175,9 @@ func fuzzSeeds(t testing.TB) [][]byte {
 		bytes.Replace(valid, end, []byte("ARS/1\tEND\t"+testNonce+"\t2"), 1),
 		bytes.Replace(valid, end, []byte("ARS/1  END "+testNonce+" 2"), 1),
 		bytes.Replace(valid, end, append(append([]byte(nil), end...), ' '), 1),
+		bytes.Replace(valid, end, []byte("ARS/1 END "+testNonce+" +2"), 1),
+		bytes.Replace(valid, end, []byte("ARS/1 END "+testNonce+" 02"), 1),
+		bytes.Replace(empty, emptyEnd, []byte("ARS/1 END "+testNonce+" -0"), 1),
 		[]byte("ARS/1 BEGIN ffffffffffffffffffffffffffffffff\n"),
 		[]byte("ARS/1 BEGIN\n"),
 		[]byte("ARS/2 BEGIN " + testNonce + "\n"),

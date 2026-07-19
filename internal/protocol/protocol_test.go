@@ -165,6 +165,24 @@ func TestDecodeRejectsNonCanonicalEnvelopeSpacing(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsNonCanonicalEndCount(t *testing.T) {
+	valid := validTranscript(t)
+	empty := rawTranscript(t, nil, []provider.Result{
+		{Provider: session.Claude, Status: provider.OK},
+		{Provider: session.Codex, Status: provider.OK},
+	})
+	tests := map[string][]byte{
+		"explicit plus": bytes.Replace(valid, []byte("ARS/1 END "+testNonce+" 2"), []byte("ARS/1 END "+testNonce+" +2"), 1),
+		"leading zero":  bytes.Replace(valid, []byte("ARS/1 END "+testNonce+" 2"), []byte("ARS/1 END "+testNonce+" 02"), 1),
+		"negative zero": bytes.Replace(empty, []byte("ARS/1 END "+testNonce+" 0"), []byte("ARS/1 END "+testNonce+" -0"), 1),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeFailsClosed(t, input, DefaultLimits())
+		})
+	}
+}
+
 func TestDecodeRejectsOverlongLine(t *testing.T) {
 	limits := DefaultLimits()
 	input := "ARS/1 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"

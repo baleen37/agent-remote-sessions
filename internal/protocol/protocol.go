@@ -331,7 +331,7 @@ func parseEnd(line []byte, nonce string) (int, error) {
 		return 0, fmt.Errorf("protocol nonce mismatch")
 	}
 	count, err := strconv.Atoi(fields[3])
-	if err != nil || count < 0 {
+	if err != nil || count < 0 || fields[3] != strconv.Itoa(count) {
 		return 0, fmt.Errorf("invalid protocol session count")
 	}
 	return count, nil
