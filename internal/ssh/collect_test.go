@@ -269,7 +269,7 @@ func TestCollectorCommandPreservesRootTMPDIRWithoutDoubleSlash(t *testing.T) {
 
 	nonce := strings.Repeat("c", 32)
 	script := collectorCommand(nonce)
-	mkdir := strings.Index(script, "mkdir -- \"$dir\"")
+	mkdir := strings.Index(script, "if mkdir -- \"$dir\"")
 	if mkdir < 0 {
 		t.Fatalf("collector bootstrap missing mkdir: %q", script)
 	}
@@ -291,17 +291,84 @@ func TestCollectorCommandCleansUpOnSignalImmediatelyAfterMkdir(t *testing.T) {
 	nonce := strings.Repeat("b", 32)
 	tmpdir := t.TempDir()
 	script := collectorCommand(nonce)
-	needle := "mkdir -- \"$dir\"; "
+	needle := "if mkdir -- \"$dir\"; then owned=1; "
 	if !strings.Contains(script, needle) {
 		t.Fatalf("collector bootstrap missing mkdir: %q", script)
 	}
-	script = strings.Replace(script, needle, needle+"kill -HUP $$; ", 1)
+	script = strings.Replace(script, needle, "if mkdir -- \"$dir\"; then kill -HUP $$; owned=1; ", 1)
 	command := exec.Command("/bin/sh", "-c", script)
 	command.Env = append(os.Environ(), "TMPDIR="+tmpdir)
 	_ = command.Run()
 	directory := filepath.Join(tmpdir, "ars-"+nonce)
 	if _, err := os.Stat(directory); !os.IsNotExist(err) {
 		t.Fatalf("nonce directory remains after HUP: %s (stat error %v)", directory, err)
+	}
+}
+
+func TestCollectorCommandCleansUpOnSignalAfterOwnership(t *testing.T) {
+	t.Parallel()
+
+	nonce := strings.Repeat("f", 32)
+	tmpdir := t.TempDir()
+	original := collectorCommand(nonce)
+	script := strings.Replace(original, "printf '%s\\n' \"$dir\"; ", "kill -TERM $$; printf '%s\\n' \"$dir\"; ", 1)
+	if script == original {
+		t.Fatalf("collector bootstrap missing post-ownership boundary: %q", original)
+	}
+	command := exec.Command("/bin/sh", "-c", script)
+	command.Env = append(os.Environ(), "TMPDIR="+tmpdir)
+	_ = command.Run()
+	directory := filepath.Join(tmpdir, "ars-"+nonce)
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Fatalf("owned nonce directory remains after TERM: %s (stat error %v)", directory, err)
+	}
+}
+
+func TestCollectorCommandDoesNotCleanPreExistingDirectory(t *testing.T) {
+	t.Parallel()
+
+	nonce := strings.Repeat("d", 32)
+	tmpdir := t.TempDir()
+	directory := filepath.Join(tmpdir, "ars-"+nonce)
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(directory, "collector")
+	if err := os.WriteFile(sentinel, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runFailingCollectorBootstrap(t, tmpdir, nonce)
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "sentinel" {
+		t.Fatalf("pre-existing sentinel changed: data=%q error=%v", data, err)
+	}
+}
+
+func TestCollectorCommandDoesNotFollowPreExistingSymlink(t *testing.T) {
+	t.Parallel()
+
+	nonce := strings.Repeat("e", 32)
+	tmpdir := t.TempDir()
+	target := t.TempDir()
+	sentinel := filepath.Join(target, "collector")
+	if err := os.WriteFile(sentinel, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(tmpdir, "ars-"+nonce)); err != nil {
+		t.Fatal(err)
+	}
+	runFailingCollectorBootstrap(t, tmpdir, nonce)
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "sentinel" {
+		t.Fatalf("symlink target sentinel changed: data=%q error=%v", data, err)
+	}
+}
+
+func runFailingCollectorBootstrap(t *testing.T, tmpdir, nonce string) {
+	t.Helper()
+	command := exec.Command("/bin/sh", "-c", collectorCommand(nonce))
+	command.Env = append(os.Environ(), "TMPDIR="+tmpdir)
+	command.Stdin = strings.NewReader("untrusted upload")
+	if err := command.Run(); err == nil {
+		t.Fatal("collector bootstrap succeeded with a pre-existing nonce path")
 	}
 }
 
@@ -716,7 +783,9 @@ func assertRemoteLifecycleCommand(t *testing.T, command, nonce string) {
 		"base=${TMPDIR:-/tmp}",
 		"bin=\"$dir/collector\"",
 		"trap cleanup EXIT",
-		"trap 'exit 1' HUP INT TERM",
+		"owned=0; interrupted=0",
+		"trap on_signal HUP INT TERM",
+		"then owned=1; if [ \"$interrupted\" = 1 ]",
 		"mkdir -- \"$dir\"",
 		"cat > \"$bin\"",
 		"chmod 700 \"$bin\"",
@@ -729,7 +798,7 @@ func assertRemoteLifecycleCommand(t *testing.T, command, nonce string) {
 			t.Errorf("remote command missing %q:\n%s", value, command)
 		}
 	}
-	if directory, binary, exitTrap, signalTrap, mkdir := strings.Index(command, "then dir="), strings.Index(command, "bin=\"$dir/collector\""), strings.Index(command, "trap cleanup"), strings.Index(command, "trap 'exit 1'"), strings.Index(command, "mkdir --"); directory < 0 || binary < 0 || exitTrap < 0 || signalTrap < 0 || mkdir < 0 || directory > mkdir || binary > mkdir || exitTrap > mkdir || signalTrap > mkdir {
+	if directory, binary, exitTrap, signalTrap, mkdir := strings.Index(command, "then dir="), strings.Index(command, "bin=\"$dir/collector\""), strings.Index(command, "trap cleanup"), strings.Index(command, "trap on_signal"), strings.Index(command, "mkdir --"); directory < 0 || binary < 0 || exitTrap < 0 || signalTrap < 0 || mkdir < 0 || directory > mkdir || binary > mkdir || exitTrap > mkdir || signalTrap > mkdir {
 		t.Errorf("exact paths and traps must be established before mkdir:\n%s", command)
 	}
 	if strings.Contains(command, "created=") {

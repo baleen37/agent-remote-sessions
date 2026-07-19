@@ -202,10 +202,12 @@ func collectorCommand(nonce string) string {
 		"while [ \"$base\" != / ] && [ \"${base%/}\" != \"$base\" ]; do base=${base%/}; done; " +
 		"if [ \"$base\" = / ]; then dir=\"/ars-$nonce\"; else dir=\"$base/ars-$nonce\"; fi; " +
 		"bin=\"$dir/collector\"; " +
-		"cleanup() { rm -f -- \"$bin\" || :; rmdir -- \"$dir\" || :; }; " +
+		"owned=0; interrupted=0; " +
+		"cleanup() { if [ \"$owned\" = 1 ]; then rm -f -- \"$bin\" || :; rmdir -- \"$dir\" || :; fi; }; " +
+		"on_signal() { if [ \"$owned\" = 1 ]; then exit 1; fi; interrupted=1; }; " +
 		"trap cleanup EXIT; " +
-		"trap 'exit 1' HUP INT TERM; " +
-		"mkdir -- \"$dir\"; " +
+		"trap on_signal HUP INT TERM; " +
+		"if mkdir -- \"$dir\"; then owned=1; if [ \"$interrupted\" = 1 ]; then exit 1; fi; else exit 1; fi; " +
 		"printf '%s\\n' \"$dir\"; " +
 		"cat > \"$bin\"; " +
 		"chmod 700 \"$bin\"; " +
