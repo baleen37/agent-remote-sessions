@@ -7,6 +7,17 @@ cache, or background process.
 
 ## Install
 
+Install the latest release from npm:
+
+```sh
+npm install -g @baleen37/ars
+```
+
+The npm package includes native ars binaries for Apple Silicon, Linux x86-64,
+and Linux arm64. It does not download an executable during installation. For a
+Node-free install, download the matching archive from GitHub Releases, verify
+it against `SHA256SUMS`, and place `ars` on `PATH`.
+
 Prerequisites:
 
 - Go as declared by `go.mod`, for building from source
@@ -191,3 +202,21 @@ Before release, also use two explicitly configured real hosts to verify one
 Claude and one Codex resume, an unreachable peer beside a healthy host, a
 healthy empty host, fzf cancellation, and nonce-specific cleanup after an
 interrupt.
+
+## Release
+
+Releases run after CI succeeds on `main`. Conventional `feat`, `fix`, `perf`,
+and `BREAKING CHANGE` commits determine the next version; documentation,
+chore, and test-only changes are no-ops.
+
+The one-time npm setup is:
+
+1. publish `@baleen37/ars@0.0.0` with the `bootstrap` dist-tag
+2. configure npm Trusted Publishing for GitHub repository
+   `baleen37/agent-remote-sessions` and workflow `ci.yml`
+3. allow `npm publish`, then verify the first `main` release as `v1.0.0`
+
+If publication is partial, inspect the Git tag, npm version, and GitHub Release
+before changing state. Preserve any public npm version. Reconstruct a missing
+GitHub Release from the same tag, or publish a missing npm package rebuilt from
+that exact tag. Delete a failed tag only when neither registry published it.

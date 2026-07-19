@@ -23,6 +23,9 @@ module.exports = {
         { path: "dist/ars_*_linux_arm64.tar.gz", label: "ars linux/arm64" },
         { path: "dist/SHA256SUMS", label: "SHA256 checksums" },
       ],
+      successComment: false,
+      failComment: false,
+      releasedLabels: false,
     }],
   ],
 };

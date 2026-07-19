@@ -20,6 +20,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - name: Install release toolchain
+        run: npm ci
+      - name: Test release toolchain
+        run: npm test
       - name: Build embedded collector assets
         run: go run ./cmd/ars-build --assets-only
       - name: Test
@@ -30,3 +38,47 @@ jobs:
         run: go vet ./...
       - name: Build local ars
         run: go run ./cmd/ars-build
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install release toolchain
+        run: npm ci
+      - name: Preflight release package
+        run: |
+          go run ./cmd/ars-build --release 0.0.0
+          (cd dist && sha256sum --check SHA256SUMS)
+          npm pack ./dist/npm --dry-run
+          npm pack ./dist/npm --pack-destination "$RUNNER_TEMP"
+          npm install --global --prefix "$RUNNER_TEMP/ars-prefix" "$RUNNER_TEMP/baleen37-ars-0.0.0.tgz"
+          mkdir -p "$RUNNER_TEMP/config/ars"
+          : > "$RUNNER_TEMP/config/ars/hosts"
+          XDG_CONFIG_HOME="$RUNNER_TEMP/config" "$RUNNER_TEMP/ars-prefix/bin/ars" list --json | grep -F '"schema_version":1'
+      - name: Preview release
+        run: npm run release -- --dry-run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish release
+        run: npm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

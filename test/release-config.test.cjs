@@ -30,6 +30,9 @@ test("release config is main-only and publishes generated assets", () => {
       "dist/SHA256SUMS",
     ],
   );
+  assert.equal(config.plugins[4][1].successComment, false);
+  assert.equal(config.plugins[4][1].failComment, false);
+  assert.equal(config.plugins[4][1].releasedLabels, false);
 });
 
 test("commit analyzer maps the accepted release contract", async () => {
