@@ -131,6 +131,19 @@ func TestDecodeRejectsEnvelopeViolations(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsNonCanonicalLineEndings(t *testing.T) {
+	valid := validTranscript(t)
+	tests := map[string][]byte{
+		"unterminated final END": bytes.TrimSuffix(valid, []byte{'\n'}),
+		"CRLF transcript":        bytes.ReplaceAll(valid, []byte{'\n'}, []byte{'\r', '\n'}),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeFailsClosed(t, input, DefaultLimits())
+		})
+	}
+}
+
 func TestDecodeRejectsOverlongLine(t *testing.T) {
 	limits := DefaultLimits()
 	input := "ARS/1 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"

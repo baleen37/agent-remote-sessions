@@ -158,3 +158,11 @@ func readDirBatches(ctx context.Context, directory string, visit func(os.DirEntr
 		}
 	}
 }
+
+func isRegularFile(path string, entry os.DirEntry) bool {
+	if entry.Type()&os.ModeSymlink != 0 {
+		return false
+	}
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
+}

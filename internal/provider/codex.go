@@ -53,7 +53,7 @@ func (adapter codexAdapter) discover(ctx context.Context, home string, sessionLi
 	candidates := make(map[string]session.Candidate)
 	errorCode := ""
 	err := walkCodexSessionDirectory(ctx, root, 0, func(path string, entry os.DirEntry) error {
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".jsonl" {
+		if filepath.Ext(entry.Name()) != ".jsonl" || !isRegularFile(path, entry) {
 			return nil
 		}
 
@@ -120,6 +120,9 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 	info, err := file.Stat()
 	if err != nil {
 		return session.Candidate{}, false, "unavailable"
+	}
+	if !info.Mode().IsRegular() {
+		return session.Candidate{}, false, "incompatible"
 	}
 
 	var meta *codexSessionMeta

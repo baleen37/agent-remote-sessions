@@ -158,6 +158,8 @@ func fuzzSeeds(t testing.TB) [][]byte {
 	invalidCandidate.CWD = "relative/path"
 	seeds := [][]byte{
 		valid,
+		bytes.TrimSuffix(valid, []byte{'\n'}),
+		bytes.ReplaceAll(valid, []byte{'\n'}, []byte{'\r', '\n'}),
 		[]byte("ARS/1 BEGIN ffffffffffffffffffffffffffffffff\n"),
 		[]byte("ARS/1 BEGIN\n"),
 		[]byte("ARS/2 BEGIN " + testNonce + "\n"),

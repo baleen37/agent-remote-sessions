@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
@@ -66,5 +68,34 @@ func assertAbsentResult(t *testing.T, result Result, provider session.Provider) 
 	if result.Provider != provider || result.Status != Absent || result.ErrorCode != "" ||
 		result.Seen != 0 || result.Skipped != 0 || len(result.Sessions) != 0 {
 		t.Fatalf("result = %#v, want empty absent result for %q", result, provider)
+	}
+}
+
+func makeFIFO(t *testing.T, path string) {
+	t.Helper()
+	executable, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo is unavailable on this platform")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(executable, path).CombinedOutput(); err != nil {
+		t.Fatalf("mkfifo: %v: %s", err, output)
+	}
+}
+
+func discoverWithinTimeout(t *testing.T, discover func() Result) Result {
+	t.Helper()
+	done := make(chan Result, 1)
+	go func() {
+		done <- discover()
+	}()
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("discovery blocked on a non-regular filesystem entry")
+		return Result{}
 	}
 }

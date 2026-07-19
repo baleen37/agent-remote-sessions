@@ -183,3 +183,35 @@ func TestClaudeDiscoverEnumeratesRootAndProjectsInBatches(t *testing.T) {
 		t.Fatalf("Discover() = %#v, want %d sessions across directory batches", result, sessions)
 	}
 }
+
+func TestClaudeDiscoverRejectsProjectsRootSymlink(t *testing.T) {
+	home := t.TempDir()
+	external := t.TempDir()
+	id := fixtureID(1)
+	writeFile(t, filepath.Join(external, "project", id+".jsonl"),
+		"{\"type\":\"user\",\"sessionId\":\""+id+"\",\"cwd\":\"/synthetic/claude/symlink\"}\n")
+	root := filepath.Join(home, ".claude", "projects")
+	if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, root); err != nil {
+		t.Fatal(err)
+	}
+	installExecutable(t, "claude")
+
+	result := (claudeAdapter{}).Discover(context.Background(), home)
+	if result.Status != Error || result.ErrorCode != "unavailable" || result.Seen != 0 || len(result.Sessions) != 0 {
+		t.Fatalf("Discover() = %#v, want error/unavailable for symlink root", result)
+	}
+}
+
+func TestClaudeDiscoverSkipsFIFOHistoryWithoutOpeningIt(t *testing.T) {
+	home := t.TempDir()
+	makeFIFO(t, filepath.Join(home, ".claude", "projects", "project", "blocked.jsonl"))
+	installExecutable(t, "claude")
+
+	result := discoverWithinTimeout(t, func() Result {
+		return (claudeAdapter{}).Discover(context.Background(), home)
+	})
+	assertAbsentResult(t, result, session.Claude)
+}

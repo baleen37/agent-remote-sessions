@@ -286,10 +286,16 @@ func readLine(reader *bufio.Reader, limited *io.LimitedReader, limits Limits) ([
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, consumed, fmt.Errorf("read protocol output: %w", err)
 	}
-	if len(line) == 0 && errors.Is(err, io.EOF) {
-		return nil, consumed, io.EOF
+	if errors.Is(err, io.EOF) {
+		if len(line) == 0 {
+			return nil, consumed, io.EOF
+		}
+		return nil, consumed, fmt.Errorf("unterminated protocol line")
 	}
 	line = bytes.TrimSuffix(line, []byte{'\n'})
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		return nil, consumed, fmt.Errorf("CRLF protocol line is not allowed")
+	}
 	if len(line) > limits.LineBytes {
 		return nil, consumed, fmt.Errorf("protocol line exceeds limit")
 	}

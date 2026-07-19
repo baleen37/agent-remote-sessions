@@ -45,6 +45,13 @@ func (adapter claudeAdapter) discover(ctx context.Context, home string, sessionL
 	}
 
 	root := filepath.Join(home, ".claude", "projects")
+	if info, err := os.Lstat(root); os.IsNotExist(err) {
+		result.Status = Absent
+		return result
+	} else if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return finishResult(result, nil, "unavailable")
+	}
+
 	candidates := make(map[string]session.Candidate)
 	errorCode := ""
 	err := readDirBatches(ctx, root, func(project os.DirEntry) error {
@@ -53,12 +60,16 @@ func (adapter claudeAdapter) discover(ctx context.Context, home string, sessionL
 		}
 		projectDirectory := filepath.Join(root, project.Name())
 		err := readDirBatches(ctx, projectDirectory, func(entry os.DirEntry) error {
-			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".jsonl" {
+			if filepath.Ext(entry.Name()) != ".jsonl" {
+				return nil
+			}
+			historyPath := filepath.Join(projectDirectory, entry.Name())
+			if !isRegularFile(historyPath, entry) {
 				return nil
 			}
 
 			result.Seen++
-			candidate, include, issue := adapter.readHistory(filepath.Join(projectDirectory, entry.Name()))
+			candidate, include, issue := adapter.readHistory(historyPath)
 			if issue != "" {
 				errorCode = strongerError(errorCode, issue)
 			}
@@ -112,6 +123,9 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 	info, err := file.Stat()
 	if err != nil {
 		return session.Candidate{}, false, "unavailable"
+	}
+	if !info.Mode().IsRegular() {
+		return session.Candidate{}, false, "incompatible"
 	}
 
 	var id, cwd, title string

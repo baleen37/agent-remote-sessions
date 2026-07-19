@@ -170,6 +170,17 @@ func TestCodexDiscoverDoesNotFollowDirectorySymlinks(t *testing.T) {
 	assertAbsentResult(t, (codexAdapter{}).Discover(context.Background(), home), session.Codex)
 }
 
+func TestCodexDiscoverSkipsFIFOHistoryWithoutOpeningIt(t *testing.T) {
+	home := t.TempDir()
+	makeFIFO(t, filepath.Join(home, ".codex", "sessions", "blocked.jsonl"))
+	installExecutable(t, "codex")
+
+	result := discoverWithinTimeout(t, func() Result {
+		return (codexAdapter{}).Discover(context.Background(), home)
+	})
+	assertAbsentResult(t, result, session.Codex)
+}
+
 func codexMeta(id, cwd, source, threadSource string) string {
 	return "{\"type\":\"session_meta\",\"payload\":{\"id\":\"" + id + "\",\"cwd\":\"" + cwd + "\",\"source\":\"" + source + "\",\"thread_source\":\"" + threadSource + "\"}}\n"
 }
