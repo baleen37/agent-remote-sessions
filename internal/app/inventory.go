@@ -2,7 +2,9 @@ package app
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +58,49 @@ func Load(path string) ([]Host, error) {
 		return nil, fmt.Errorf("read host inventory: %w", err)
 	}
 	return hosts, nil
+}
+
+func Add(path string, target string) error {
+	if err := validateTarget(target); err != nil {
+		return err
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read host inventory: %w", err)
+	}
+	if err == nil {
+		hosts, loadErr := Load(path)
+		if loadErr != nil {
+			return loadErr
+		}
+		for _, host := range hosts {
+			if host.Target == target {
+				return fmt.Errorf("host target is already configured")
+			}
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create host inventory directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open host inventory for append: %w", err)
+	}
+
+	line := target + "\n"
+	if len(contents) > 0 && contents[len(contents)-1] != '\n' {
+		line = "\n" + line
+	}
+	if _, err := io.WriteString(file, line); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("append host inventory: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close host inventory: %w", err)
+	}
+	return nil
 }
 
 func validateTarget(target string) error {

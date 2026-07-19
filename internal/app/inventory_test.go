@@ -97,6 +97,70 @@ func TestLoadRejectsInvalidTargetAndReturnsNoPartialInventory(t *testing.T) {
 	}
 }
 
+func TestAddCreatesInventoryAndParentDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "ars", "hosts")
+	if err := Add(path, "devbox"); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if got, want := string(contents), "devbox\n"; got != want {
+		t.Fatalf("inventory = %q, want %q", got, want)
+	}
+}
+
+func TestAddAppendsAndPreservesExistingInventory(t *testing.T) {
+	tests := []struct {
+		name, existing, want string
+	}{
+		{"trailing newline", "# managed\ndevbox\n", "# managed\ndevbox\nagent-mac\n"},
+		{"missing trailing newline", "# managed\ndevbox", "# managed\ndevbox\nagent-mac\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeInventory(t, test.existing)
+			if err := Add(path, "agent-mac"); err != nil {
+				t.Fatalf("Add() error = %v", err)
+			}
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile() error = %v", err)
+			}
+			if got := string(contents); got != test.want {
+				t.Fatalf("inventory = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAddRejectsDuplicateAndInvalidTargetsWithoutChangingInventory(t *testing.T) {
+	tests := []struct {
+		name, target, wantError string
+	}{
+		{"duplicate", "devbox", "already configured"},
+		{"invalid", "bad host", "whitespace"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const original = "# managed\ndevbox\n"
+			path := writeInventory(t, original)
+			err := Add(path, test.target)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("Add() error = %v, want %q", err, test.wantError)
+			}
+			contents, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatalf("ReadFile() error = %v", readErr)
+			}
+			if got := string(contents); got != original {
+				t.Fatalf("inventory changed to %q", got)
+			}
+		})
+	}
+}
+
 func TestSelect(t *testing.T) {
 	hosts := []Host{{Target: "devbox"}, {Target: "user@agent-mac"}}
 
