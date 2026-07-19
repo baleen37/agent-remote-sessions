@@ -126,6 +126,7 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 	}
 
 	var meta *codexSessionMeta
+	multipleMeta := false
 	errorCode := ""
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxProviderLineBytes)
@@ -144,6 +145,7 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 			continue
 		}
 		if meta != nil {
+			multipleMeta = true
 			errorCode = strongerError(errorCode, "incompatible")
 			continue
 		}
@@ -151,6 +153,9 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 	}
 	if err := scanner.Err(); err != nil {
 		return session.Candidate{}, false, "resource_limit"
+	}
+	if multipleMeta {
+		return session.Candidate{}, false, "incompatible"
 	}
 	if meta == nil {
 		if errorCode == "" {

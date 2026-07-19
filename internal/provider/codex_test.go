@@ -83,6 +83,34 @@ func TestCodexDiscoverDeduplicatesByNativeIDUsingNewestFile(t *testing.T) {
 	}
 }
 
+func TestCodexDiscoverRejectsMultipleValidSessionMeta(t *testing.T) {
+	tests := []struct {
+		name     string
+		secondID string
+	}{
+		{name: "different IDs", secondID: "22222222-2222-2222-2222-222222222222"},
+		{name: "same ID", secondID: "11111111-1111-1111-1111-111111111111"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			installExecutable(t, "codex")
+			writeFile(t, filepath.Join(home, ".codex", "sessions", "duplicate.jsonl"),
+				codexMeta("11111111-1111-1111-1111-111111111111", "/synthetic/codex/first", "cli", "user")+
+					codexMeta(tt.secondID, "/synthetic/codex/second", "vscode", "user"))
+
+			result := (codexAdapter{}).Discover(context.Background(), home)
+			if result.Status != Error || result.ErrorCode != "incompatible" || result.Seen != 1 || result.Skipped != 1 {
+				t.Fatalf("Discover() = %#v, want error/incompatible with seen 1 skipped 1", result)
+			}
+			if len(result.Sessions) != 0 {
+				t.Fatalf("len(Discover().Sessions) = %d, want 0", len(result.Sessions))
+			}
+		})
+	}
+}
+
 func TestCodexDiscoverIsAbsentWithoutExecutableOrMetadata(t *testing.T) {
 	t.Run("executable", func(t *testing.T) {
 		home := t.TempDir()
