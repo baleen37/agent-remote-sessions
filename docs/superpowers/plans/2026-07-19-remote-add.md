@@ -78,6 +78,7 @@ func TestAddRejectsDuplicateAndInvalidTargetsWithoutChangingInventory(t *testing
 	}{
 		{"duplicate", "devbox", "already configured"},
 		{"invalid", "bad host", "whitespace"},
+		{"comment-like", "#devbox", "hash"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -110,6 +111,15 @@ go test ./internal/app -run TestAdd -count=1
 Expected: build failure because `Add` is undefined.
 
 - [ ] **Step 3: Implement the minimum inventory operation**
+
+Extend `validateTarget` immediately after its leading-dash check so a target that
+would be parsed as an inventory comment is rejected before any file mutation:
+
+```go
+if target[0] == '#' {
+	return fmt.Errorf("host must not begin with a hash")
+}
+```
 
 Add `errors` and `io` imports, then add:
 
@@ -194,6 +204,20 @@ git commit -m "feat: add remote host inventory entry"
 
 - [ ] **Step 1: Write failing help and routing tests**
 
+First extend `TestRunSupportsOnlyTheThreeCommandShapes` so a configured host
+literally named `remote` remains on the ordinary interactive host path:
+
+```go
+allHosts := []Host{{Target: "devbox"}, {Target: "agent-mac"}, {Target: "remote"}}
+
+// Add this row to the existing table.
+{name: "host named remote interactive", args: []string{"remote"}, wantCollected: []Host{{Target: "remote"}}, wantPick: true, wantResume: true},
+```
+
+This row uses the existing assertions to require `LoadHosts`, `Collect`, `Pick`,
+and `Resume`; only the exact `remote add <host>` and `remote --help` forms may
+bypass that path.
+
 Add `path/filepath` to test imports and add:
 
 ```go
@@ -254,6 +278,21 @@ func TestRunAddsRemoteWithoutLoadingOrCollecting(t *testing.T) {
 		t.Fatalf("stdout = %q, stderr = %q; want empty", stdout.String(), stderr.String())
 	}
 }
+
+func TestRunInvalidUsageIncludesRemoteAddSyntax(t *testing.T) {
+	deps, _, stderr := appDependencies()
+	deps.LoadHosts = func(string) ([]Host, error) {
+		t.Fatal("LoadHosts called for invalid usage")
+		return nil, nil
+	}
+
+	if code := Run(context.Background(), []string{"remote", "add"}, deps); code != 2 {
+		t.Fatalf("Run() = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "ars remote add <host>") {
+		t.Fatalf("stderr = %q, want remote add syntax", stderr.String())
+	}
+}
 ```
 
 - [ ] **Step 2: Run the focused tests and verify RED**
@@ -261,14 +300,39 @@ func TestRunAddsRemoteWithoutLoadingOrCollecting(t *testing.T) {
 Run:
 
 ```sh
-go test ./internal/app -run 'TestRun(PrintsHelp|AddsRemote)' -count=1
+go test ./internal/app -run 'TestRun(SupportsOnlyTheThreeCommandShapes|PrintsHelp|AddsRemote|InvalidUsageIncludesRemoteAddSyntax)' -count=1
 ```
 
-Expected: build failure because `Dependencies.AddHost` is undefined.
+Expected: RED. The new tests do not compile because `Dependencies.AddHost` is
+undefined; after introducing that field alone, help/routing and the remote-add
+usage assertion still fail until Step 3 is complete.
 
 - [ ] **Step 3: Add minimal help and remote-add routing**
 
-Move stdout/stderr initialization to the start of `Run`. Add exact early returns for `--help` and `remote --help`, then recognize exactly `remote add <host>` before checking collection dependencies.
+Move stdout/stderr initialization to the start of `Run`. Add exact early returns for `--help` and `remote --help`, then recognize `remote add <host>` only with this exact binding before checking collection dependencies:
+
+```go
+if len(args) == 3 && args[0] == "remote" && args[1] == "add" {
+	if dependencies.AddHost == nil {
+		fmt.Fprintln(stderr, "ars: invalid application dependencies")
+		return exitFailure
+	}
+	configPath, err := ConfigPath()
+	if err != nil {
+		fmt.Fprintln(stderr, "ars:", err)
+		return exitFailure
+	}
+	if err := dependencies.AddHost(configPath, args[2]); err != nil {
+		fmt.Fprintln(stderr, "ars:", err)
+		return exitFailure
+	}
+	return exitSuccess
+}
+```
+
+Do not intercept `[]string{"remote"}`. After the exact special-form checks it
+must continue through `parseArguments`, `LoadHosts`, `Select`, `Collect`, `Pick`,
+and `Resume` as an ordinary configured host target.
 
 Add the dependency:
 
@@ -302,6 +366,12 @@ The remote-add branch must:
 4. print failures as `ars: <error>` to stderr and return exit code 1
 5. return exit code 0 without loading hosts or collecting sessions
 
+Update the invalid-usage output before returning exit code 2:
+
+```go
+fmt.Fprintln(stderr, "usage: ars [host] | ars list --json | ars remote add <host>")
+```
+
 Wire production in `cmd/ars/main.go`:
 
 ```go
@@ -314,20 +384,23 @@ Run:
 
 ```sh
 gofmt -w internal/app/app.go internal/app/app_test.go cmd/ars/main.go
-go test ./internal/app -run 'TestRun(PrintsHelp|AddsRemote)' -count=1
+go test ./internal/app -run 'TestRun(SupportsOnlyTheThreeCommandShapes|PrintsHelp|AddsRemote|InvalidUsageIncludesRemoteAddSyntax)' -count=1
 ```
 
-Expected: focused tests pass.
+Expected: focused tests pass, including collect/pick/resume for the configured
+host named `remote` and the new syntax in invalid-usage output.
 
 - [ ] **Step 5: Lock down invalid usage and documentation**
 
 Add these cases to `TestRunRejectsInvalidUsageBeforeLoadingInventory`:
 
 ```go
-{"remote"},
 {"remote", "add"},
 {"remote", "add", "devbox", "extra"},
 ```
+
+Do not add `{"remote"}` here: bare `ars remote` is the ordinary interactive
+path for a configured host named `remote`, not invalid usage.
 
 Update the README usage block with:
 
