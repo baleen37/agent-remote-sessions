@@ -234,11 +234,14 @@ Create `npm/package.json`:
     "node": ">=18"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   }
 }
 ~~~
+
+Do not force provenance in the package template: the local `0.0.0` bootstrap
+has no CI identity, while npm Trusted Publishing adds provenance automatically
+to recurring GitHub Actions releases.
 
 Create `LICENSE` with the standard MIT text and `Copyright (c) 2026 baleen37`.
 
@@ -276,6 +279,7 @@ git commit -m "feat: add npm launcher"
 - Consumes: `npm/package.json`, `npm/bin/ars.js`, `README.md`, and `LICENSE`.
 - Produces: `buildRelease(context.Context, root, version string, execute commandExecutor) error`.
 - Produces: `go run ./cmd/ars-build --release MAJOR.MINOR.PATCH` and the exact `dist` tree in the design.
+- Produces: `dist/npm/package.json` with the requested release version for manual partial-failure recovery.
 
 - [ ] **Step 1: Write failing version and target tests**
 
@@ -289,6 +293,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/hex"
 	"io"
 	"os"
@@ -481,8 +486,14 @@ func buildRelease(ctx context.Context, root, version string, execute commandExec
 		if err := os.MkdirAll(directory, 0o755); err != nil { return fmt.Errorf("create release directory: %w", err) }
 	}
 
+	if err := writeReleasePackage(
+		filepath.Join(root, "npm", "package.json"),
+		filepath.Join(packageRoot, "package.json"),
+		version,
+	); err != nil {
+		return err
+	}
 	copyPairs := [][2]string{
-		{filepath.Join(root, "npm", "package.json"), filepath.Join(packageRoot, "package.json")},
 		{filepath.Join(root, "npm", "bin", "ars.js"), filepath.Join(packageRoot, "bin", "ars.js")},
 		{filepath.Join(root, "README.md"), filepath.Join(packageRoot, "README.md")},
 		{filepath.Join(root, "LICENSE"), filepath.Join(packageRoot, "LICENSE")},
@@ -512,6 +523,19 @@ func buildRelease(ctx context.Context, root, version string, execute commandExec
 		archives = append(archives, archivePath)
 	}
 	return writeReleaseChecksums(filepath.Join(dist, "SHA256SUMS"), archives)
+}
+
+func writeReleasePackage(source, destination, version string) error {
+	contents, err := os.ReadFile(source)
+	if err != nil { return fmt.Errorf("read npm package template: %w", err) }
+	var document map[string]any
+	if err := json.Unmarshal(contents, &document); err != nil { return fmt.Errorf("decode npm package template: %w", err) }
+	document["version"] = version
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil { return fmt.Errorf("encode npm package: %w", err) }
+	encoded = append(encoded, '\n')
+	if err := os.WriteFile(destination, encoded, 0o644); err != nil { return fmt.Errorf("write npm package: %w", err) }
+	return nil
 }
 
 func copyReleaseFile(source, destination string) error {

@@ -6,9 +6,12 @@
 
 ## Goal and scope
 
-Every releasable commit merged into `main` publishes one version of ars to
-GitHub Releases and the public npm registry. Conventional Commits determine
-the version without a release pull request or a version commit.
+After CI succeeds on `main`, semantic-release publishes the releasable commits
+since the last tag as one version of ars to GitHub Releases and the public npm
+registry. Conventional Commits determine the version without a release pull
+request or a version commit. If several pushes arrive while a release is
+running, GitHub may coalesce pending runs; the next run still analyzes every
+commit since the last published tag.
 
 The release contains native ars binaries for darwin/arm64, linux/amd64, and
 linux/arm64. Users may install a native archive or run:
@@ -34,7 +37,7 @@ matrix. One `release` job is added with these gates:
 1. run only for a push to `main`
 2. require every `verify` matrix job to succeed
 3. serialize through a `release-main` concurrency group without canceling the
-   active release
+   active release; a newer pending run may replace an older pending run
 4. check out the full history and tags
 5. preflight a `0.0.0` release build and npm package before semantic-release
 6. run semantic-release, which either reports no release or publishes the next
@@ -100,7 +103,8 @@ The repository root has a private `package.json` and lockfile only for the
 release toolchain. It cannot be published accidentally. A committed npm
 package template supplies stable metadata and the launcher; release mode
 copies it into `dist/npm`, adds the native binaries and documentation, and
-semantic-release writes the actual version only into that generated package.
+writes the requested release version only into that generated package.
+semantic-release verifies and publishes the same version.
 
 The published package is named `@baleen37/ars`, has public access, and
 exposes one `ars` bin entry. The small Node launcher maps only these pairs:
@@ -153,7 +157,9 @@ follows these rules:
 - If npm contains the version but GitHub does not, preserve the immutable npm
   version and reconstruct the GitHub Release from the same tag and commit.
 - If GitHub contains the version but npm does not, rebuild the exact tag and
-  publish only the missing npm version.
+  publish only the missing npm version. `ars-build --release X.Y.Z` writes
+  `X.Y.Z` into both archive names and `dist/npm/package.json` so this recovery
+  does not depend on semantic-release rerunning its prepare phase.
 - Never delete or reuse a version that users could already have installed.
 
 These are operator instructions in README, not a second recovery workflow.

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -49,8 +50,14 @@ func buildRelease(ctx context.Context, root, version string, execute commandExec
 		}
 	}
 
+	if err := writeReleasePackage(
+		filepath.Join(root, "npm", "package.json"),
+		filepath.Join(packageRoot, "package.json"),
+		version,
+	); err != nil {
+		return err
+	}
 	copyPairs := [][2]string{
-		{filepath.Join(root, "npm", "package.json"), filepath.Join(packageRoot, "package.json")},
 		{filepath.Join(root, "npm", "bin", "ars.js"), filepath.Join(packageRoot, "bin", "ars.js")},
 		{filepath.Join(root, "README.md"), filepath.Join(packageRoot, "README.md")},
 		{filepath.Join(root, "LICENSE"), filepath.Join(packageRoot, "LICENSE")},
@@ -89,6 +96,27 @@ func buildRelease(ctx context.Context, root, version string, execute commandExec
 	}
 
 	return writeReleaseChecksums(filepath.Join(dist, "SHA256SUMS"), archives)
+}
+
+func writeReleasePackage(source, destination, version string) error {
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("read npm package template: %w", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(contents, &document); err != nil {
+		return fmt.Errorf("decode npm package template: %w", err)
+	}
+	document["version"] = version
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode npm package: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if err := os.WriteFile(destination, encoded, 0o644); err != nil {
+		return fmt.Errorf("write npm package: %w", err)
+	}
+	return nil
 }
 
 func copyReleaseFile(source, destination string) error {

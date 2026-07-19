@@ -207,7 +207,8 @@ interrupt.
 
 Releases run after CI succeeds on `main`. Conventional `feat`, `fix`, `perf`,
 and `BREAKING CHANGE` commits determine the next version; documentation,
-chore, and test-only changes are no-ops.
+chore, and test-only changes are no-ops. Rapid pushes may coalesce into one
+pending release run; that run includes every commit since the last release tag.
 
 The one-time npm setup is:
 
@@ -219,4 +220,13 @@ The one-time npm setup is:
 If publication is partial, inspect the Git tag, npm version, and GitHub Release
 before changing state. Preserve any public npm version. Reconstruct a missing
 GitHub Release from the same tag, or publish a missing npm package rebuilt from
-that exact tag. Delete a failed tag only when neither registry published it.
+that exact tag. For a missing npm version `X.Y.Z`, run:
+
+```sh
+git switch --detach vX.Y.Z
+go run ./cmd/ars-build --release X.Y.Z
+npm login
+npm publish ./dist/npm --access public
+```
+
+Delete a failed tag only when neither registry published it.

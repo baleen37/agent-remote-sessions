@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -94,6 +95,19 @@ func TestBuildReleaseBuildsExactTargetsAndNpmPackage(t *testing.T) {
 	}
 	if launcher.Mode().Perm() != 0o755 {
 		t.Errorf("launcher mode = %o, want 755", launcher.Mode().Perm())
+	}
+	packageBytes, err := os.ReadFile(filepath.Join(root, "dist", "npm", "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var packageDocument struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(packageBytes, &packageDocument); err != nil {
+		t.Fatal(err)
+	}
+	if packageDocument.Version != "1.2.3" {
+		t.Errorf("npm package version = %q, want 1.2.3", packageDocument.Version)
 	}
 }
 
