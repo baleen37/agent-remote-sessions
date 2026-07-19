@@ -58,14 +58,22 @@ the user's SSH config. Duplicates, whitespace, control characters, a leading
 dash, and targets over 255 bytes make the entire inventory invalid. `ars` does
 not infer `localhost` or discover hosts.
 
+`ars remote add <host>` creates the inventory and its parent directory when
+missing, preserves existing comments, entries, and order, and rejects invalid
+or duplicate targets. A target beginning with `#` is rejected because inventory
+loading would interpret it as a comment. The command does not edit `~/.ssh/config`.
+
 ## Commands
 
-There are exactly three command forms:
+The supported command forms are:
 
 ```sh
-ars                 # search sessions from every configured host
-ars devbox          # search one configured host
-ars list --json     # return all hosts, sessions, and errors as JSON
+ars                    # search sessions from every configured host
+ars devbox             # search one configured host
+ars list --json        # return all hosts, sessions, and errors as JSON
+ars remote add devbox  # add an SSH target to the ARS inventory
+ars --help             # show all command forms
+ars remote --help      # show remote command help
 ```
 
 Interactive rows contain a private numeric index followed by display-only
