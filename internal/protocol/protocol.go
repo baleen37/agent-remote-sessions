@@ -71,6 +71,9 @@ func Encode(output io.Writer, nonce string, candidates []session.Candidate, resu
 	if err := validateResults(results); err != nil {
 		return err
 	}
+	if err := validateCandidateSummaries(candidates, results); err != nil {
+		return err
+	}
 
 	encoder := boundedEncoder{output: output, limits: limits}
 	if err := encoder.writeLine([]byte("ARS/1 BEGIN " + nonce)); err != nil {
@@ -159,6 +162,9 @@ func Decode(input io.Reader, nonce string, limits Limits) ([]session.Candidate, 
 				return nil, nil, fmt.Errorf("session count mismatch")
 			}
 			if err := validateDecodedSummaries(summaries); err != nil {
+				return nil, nil, err
+			}
+			if err := validateCandidateSummaries(candidates, results); err != nil {
 				return nil, nil, err
 			}
 			if trailing, _, err := readLine(reader, limited, limits); err == nil || len(trailing) != 0 {
@@ -407,6 +413,34 @@ func validateResult(result provider.Result) error {
 		}
 	default:
 		return fmt.Errorf("invalid provider status")
+	}
+	return nil
+}
+
+func validateCandidateSummaries(candidates []session.Candidate, results []provider.Result) error {
+	counts := make(map[session.Provider]int, 2)
+	for _, candidate := range candidates {
+		counts[candidate.Provider]++
+	}
+	for _, result := range results {
+		count := counts[result.Provider]
+		if count > result.Seen-result.Skipped {
+			return fmt.Errorf("provider candidate count exceeds summary")
+		}
+		switch result.Status {
+		case provider.Absent:
+			if result.Seen != 0 || result.Skipped != 0 || count != 0 {
+				return fmt.Errorf("absent provider has discovery data")
+			}
+		case provider.Partial:
+			if count == 0 {
+				return fmt.Errorf("partial provider has no candidates")
+			}
+		case provider.Error:
+			if count != 0 {
+				return fmt.Errorf("failed provider has candidates")
+			}
+		}
 	}
 	return nil
 }

@@ -64,7 +64,7 @@ func fuzzSeeds(t testing.TB) [][]byte {
 
 	invalidCandidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	invalidCandidate.CWD = "relative/path"
-	return [][]byte{
+	seeds := [][]byte{
 		valid,
 		[]byte("ARS/1 BEGIN ffffffffffffffffffffffffffffffff\n"),
 		[]byte("ARS/1 BEGIN\n"),
@@ -79,4 +79,8 @@ func fuzzSeeds(t testing.TB) [][]byte {
 		bytes.Replace(valid, []byte("ARS/1 END "+testNonce+" 2"), []byte("ARS/1 END "+testNonce+" 1"), 1),
 		append([]byte("ARS/1 BEGIN "+testNonce+"\n"), sessionLine(t, invalidCandidate)...),
 	}
+	for _, tt := range impossibleSummaryCases() {
+		seeds = append(seeds, rawTranscript(t, tt.candidates, tt.results))
+	}
+	return seeds
 }

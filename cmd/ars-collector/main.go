@@ -33,19 +33,18 @@ func run(ctx context.Context, args []string, home string, adapters []provider.Ad
 	}
 
 	results := make([]provider.Result, 0, 2)
-	candidates := make([]session.Candidate, 0)
+	candidates := make([]session.Candidate, 0, protocol.DefaultLimits().Sessions)
 	for _, adapter := range adapters {
 		result := adapter.Discover(ctx, home)
 		if result.Provider != adapter.Name() {
 			fmt.Fprintln(stderr, "ars-collector: invalid provider result")
 			return 1
 		}
-		for _, candidate := range result.Sessions {
-			if candidate.Provider != result.Provider || session.ValidateCandidate(candidate) != nil {
-				fmt.Fprintln(stderr, "ars-collector: invalid provider candidate")
-				return 1
-			}
-			candidates = append(candidates, candidate)
+		var err error
+		candidates, err = appendCandidates(candidates, result.Sessions, result.Provider, protocol.DefaultLimits().Sessions)
+		if err != nil {
+			fmt.Fprintln(stderr, "ars-collector: invalid provider candidates")
+			return 1
 		}
 		if diagnostic := providerDiagnostic(result); diagnostic != "" {
 			fmt.Fprintln(stderr, diagnostic)
@@ -67,6 +66,19 @@ func run(ctx context.Context, args []string, home string, adapters []provider.Ad
 		return 1
 	}
 	return 0
+}
+
+func appendCandidates(candidates, additions []session.Candidate, name session.Provider, limit int) ([]session.Candidate, error) {
+	for _, candidate := range additions {
+		if candidate.Provider != name || session.ValidateCandidate(candidate) != nil {
+			return candidates, fmt.Errorf("invalid provider candidate")
+		}
+		if len(candidates) >= limit {
+			return candidates, fmt.Errorf("combined session count exceeds limit")
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
 }
 
 func validNonce(nonce string) bool {

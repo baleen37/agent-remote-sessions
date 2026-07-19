@@ -27,6 +27,10 @@ func (adapter codexAdapter) Resume(id string) (ResumeSpec, error) {
 }
 
 func (adapter codexAdapter) Discover(ctx context.Context, home string) Result {
+	return adapter.discover(ctx, home, maxDiscoveredSessions)
+}
+
+func (adapter codexAdapter) discover(ctx context.Context, home string, sessionLimit int) Result {
 	result := Result{Provider: adapter.Name()}
 	if _, err := exec.LookPath("codex"); err != nil {
 		result.Status = Absent
@@ -65,7 +69,10 @@ func (adapter codexAdapter) Discover(ctx context.Context, home string) Result {
 			result.Skipped++
 			return nil
 		}
-		newerCandidate(candidates, candidate)
+		if !newerCandidate(candidates, candidate, sessionLimit) {
+			result.Skipped++
+			errorCode = strongerError(errorCode, "resource_limit")
+		}
 		return nil
 	})
 	return finishResult(result, candidates, errorCode)

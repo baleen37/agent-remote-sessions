@@ -3,6 +3,7 @@ package provider
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
@@ -80,5 +81,34 @@ func TestAdaptersValidateCanonicalUUIDAndReturnFixedResumeSpec(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewerCandidateBoundsUniqueSessionsAndKeepsExistingIDUpdates(t *testing.T) {
+	first := session.Candidate{NativeID: "first", UpdatedAt: time.Unix(1, 0)}
+	second := session.Candidate{NativeID: "second", UpdatedAt: time.Unix(2, 0)}
+	excess := session.Candidate{NativeID: "excess", UpdatedAt: time.Unix(3, 0)}
+	candidates := make(map[string]session.Candidate)
+
+	if !newerCandidate(candidates, first, 2) || !newerCandidate(candidates, second, 2) {
+		t.Fatal("newerCandidate() rejected a candidate below the limit")
+	}
+	if newerCandidate(candidates, excess, 2) {
+		t.Fatal("newerCandidate() accepted a new candidate at the limit")
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("len(candidates) = %d, want 2", len(candidates))
+	}
+	if _, exists := candidates[excess.NativeID]; exists {
+		t.Fatal("excess candidate was retained")
+	}
+
+	updated := first
+	updated.UpdatedAt = time.Unix(4, 0)
+	if !newerCandidate(candidates, updated, 2) {
+		t.Fatal("newerCandidate() rejected an existing ID update at the limit")
+	}
+	if got := candidates[first.NativeID].UpdatedAt; !got.Equal(updated.UpdatedAt) {
+		t.Fatalf("existing candidate UpdatedAt = %v, want %v", got, updated.UpdatedAt)
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
+const maxDiscoveredSessions = 10_000
+
 type Status string
 
 const (
@@ -104,9 +106,17 @@ func strongerError(current, next string) string {
 	return current
 }
 
-func newerCandidate(candidates map[string]session.Candidate, candidate session.Candidate) {
-	current, ok := candidates[candidate.NativeID]
-	if !ok || candidate.UpdatedAt.After(current.UpdatedAt) {
-		candidates[candidate.NativeID] = candidate
+func newerCandidate(candidates map[string]session.Candidate, candidate session.Candidate, limit int) bool {
+	current, exists := candidates[candidate.NativeID]
+	if exists {
+		if candidate.UpdatedAt.After(current.UpdatedAt) {
+			candidates[candidate.NativeID] = candidate
+		}
+		return true
 	}
+	if len(candidates) >= limit {
+		return false
+	}
+	candidates[candidate.NativeID] = candidate
+	return true
 }

@@ -34,6 +34,10 @@ func (adapter claudeAdapter) Resume(id string) (ResumeSpec, error) {
 }
 
 func (adapter claudeAdapter) Discover(ctx context.Context, home string) Result {
+	return adapter.discover(ctx, home, maxDiscoveredSessions)
+}
+
+func (adapter claudeAdapter) discover(ctx context.Context, home string, sessionLimit int) Result {
 	result := Result{Provider: adapter.Name()}
 	if _, err := exec.LookPath("claude"); err != nil {
 		result.Status = Absent
@@ -80,7 +84,10 @@ func (adapter claudeAdapter) Discover(ctx context.Context, home string) Result {
 				result.Skipped++
 				continue
 			}
-			newerCandidate(candidates, candidate)
+			if !newerCandidate(candidates, candidate, sessionLimit) {
+				result.Skipped++
+				errorCode = strongerError(errorCode, "resource_limit")
+			}
 		}
 	}
 	return finishResult(result, candidates, errorCode)

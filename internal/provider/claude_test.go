@@ -138,3 +138,25 @@ func TestClaudeDiscoverRejectsOverlongJSONLRecord(t *testing.T) {
 		t.Fatalf("Discover() = %#v, want error/resource_limit with no sessions", result)
 	}
 }
+
+func TestClaudeDiscoverBoundsUniqueSessions(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	ids := []string{
+		"11111111-1111-1111-1111-111111111111",
+		"22222222-2222-2222-2222-222222222222",
+		"33333333-3333-3333-3333-333333333333",
+	}
+	for _, id := range ids {
+		writeFile(t, filepath.Join(home, ".claude", "projects", "project", id+".jsonl"),
+			"{\"type\":\"user\",\"sessionId\":\""+id+"\",\"cwd\":\"/synthetic/claude/"+id+"\"}\n")
+	}
+
+	result := (claudeAdapter{}).discover(context.Background(), home, 2)
+	if result.Status != Partial || result.ErrorCode != "resource_limit" || result.Seen != 3 || result.Skipped != 1 {
+		t.Fatalf("discover() = %#v, want partial/resource_limit with seen 3 skipped 1", result)
+	}
+	if len(result.Sessions) != 2 {
+		t.Fatalf("len(discover().Sessions) = %d, want 2", len(result.Sessions))
+	}
+}

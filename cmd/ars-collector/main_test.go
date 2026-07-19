@@ -127,6 +127,23 @@ func TestRunReturnsNonZeroWhenEncodingFails(t *testing.T) {
 	}
 }
 
+func TestAppendCandidatesStopsAtCombinedLimit(t *testing.T) {
+	claude := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	codexFirst := validCollectorCandidate(session.Codex, "22222222-2222-2222-2222-222222222222")
+	codexExcess := validCollectorCandidate(session.Codex, "33333333-3333-3333-3333-333333333333")
+
+	candidates, err := appendCandidates([]session.Candidate{claude}, []session.Candidate{codexFirst, codexExcess}, session.Codex, 2)
+	if err == nil {
+		t.Fatal("appendCandidates() error = nil, want non-nil")
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("len(appendCandidates()) = %d, want 2", len(candidates))
+	}
+	if candidates[1] != codexFirst {
+		t.Fatalf("last retained candidate = %#v, want %#v", candidates[1], codexFirst)
+	}
+}
+
 type fakeAdapter struct {
 	name   session.Provider
 	result provider.Result

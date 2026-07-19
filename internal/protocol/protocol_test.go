@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,43 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotResults, results) {
 		t.Fatalf("Decode() results = %#v, want %#v", gotResults, results)
+	}
+}
+
+func TestRoundTripAllowsHealthyEmptyOKSummaries(t *testing.T) {
+	results := []provider.Result{
+		{Provider: session.Claude, Status: provider.OK},
+		{Provider: session.Codex, Status: provider.OK, Seen: 1, Skipped: 1},
+	}
+	var encoded bytes.Buffer
+	if err := Encode(&encoded, testNonce, nil, results); err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	candidates, gotResults, err := Decode(bytes.NewReader(encoded.Bytes()), testNonce, DefaultLimits())
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(candidates) != 0 || !reflect.DeepEqual(gotResults, results) {
+		t.Fatalf("Decode() = (%#v, %#v), want no candidates and %#v", candidates, gotResults, results)
+	}
+}
+
+func TestEncodeRejectsImpossibleSummarySessionCombinations(t *testing.T) {
+	for _, tt := range impossibleSummaryCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := Encode(&output, testNonce, tt.candidates, tt.results); err == nil {
+				t.Fatal("Encode() error = nil, want non-nil")
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsImpossibleSummarySessionCombinations(t *testing.T) {
+	for _, tt := range impossibleSummaryCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			assertDecodeFailsClosed(t, rawTranscript(t, tt.candidates, tt.results), DefaultLimits())
+		})
 	}
 }
 
@@ -226,6 +264,81 @@ func sessionLine(t testing.TB, candidate session.Candidate) []byte {
 		t.Fatal(err)
 	}
 	return append(line, '\n')
+}
+
+func summaryLine(t testing.TB, result provider.Result) []byte {
+	t.Helper()
+	frame := map[string]any{
+		"type":       "summary",
+		"provider":   result.Provider,
+		"status":     result.Status,
+		"seen":       result.Seen,
+		"skipped":    result.Skipped,
+		"error_code": result.ErrorCode,
+	}
+	line, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(line, '\n')
+}
+
+func rawTranscript(t testing.TB, candidates []session.Candidate, results []provider.Result) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	output.WriteString("ARS/1 BEGIN " + testNonce + "\n")
+	for _, candidate := range candidates {
+		output.Write(sessionLine(t, candidate))
+	}
+	for _, result := range results {
+		output.Write(summaryLine(t, result))
+	}
+	output.WriteString("ARS/1 END " + testNonce + " " + strconv.Itoa(len(candidates)) + "\n")
+	return output.Bytes()
+}
+
+func impossibleSummaryCases() []struct {
+	name       string
+	candidates []session.Candidate
+	results    []provider.Result
+} {
+	claude := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	absentCodex := provider.Result{Provider: session.Codex, Status: provider.Absent}
+	return []struct {
+		name       string
+		candidates []session.Candidate
+		results    []provider.Result
+	}{
+		{
+			name:       "absent with session",
+			candidates: []session.Candidate{claude},
+			results:    []provider.Result{{Provider: session.Claude, Status: provider.Absent}, absentCodex},
+		},
+		{
+			name:    "absent with counts",
+			results: []provider.Result{{Provider: session.Claude, Status: provider.Absent, Seen: 1, Skipped: 1}, absentCodex},
+		},
+		{
+			name:       "error with session",
+			candidates: []session.Candidate{claude},
+			results: []provider.Result{
+				{Provider: session.Claude, Status: provider.Error, Seen: 1, ErrorCode: "resource_limit"}, absentCodex,
+			},
+		},
+		{
+			name: "partial with zero sessions",
+			results: []provider.Result{
+				{Provider: session.Claude, Status: provider.Partial, Seen: 1, Skipped: 1, ErrorCode: "corrupt"}, absentCodex,
+			},
+		},
+		{
+			name:       "candidate count above seen minus skipped",
+			candidates: []session.Candidate{claude},
+			results: []provider.Result{
+				{Provider: session.Claude, Status: provider.OK, Seen: 1, Skipped: 1}, absentCodex,
+			},
+		},
+	}
 }
 
 func assertDecodeFailsClosed(t *testing.T, input []byte, limits Limits) {
