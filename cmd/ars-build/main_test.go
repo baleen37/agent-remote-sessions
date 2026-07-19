@@ -157,6 +157,70 @@ func TestRunRejectsUnknownArguments(t *testing.T) {
 	}
 }
 
+func TestRunReleaseBuildsCollectorsBeforeNativeArtifacts(t *testing.T) {
+	t.Parallel()
+
+	root := newReleaseRoot(t)
+	var calls []commandCall
+	command := func(_ context.Context, directory string, args, env []string) error {
+		calls = append(calls, commandCall{
+			directory: directory,
+			args:      append([]string(nil), args...),
+			env:       append([]string(nil), env...),
+		})
+		return os.WriteFile(outputArgument(t, args), []byte("binary"), 0o755)
+	}
+	if code := run(context.Background(), []string{"--release", "1.2.3"}, root, command, io.Discard); code != 0 {
+		t.Fatalf("run() = %d, want 0", code)
+	}
+	if len(calls) != 6 {
+		t.Fatalf("command calls = %d, want three collectors and three ars binaries", len(calls))
+	}
+	for index := 0; index < 3; index++ {
+		if calls[index].args[len(calls[index].args)-1] != "./cmd/ars-collector" {
+			t.Errorf("call %d = %#v, want collector build", index, calls[index].args)
+		}
+	}
+	for index := 3; index < 6; index++ {
+		if calls[index].args[len(calls[index].args)-1] != "./cmd/ars" {
+			t.Errorf("call %d = %#v, want ars build", index, calls[index].args)
+		}
+	}
+}
+
+func TestRunReleaseRejectsInvalidVersionBeforeChanges(t *testing.T) {
+	t.Parallel()
+
+	root := newReleaseRoot(t)
+	dist := filepath.Join(root, "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(dist, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	command := func(context.Context, string, []string, []string) error {
+		called = true
+		return nil
+	}
+	var stderr strings.Builder
+
+	if code := run(context.Background(), []string{"--release", "../1.0.0"}, root, command, &stderr); code != 2 {
+		t.Fatalf("run() = %d, want 2", code)
+	}
+	if called {
+		t.Fatal("command called for invalid release version")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("dist changed for invalid release version: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "release version must be MAJOR.MINOR.PATCH") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func newBuildRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
