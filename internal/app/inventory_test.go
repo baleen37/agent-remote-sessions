@@ -141,6 +141,7 @@ func TestAddRejectsDuplicateAndInvalidTargetsWithoutChangingInventory(t *testing
 	}{
 		{"duplicate", "devbox", "already configured"},
 		{"invalid", "bad host", "whitespace"},
+		{"comment-like", "#devbox", "hash"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

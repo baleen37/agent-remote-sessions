@@ -60,7 +60,8 @@ not infer `localhost` or discover hosts.
 
 `ars remote add <host>` creates the inventory and its parent directory when
 missing, preserves existing comments, entries, and order, and rejects invalid
-or duplicate targets. It does not edit `~/.ssh/config`.
+or duplicate targets. A target beginning with `#` is rejected because inventory
+loading would interpret it as a comment. The command does not edit `~/.ssh/config`.
 
 ## Commands
 

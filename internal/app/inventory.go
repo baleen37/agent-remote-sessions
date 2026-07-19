@@ -116,6 +116,9 @@ func validateTarget(target string) error {
 	if target[0] == '-' {
 		return fmt.Errorf("host must not begin with a dash")
 	}
+	if target[0] == '#' {
+		return fmt.Errorf("host must not begin with a hash")
+	}
 	for _, r := range target {
 		if unicode.IsControl(r) {
 			return fmt.Errorf("host must not contain control characters")

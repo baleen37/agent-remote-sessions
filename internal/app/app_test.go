@@ -15,7 +15,7 @@ import (
 )
 
 func TestRunSupportsOnlyTheThreeCommandShapes(t *testing.T) {
-	allHosts := []Host{{Target: "devbox"}, {Target: "agent-mac"}}
+	allHosts := []Host{{Target: "devbox"}, {Target: "agent-mac"}, {Target: "remote"}}
 	item := appSession("devbox")
 	tests := []struct {
 		name          string
@@ -27,6 +27,7 @@ func TestRunSupportsOnlyTheThreeCommandShapes(t *testing.T) {
 	}{
 		{name: "all hosts interactive", args: nil, wantCollected: allHosts, wantPick: true, wantResume: true},
 		{name: "one host interactive", args: []string{"devbox"}, wantCollected: []Host{{Target: "devbox"}}, wantPick: true, wantResume: true},
+		{name: "host named remote interactive", args: []string{"remote"}, wantCollected: []Host{{Target: "remote"}}, wantPick: true, wantResume: true},
 		{name: "all hosts JSON", args: []string{"list", "--json"}, wantCollected: allHosts, wantJSON: true},
 	}
 
@@ -136,13 +137,25 @@ func TestRunAddsRemoteWithoutLoadingOrCollecting(t *testing.T) {
 	}
 }
 
+func TestRunReportsAddHostFailure(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/ars-test-config")
+	deps, _, stderr := appDependencies()
+	deps.AddHost = func(string, string) error { return errors.New("inventory unavailable") }
+
+	if code := Run(context.Background(), []string{"remote", "add", "devbox"}, deps); code != 1 {
+		t.Fatalf("Run() = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "ars: inventory unavailable") {
+		t.Fatalf("stderr = %q, want AddHost error", stderr.String())
+	}
+}
+
 func TestRunRejectsInvalidUsageBeforeLoadingInventory(t *testing.T) {
 	tests := [][]string{
 		{"list"},
 		{"--json"},
 		{"list", "--json", "devbox"},
 		{"devbox", "extra"},
-		{"remote"},
 		{"remote", "add"},
 		{"remote", "add", "devbox", "extra"},
 	}
@@ -158,6 +171,21 @@ func TestRunRejectsInvalidUsageBeforeLoadingInventory(t *testing.T) {
 		if !strings.Contains(stderr.String(), "usage:") {
 			t.Fatalf("stderr = %q, want usage", stderr.String())
 		}
+	}
+}
+
+func TestRunInvalidUsageIncludesRemoteAddSyntax(t *testing.T) {
+	deps, _, stderr := appDependencies()
+	deps.LoadHosts = func(string) ([]Host, error) {
+		t.Fatal("LoadHosts called for invalid usage")
+		return nil, nil
+	}
+
+	if code := Run(context.Background(), []string{"remote", "add"}, deps); code != 2 {
+		t.Fatalf("Run() = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "ars remote add <host>") {
+		t.Fatalf("stderr = %q, want remote add syntax", stderr.String())
 	}
 }
 
