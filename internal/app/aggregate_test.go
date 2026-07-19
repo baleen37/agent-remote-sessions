@@ -213,6 +213,13 @@ func TestCollectHostsRejectsInvalidCollectorOutputAndNormalizesErrors(t *testing
 			wantCode: "protocol_error", wantError: "Collector protocol failed",
 		},
 		{
+			name: "joined host deadline",
+			collector: func(context.Context, string) ([]session.Candidate, []provider.Result, error) {
+				return nil, nil, errors.Join(errors.New("process exit"), context.DeadlineExceeded)
+			},
+			wantCode: "ssh_timeout", wantError: "SSH collection timed out",
+		},
+		{
 			name: "unsupported target",
 			collector: func(context.Context, string) ([]session.Candidate, []provider.Result, error) {
 				return nil, nil, errors.New("unsupported SSH target FreeBSD/raw")

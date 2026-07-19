@@ -56,7 +56,8 @@ func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target 
 
 	probeOutput := newBoundedBuffer(probeOutputLimit)
 	probeError := newBoundedBuffer(stderrOutputLimit)
-	if err := runner.Run(hostCtx, "ssh", collectionSSHArgs(target, options.ConnectTimeout, remoteShellCommand("uname -s; uname -m")), nil, probeOutput, probeError); err != nil {
+	probeRunErr := runner.Run(hostCtx, "ssh", collectionSSHArgs(target, options.ConnectTimeout, remoteShellCommand("uname -s; uname -m")), nil, probeOutput, probeError)
+	if err := joinContextError(probeRunErr, hostCtx.Err()); err != nil {
 		return nil, nil, commandError("SSH target probe", err, probeError)
 	}
 	if probeOutput.exceeded {
@@ -85,6 +86,7 @@ func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target 
 		collectorOutput,
 		collectorError,
 	)
+	runErr = joinContextError(runErr, hostCtx.Err())
 	tempPath, pathErr := parseTemporaryPath(collectorOutput.Bytes(), nonce)
 	if interrupted(runErr, hostCtx, ctx) && pathErr == nil {
 		attemptCleanup(runner, target, options.ConnectTimeout, tempPath)
@@ -233,6 +235,13 @@ func parseTemporaryPath(output []byte, nonce string) (string, error) {
 
 func interrupted(runErr error, hostCtx, parentCtx context.Context) bool {
 	return runErr != nil && (hostCtx.Err() != nil || parentCtx.Err() != nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded))
+}
+
+func joinContextError(runErr, contextErr error) error {
+	if runErr == nil || contextErr == nil || errors.Is(runErr, contextErr) {
+		return runErr
+	}
+	return errors.Join(runErr, contextErr)
 }
 
 func attemptCleanup(runner Runner, target string, connectTimeout time.Duration, tempPath string) {

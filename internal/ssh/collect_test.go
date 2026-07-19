@@ -649,6 +649,7 @@ func TestCollectHostTimeoutAttemptsBoundedExactCleanup(t *testing.T) {
 	t.Parallel()
 
 	const hostTimeout = 25 * time.Millisecond
+	processExit := errors.New("process exit")
 	var temporaryPath string
 	runner := &fakeRunner{run: func(callCtx context.Context, index int, call runnerCall, stdout, _ io.Writer) error {
 		switch index {
@@ -660,7 +661,7 @@ func TestCollectHostTimeoutAttemptsBoundedExactCleanup(t *testing.T) {
 			temporaryPath = "/tmp/ars-" + nonce
 			_, _ = fmt.Fprintln(stdout, temporaryPath)
 			<-callCtx.Done()
-			return callCtx.Err()
+			return processExit
 		case 2:
 			deadline, ok := callCtx.Deadline()
 			if !ok {
@@ -685,6 +686,9 @@ func TestCollectHostTimeoutAttemptsBoundedExactCleanup(t *testing.T) {
 	_, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{HostTimeout: hostTimeout})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Collect() error = %v, want context.DeadlineExceeded", err)
+	}
+	if !errors.Is(err, processExit) {
+		t.Fatalf("Collect() error = %v, want underlying process error", err)
 	}
 	if elapsed := time.Since(started); elapsed < hostTimeout || elapsed > time.Second {
 		t.Fatalf("Collect() elapsed = %s, want deadline-bound failure", elapsed)
