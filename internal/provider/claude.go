@@ -45,50 +45,47 @@ func (adapter claudeAdapter) discover(ctx context.Context, home string, sessionL
 	}
 
 	root := filepath.Join(home, ".claude", "projects")
-	projects, err := os.ReadDir(root)
-	if os.IsNotExist(err) {
-		result.Status = Absent
-		return result
-	}
-	if err != nil {
-		return finishResult(result, nil, "unavailable")
-	}
-
 	candidates := make(map[string]session.Candidate)
 	errorCode := ""
-	for _, project := range projects {
+	err := readDirBatches(ctx, root, func(project os.DirEntry) error {
 		if !project.IsDir() || project.Type()&os.ModeSymlink != 0 {
-			continue
+			return nil
 		}
-		files, err := os.ReadDir(filepath.Join(root, project.Name()))
-		if err != nil {
-			errorCode = strongerError(errorCode, "unavailable")
-			continue
-		}
-		for _, entry := range files {
-			if ctx.Err() != nil {
-				errorCode = strongerError(errorCode, "unavailable")
-				break
-			}
+		projectDirectory := filepath.Join(root, project.Name())
+		err := readDirBatches(ctx, projectDirectory, func(entry os.DirEntry) error {
 			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".jsonl" {
-				continue
+				return nil
 			}
 
 			result.Seen++
-			path := filepath.Join(root, project.Name(), entry.Name())
-			candidate, include, issue := adapter.readHistory(path)
+			candidate, include, issue := adapter.readHistory(filepath.Join(projectDirectory, entry.Name()))
 			if issue != "" {
 				errorCode = strongerError(errorCode, issue)
 			}
 			if !include {
 				result.Skipped++
-				continue
+				return nil
 			}
 			if !newerCandidate(candidates, candidate, sessionLimit) {
 				result.Skipped++
 				errorCode = strongerError(errorCode, "resource_limit")
 			}
+			return nil
+		})
+		if err != nil {
+			errorCode = strongerError(errorCode, "unavailable")
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		result.Status = Absent
+		return result
+	}
+	if err != nil {
+		errorCode = strongerError(errorCode, "unavailable")
 	}
 	return finishResult(result, candidates, errorCode)
 }

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -8,6 +9,10 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
+
+func fixtureID(value int) string {
+	return fmt.Sprintf("%08x-0000-0000-0000-%012x", value, value)
+}
 
 func fixtureHome(t *testing.T, provider string) string {
 	t.Helper()

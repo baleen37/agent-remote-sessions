@@ -160,3 +160,26 @@ func TestClaudeDiscoverBoundsUniqueSessions(t *testing.T) {
 		t.Fatalf("len(discover().Sessions) = %d, want 2", len(result.Sessions))
 	}
 }
+
+func TestClaudeDiscoverEnumeratesRootAndProjectsInBatches(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	sessions := 0
+	for projectIndex := range directoryBatchSize + 1 {
+		files := 1
+		if projectIndex == 0 {
+			files = directoryBatchSize + 1
+		}
+		for range files {
+			sessions++
+			id := fixtureID(sessions)
+			writeFile(t, filepath.Join(home, ".claude", "projects", fixtureID(projectIndex), id+".jsonl"),
+				"{\"type\":\"user\",\"sessionId\":\""+id+"\",\"cwd\":\"/synthetic/claude/"+id+"\"}\n")
+		}
+	}
+
+	result := (claudeAdapter{}).Discover(context.Background(), home)
+	if result.Status != OK || result.ErrorCode != "" || result.Seen != sessions || len(result.Sessions) != sessions {
+		t.Fatalf("Discover() = %#v, want %d sessions across directory batches", result, sessions)
+	}
+}

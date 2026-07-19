@@ -2,14 +2,20 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"time"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
-const maxDiscoveredSessions = 10_000
+const (
+	directoryBatchSize    = 128
+	maxDiscoveredSessions = 10_000
+)
 
 type Status string
 
@@ -119,4 +125,36 @@ func newerCandidate(candidates map[string]session.Candidate, candidate session.C
 	}
 	candidates[candidate.NativeID] = candidate
 	return true
+}
+
+func readDirBatches(ctx context.Context, directory string, visit func(os.DirEntry) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handle, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, readErr := handle.ReadDir(directoryBatchSize)
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := visit(entry); err != nil {
+				return err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }

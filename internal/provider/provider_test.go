@@ -1,6 +1,9 @@
 package provider
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -110,5 +113,24 @@ func TestNewerCandidateBoundsUniqueSessionsAndKeepsExistingIDUpdates(t *testing.
 	}
 	if got := candidates[first.NativeID].UpdatedAt; !got.Equal(updated.UpdatedAt) {
 		t.Fatalf("existing candidate UpdatedAt = %v, want %v", got, updated.UpdatedAt)
+	}
+}
+
+func TestReadDirBatchesVisitsEveryEntry(t *testing.T) {
+	directory := t.TempDir()
+	for i := range directoryBatchSize + 1 {
+		writeFile(t, filepath.Join(directory, fixtureID(i)), "synthetic")
+	}
+
+	visited := 0
+	err := readDirBatches(context.Background(), directory, func(os.DirEntry) error {
+		visited++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("readDirBatches() error = %v", err)
+	}
+	if visited != directoryBatchSize+1 {
+		t.Fatalf("readDirBatches() visited %d entries, want %d", visited, directoryBatchSize+1)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/baleen37/agent-remote-sessions/internal/provider"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
@@ -29,15 +30,106 @@ func FuzzDecode(f *testing.F) {
 		if beginAt < 0 || !bytes.Equal(input[len(input)-len(end):], end) {
 			t.Fatal("Decode() accepted an incomplete envelope")
 		}
-		if len(results) != 2 {
-			t.Fatalf("Decode() accepted %d provider summaries, want 2", len(results))
-		}
-		for _, candidate := range candidates {
-			if err := session.ValidateCandidate(candidate); err != nil {
-				t.Fatalf("Decode() returned invalid candidate: %v", err)
-			}
+		if err := successfulDecodeSemantics(candidates, results); err != nil {
+			t.Fatalf("Decode() accepted invalid success semantics: %v", err)
 		}
 	})
+}
+
+func TestSuccessfulDecodeSemanticsRejectsImpossibleSummaries(t *testing.T) {
+	for _, tt := range impossibleSummaryCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			results := append([]provider.Result(nil), tt.results...)
+			for i := range results {
+				for _, candidate := range tt.candidates {
+					if candidate.Provider == results[i].Provider {
+						results[i].Sessions = append(results[i].Sessions, candidate)
+					}
+				}
+			}
+			if err := successfulDecodeSemantics(tt.candidates, results); err == nil {
+				t.Fatal("successfulDecodeSemantics() error = nil, want non-nil")
+			}
+		})
+	}
+}
+
+func TestSuccessfulDecodeSemanticsAllowsDeduplicatedSeenCount(t *testing.T) {
+	candidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	results := []provider.Result{
+		{Provider: session.Claude, Sessions: []session.Candidate{candidate}, Status: provider.OK, Seen: 2},
+		{Provider: session.Codex, Status: provider.Absent},
+	}
+	if err := successfulDecodeSemantics([]session.Candidate{candidate}, results); err != nil {
+		t.Fatalf("successfulDecodeSemantics() error = %v", err)
+	}
+}
+
+func successfulDecodeSemantics(candidates []session.Candidate, results []provider.Result) error {
+	candidatesByProvider := make(map[session.Provider][]session.Candidate, 2)
+	for _, candidate := range candidates {
+		if err := session.ValidateCandidate(candidate); err != nil {
+			return fmt.Errorf("invalid candidate: %w", err)
+		}
+		candidatesByProvider[candidate.Provider] = append(candidatesByProvider[candidate.Provider], candidate)
+	}
+	if len(results) != 2 {
+		return fmt.Errorf("got %d summaries, want 2", len(results))
+	}
+
+	seenProviders := make(map[session.Provider]bool, 2)
+	for _, result := range results {
+		if result.Provider != session.Claude && result.Provider != session.Codex {
+			return fmt.Errorf("unknown provider %q", result.Provider)
+		}
+		if seenProviders[result.Provider] {
+			return fmt.Errorf("duplicate provider %q", result.Provider)
+		}
+		seenProviders[result.Provider] = true
+
+		providerCandidates := candidatesByProvider[result.Provider]
+		if len(result.Sessions) != len(providerCandidates) {
+			return fmt.Errorf("%s result has %d sessions, want %d", result.Provider, len(result.Sessions), len(providerCandidates))
+		}
+		for i := range providerCandidates {
+			if result.Sessions[i] != providerCandidates[i] {
+				return fmt.Errorf("%s result session %d differs from candidate", result.Provider, i)
+			}
+		}
+		if result.Seen < 0 || result.Skipped < 0 || result.Skipped > result.Seen {
+			return fmt.Errorf("%s has invalid counts", result.Provider)
+		}
+		if len(providerCandidates) > result.Seen-result.Skipped {
+			return fmt.Errorf("%s candidate count exceeds seen minus skipped", result.Provider)
+		}
+
+		hasKnownError := result.ErrorCode == "unavailable" || result.ErrorCode == "incompatible" ||
+			result.ErrorCode == "corrupt" || result.ErrorCode == "resource_limit"
+		switch result.Status {
+		case provider.Absent:
+			if result.ErrorCode != "" || result.Seen != 0 || result.Skipped != 0 || len(providerCandidates) != 0 {
+				return fmt.Errorf("%s has invalid absent summary", result.Provider)
+			}
+		case provider.OK:
+			if result.ErrorCode != "" {
+				return fmt.Errorf("%s OK summary has an error", result.Provider)
+			}
+		case provider.Partial:
+			if !hasKnownError || len(providerCandidates) == 0 {
+				return fmt.Errorf("%s has invalid partial summary", result.Provider)
+			}
+		case provider.Error:
+			if !hasKnownError || len(providerCandidates) != 0 {
+				return fmt.Errorf("%s has invalid error summary", result.Provider)
+			}
+		default:
+			return fmt.Errorf("%s has unknown status %q", result.Provider, result.Status)
+		}
+	}
+	if !seenProviders[session.Claude] || !seenProviders[session.Codex] {
+		return fmt.Errorf("missing built-in provider summary")
+	}
+	return nil
 }
 
 func fuzzSeeds(t testing.TB) [][]byte {

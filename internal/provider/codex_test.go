@@ -121,6 +121,55 @@ func TestCodexDiscoverBoundsUniqueSessions(t *testing.T) {
 	}
 }
 
+func TestCodexDiscoverEnumeratesSessionsInBatches(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "codex")
+	for i := 1; i <= directoryBatchSize+1; i++ {
+		id := fixtureID(i)
+		writeFile(t, filepath.Join(home, ".codex", "sessions", id+".jsonl"),
+			codexMeta(id, "/synthetic/codex/"+id, "cli", "user"))
+	}
+
+	result := (codexAdapter{}).Discover(context.Background(), home)
+	want := directoryBatchSize + 1
+	if result.Status != OK || result.ErrorCode != "" || result.Seen != want || len(result.Sessions) != want {
+		t.Fatalf("Discover() = %#v, want %d sessions across directory batches", result, want)
+	}
+}
+
+func TestCodexDiscoverRejectsTraversalAboveMaxDepth(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "codex")
+	directory := filepath.Join(home, ".codex", "sessions")
+	for range maxCodexSessionDepth + 1 {
+		directory = filepath.Join(directory, "nested")
+	}
+	id := fixtureID(1)
+	writeFile(t, filepath.Join(directory, id+".jsonl"), codexMeta(id, "/synthetic/codex/deep", "cli", "user"))
+
+	result := (codexAdapter{}).Discover(context.Background(), home)
+	if result.Status != Error || result.ErrorCode != "resource_limit" || result.Seen != 0 || len(result.Sessions) != 0 {
+		t.Fatalf("Discover() = %#v, want error/resource_limit without deep sessions", result)
+	}
+}
+
+func TestCodexDiscoverDoesNotFollowDirectorySymlinks(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "codex")
+	external := t.TempDir()
+	id := fixtureID(1)
+	writeFile(t, filepath.Join(external, id+".jsonl"), codexMeta(id, "/synthetic/codex/symlink", "cli", "user"))
+	root := filepath.Join(home, ".codex", "sessions")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	assertAbsentResult(t, (codexAdapter{}).Discover(context.Background(), home), session.Codex)
+}
+
 func codexMeta(id, cwd, source, threadSource string) string {
 	return "{\"type\":\"session_meta\",\"payload\":{\"id\":\"" + id + "\",\"cwd\":\"" + cwd + "\",\"source\":\"" + source + "\",\"thread_source\":\"" + threadSource + "\"}}\n"
 }

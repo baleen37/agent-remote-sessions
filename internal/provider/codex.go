@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
+
+const maxCodexSessionDepth = 64
+
+var errCodexSessionDepth = errors.New("Codex session traversal exceeds maximum depth")
 
 type codexAdapter struct{}
 
@@ -38,24 +43,16 @@ func (adapter codexAdapter) discover(ctx context.Context, home string, sessionLi
 	}
 
 	root := filepath.Join(home, ".codex", "sessions")
-	if info, err := os.Stat(root); os.IsNotExist(err) {
+	if info, err := os.Lstat(root); os.IsNotExist(err) {
 		result.Status = Absent
 		return result
-	} else if err != nil || !info.IsDir() {
+	} else if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return finishResult(result, nil, "unavailable")
 	}
 
 	candidates := make(map[string]session.Candidate)
 	errorCode := ""
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			errorCode = strongerError(errorCode, "unavailable")
-			return nil
-		}
-		if ctx.Err() != nil {
-			errorCode = strongerError(errorCode, "unavailable")
-			return filepath.SkipAll
-		}
+	err := walkCodexSessionDirectory(ctx, root, 0, func(path string, entry os.DirEntry) error {
 		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".jsonl" {
 			return nil
 		}
@@ -75,7 +72,30 @@ func (adapter codexAdapter) discover(ctx context.Context, home string, sessionLi
 		}
 		return nil
 	})
+	if err != nil {
+		issue := "unavailable"
+		if errors.Is(err, errCodexSessionDepth) {
+			issue = "resource_limit"
+		}
+		errorCode = strongerError(errorCode, issue)
+	}
 	return finishResult(result, candidates, errorCode)
+}
+
+func walkCodexSessionDirectory(ctx context.Context, directory string, depth int, visit func(string, os.DirEntry) error) error {
+	return readDirBatches(ctx, directory, func(entry os.DirEntry) error {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		path := filepath.Join(directory, entry.Name())
+		if entry.IsDir() {
+			if depth >= maxCodexSessionDepth {
+				return errCodexSessionDepth
+			}
+			return walkCodexSessionDirectory(ctx, path, depth+1, visit)
+		}
+		return visit(path, entry)
+	})
 }
 
 type codexEnvelope struct {

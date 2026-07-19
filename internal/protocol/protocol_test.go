@@ -72,6 +72,25 @@ func TestRoundTripAllowsHealthyEmptyOKSummaries(t *testing.T) {
 	}
 }
 
+func TestRoundTripAllowsDeduplicatedCandidateCounts(t *testing.T) {
+	candidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	results := []provider.Result{
+		{Provider: session.Claude, Sessions: []session.Candidate{candidate}, Status: provider.OK, Seen: 2},
+		{Provider: session.Codex, Status: provider.Absent},
+	}
+	var encoded bytes.Buffer
+	if err := Encode(&encoded, testNonce, []session.Candidate{candidate}, results); err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	candidates, gotResults, err := Decode(bytes.NewReader(encoded.Bytes()), testNonce, DefaultLimits())
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if !reflect.DeepEqual(candidates, []session.Candidate{candidate}) || !reflect.DeepEqual(gotResults, results) {
+		t.Fatalf("Decode() = (%#v, %#v), want deduplicated candidate and summaries", candidates, gotResults)
+	}
+}
+
 func TestEncodeRejectsImpossibleSummarySessionCombinations(t *testing.T) {
 	for _, tt := range impossibleSummaryCases() {
 		t.Run(tt.name, func(t *testing.T) {
