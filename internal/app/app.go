@@ -77,7 +77,7 @@ func Run(ctx context.Context, args []string, dependencies Dependencies) int {
 	}
 
 	target, jsonMode, valid := parseArguments(args)
-	if !valid || (len(args) > 0 && args[0] == "remote") {
+	if !valid {
 		fmt.Fprintln(stderr, "usage: ars [host] | ars list --json")
 		return exitUsage
 	}
@@ -150,7 +150,7 @@ func parseArguments(args []string) (target string, jsonMode, valid bool) {
 	switch {
 	case len(args) == 0:
 		return "", false, true
-	case len(args) == 1 && args[0] != "list" && !strings.HasPrefix(args[0], "-"):
+	case len(args) == 1 && args[0] != "list" && args[0] != "remote" && !strings.HasPrefix(args[0], "-"):
 		return args[0], false, true
 	case len(args) == 2 && args[0] == "list" && args[1] == "--json":
 		return "", true, true
