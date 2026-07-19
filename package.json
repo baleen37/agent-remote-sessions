@@ -1,0 +1,19 @@
+{
+  "name": "agent-remote-sessions-release-toolchain",
+  "private": true,
+  "engines": {
+    "node": "^22.14.0 || >=24.10.0"
+  },
+  "scripts": {
+    "test": "node --test npm/bin/ars.test.cjs test/*.test.cjs",
+    "release": "semantic-release"
+  },
+  "devDependencies": {
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/exec": "7.1.0",
+    "@semantic-release/github": "12.0.9",
+    "@semantic-release/npm": "13.1.5",
+    "@semantic-release/release-notes-generator": "14.1.1",
+    "semantic-release": "25.0.8"
+  }
+}
