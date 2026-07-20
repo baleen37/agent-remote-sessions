@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -38,6 +39,17 @@ type Result struct {
 type ResumeSpec struct {
 	Executable string
 	Args       []string
+}
+
+func ValidResumeSpec(name session.Provider, id string, spec ResumeSpec) bool {
+	switch name {
+	case session.Claude:
+		return spec.Executable == "claude" && slices.Equal(spec.Args, []string{"--resume", id})
+	case session.Codex:
+		return spec.Executable == "codex" && slices.Equal(spec.Args, []string{"resume", id})
+	default:
+		return false
+	}
 }
 
 type Adapter interface {

@@ -87,6 +87,31 @@ func TestAdaptersValidateCanonicalUUIDAndReturnFixedResumeSpec(t *testing.T) {
 	}
 }
 
+func TestValidResumeSpecAcceptsOnlyFixedProviderCommands(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider session.Provider
+		id       string
+		spec     ResumeSpec
+		want     bool
+	}{
+		{name: "Claude", provider: session.Claude, id: canonicalID, spec: ResumeSpec{Executable: "claude", Args: []string{"--resume", canonicalID}}, want: true},
+		{name: "Codex", provider: session.Codex, id: canonicalID, spec: ResumeSpec{Executable: "codex", Args: []string{"resume", canonicalID}}, want: true},
+		{name: "unknown provider", provider: "other", id: canonicalID, spec: ResumeSpec{Executable: "claude", Args: []string{"--resume", canonicalID}}},
+		{name: "wrong executable", provider: session.Claude, id: canonicalID, spec: ResumeSpec{Executable: "sh", Args: []string{"--resume", canonicalID}}},
+		{name: "extra argument", provider: session.Claude, id: canonicalID, spec: ResumeSpec{Executable: "claude", Args: []string{"--resume", canonicalID, "extra"}}},
+		{name: "different ID", provider: session.Codex, id: canonicalID, spec: ResumeSpec{Executable: "codex", Args: []string{"resume", "00000000-0000-0000-0000-000000000000"}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ValidResumeSpec(test.provider, test.id, test.spec); got != test.want {
+				t.Fatalf("ValidResumeSpec() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestNewerCandidateBoundsUniqueSessionsAndKeepsExistingIDUpdates(t *testing.T) {
 	first := session.Candidate{NativeID: "first", UpdatedAt: time.Unix(1, 0)}
 	second := session.Candidate{NativeID: "second", UpdatedAt: time.Unix(2, 0)}

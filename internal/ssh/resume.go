@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
@@ -36,7 +35,7 @@ func Resume(ctx context.Context, runner Runner, target string, item session.Sess
 	if err != nil {
 		return fmt.Errorf("build provider resume command: %w", err)
 	}
-	if !validResumeSpec(item.Provider, item.NativeID, spec) {
+	if !provider.ValidResumeSpec(item.Provider, item.NativeID, spec) {
 		return fmt.Errorf("provider returned an invalid resume command")
 	}
 	remoteCommand := "cd " + quotePOSIX(item.CWD) + " && exec " + spec.Executable +
@@ -52,21 +51,6 @@ func Resume(ctx context.Context, runner Runner, target string, item session.Sess
 		return resumeError{err: err, code: exitError.ExitCode()}
 	}
 	return fmt.Errorf("resume SSH session: %w", err)
-}
-
-func validResumeSpec(name session.Provider, id string, spec provider.ResumeSpec) bool {
-	switch name {
-	case session.Claude:
-		return spec.Executable == "claude" && slices.Equal(spec.Args, []string{"--resume", id})
-	case session.Codex:
-		return spec.Executable == "codex" && slices.Equal(spec.Args, []string{"resume", id})
-	default:
-		return false
-	}
-}
-
-func quotePOSIX(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 type resumeError struct {
