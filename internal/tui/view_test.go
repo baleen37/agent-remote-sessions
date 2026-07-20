@@ -48,6 +48,33 @@ func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 	}
 }
 
+func TestSmallHeightBoundsMaximumLengthCWDDetails(t *testing.T) {
+	model := readyModel()
+	model.width = 48
+	model.height = 9
+	model.noColor = true
+	item := twoSessions()[0]
+	item.CWD = "/" + strings.Repeat("c", session.MaxCWDBytes-1)
+	model.result.Sessions = []session.Session{item}
+	model.refreshVisible()
+
+	content := model.View().Content
+	for _, want := range []string{
+		"> ",
+		"/cccccccc",
+		"123e4567-e89b-42d3-a456-426614174000",
+		"2026-07-19T12:00:00Z",
+		"↑↓/jk move",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("missing %q: %q", want, content)
+		}
+	}
+	if lines := strings.Count(content, "\n") + 1; lines > model.height {
+		t.Fatalf("view height = %d, want <= %d:\n%s", lines, model.height, content)
+	}
+}
+
 func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	model := readyModel()
 	model.noColor = false

@@ -23,7 +23,8 @@ func (value model) View() tea.View {
 	width := value.contentWidth()
 	body, selectedLine := value.sessionLines(width)
 	var details []string
-	if selected, ok := value.selectedSession(); ok {
+	selected, hasSelection := value.selectedSession()
+	if hasSelection {
 		details = detailLines(selected, width)
 	}
 	diagnostics := value.diagnostics(width)
@@ -37,6 +38,10 @@ func (value model) View() tea.View {
 	}
 
 	if value.height > 0 {
+		detailHeight := value.height - (2 + 1 + 1 + len(search) + 2)
+		if len(details) > detailHeight {
+			details = boundedDetailLines(selected, width, detailHeight)
+		}
 		fixedHeight := 2 + 1 + len(details) + len(search) + 2
 		bodyHeight := value.height - fixedHeight
 		if bodyHeight < 1 {
@@ -266,6 +271,23 @@ func detailLines(item session.Session, width int) []string {
 	}
 	if line != "" {
 		lines = append(lines, line)
+	}
+	return lines
+}
+
+func boundedDetailLines(item session.Session, width, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	fields := []string{item.CWD, item.NativeID, item.UpdatedAt.Format(time.RFC3339Nano)}
+	if height == 1 {
+		fields = fields[1:2]
+	} else if height == 2 {
+		fields = fields[:2]
+	}
+	lines := make([]string, 0, len(fields))
+	for _, field := range fields {
+		lines = append(lines, fitLine(field, width))
 	}
 	return lines
 }
