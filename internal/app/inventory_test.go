@@ -36,6 +36,76 @@ func TestConfigPathFallsBackToHome(t *testing.T) {
 	}
 }
 
+func TestLocalConfigPathUsesInventoryDirectory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/ars-xdg")
+
+	got, err := LocalConfigPath()
+	if err != nil {
+		t.Fatalf("LocalConfigPath() error = %v", err)
+	}
+	want := filepath.Join("/tmp/ars-xdg", "ars", "local-host")
+	if got != want {
+		t.Fatalf("LocalConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestLoadTopologyMarksExactlyOneConfiguredLocalHost(t *testing.T) {
+	hostsPath := writeInventory(t, "macbook\nserver\n")
+	localPath := filepath.Join(t.TempDir(), "local-host")
+	if err := os.WriteFile(localPath, []byte("server\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadTopology(hostsPath, localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Host{{Target: "macbook"}, {Target: "server", Local: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadTopologyRejectsInvalidLocalHost(t *testing.T) {
+	hostsPath := writeInventory(t, "macbook\nserver\n")
+	for _, test := range []struct{ name, contents, want string }{
+		{"missing", "", "read local host"},
+		{"multiple", "macbook\nserver\n", "exactly one"},
+		{"unknown", "other\n", "not configured"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			localPath := filepath.Join(t.TempDir(), "local-host")
+			if test.contents != "" {
+				if err := os.WriteFile(localPath, []byte(test.contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := LoadTopology(hostsPath, localPath)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSetLocalWritesOnlyExactConfiguredTarget(t *testing.T) {
+	hostsPath := writeInventory(t, "macbook\nserver\n")
+	localPath := filepath.Join(t.TempDir(), "ars", "local-host")
+	if err := SetLocal(hostsPath, localPath, "macbook"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(localPath)
+	if string(got) != "macbook\n" {
+		t.Fatalf("local-host = %q", got)
+	}
+	if err := SetLocal(hostsPath, localPath, "other"); err == nil {
+		t.Fatal("unknown accepted")
+	}
+	got, _ = os.ReadFile(localPath)
+	if string(got) != "macbook\n" {
+		t.Fatalf("failed write changed file: %q", got)
+	}
+}
+
 func TestLoadSkipsBlankLinesAndCommentsAndPreservesOrder(t *testing.T) {
 	path := writeInventory(t, "# managed hosts\n\ndevbox\nuser@agent-mac\nagent;$literal\n")
 

@@ -16,6 +16,7 @@ import (
 
 type Host struct {
 	Target string
+	Local  bool
 }
 
 func ConfigPath() (string, error) {
@@ -27,6 +28,14 @@ func ConfigPath() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".config", "ars", "hosts"), nil
+}
+
+func LocalConfigPath() (string, error) {
+	hosts, err := ConfigPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(hosts), "local-host"), nil
 }
 
 func Load(path string) ([]Host, error) {
@@ -58,6 +67,28 @@ func Load(path string) ([]Host, error) {
 		return nil, fmt.Errorf("read host inventory: %w", err)
 	}
 	return hosts, nil
+}
+
+func LoadTopology(hostsPath, localPath string) ([]Host, error) {
+	hosts, err := Load(hostsPath)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return nil, fmt.Errorf("read local host: %w", err)
+	}
+	value := strings.TrimSuffix(string(data), "\n")
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return nil, fmt.Errorf("local host must contain exactly one configured target")
+	}
+	for i := range hosts {
+		if hosts[i].Target == value {
+			hosts[i].Local = true
+			return hosts, nil
+		}
+	}
+	return nil, fmt.Errorf("local host target is not configured")
 }
 
 func Add(path string, target string) error {
@@ -99,6 +130,48 @@ func Add(path string, target string) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close host inventory: %w", err)
+	}
+	return nil
+}
+
+func SetLocal(hostsPath, localPath, target string) error {
+	hosts, err := Load(hostsPath)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, host := range hosts {
+		found = found || host.Target == target
+	}
+	if !found {
+		return fmt.Errorf("local host target is not configured")
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(localPath), ".local-host-*")
+	if err != nil {
+		return fmt.Errorf("create local host file: %w", err)
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := io.WriteString(tmp, target+"\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, localPath); err != nil {
+		return fmt.Errorf("replace local host file: %w", err)
 	}
 	return nil
 }
