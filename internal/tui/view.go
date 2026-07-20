@@ -21,29 +21,76 @@ const (
 
 func (value model) View() tea.View {
 	width := value.contentWidth()
-	active, recent := splitSessions(value.visible)
-	lines := []string{
-		fitLine(value.header(), width),
-		"",
-		value.stateText("Active", session.RuntimeAttached),
-	}
-	lines = append(lines, value.renderGroup(active, width)...)
-	lines = append(lines, "", value.stateText("Recent", session.RuntimeSaved))
-	lines = append(lines, value.renderGroup(recent, width)...)
-	lines = append(lines, "")
+	body, selectedLine := value.sessionLines(width)
+	var details []string
 	if selected, ok := value.selectedSession(); ok {
-		lines = append(lines, detailLines(selected, width)...)
+		details = detailLines(selected, width)
 	}
-	lines = append(lines, value.diagnostics(width)...)
+	diagnostics := value.diagnostics(width)
+	var search []string
 	if value.query != "" || value.searching {
 		prefix := "search: "
 		if value.searching {
 			prefix = "/"
 		}
-		lines = append(lines, fitLine(prefix+value.query, width))
+		search = append(search, fitLine(prefix+value.query, width))
 	}
+
+	if value.height > 0 {
+		fixedHeight := 2 + 1 + len(details) + len(search) + 2
+		bodyHeight := value.height - fixedHeight
+		if bodyHeight < 1 {
+			bodyHeight = 1
+		}
+		body = visibleLines(body, selectedLine, bodyHeight)
+		diagnosticHeight := value.height - (fixedHeight + len(body))
+		if diagnosticHeight < len(diagnostics) {
+			if diagnosticHeight < 0 {
+				diagnosticHeight = 0
+			}
+			diagnostics = diagnostics[:diagnosticHeight]
+		}
+	}
+
+	lines := []string{fitLine(value.header(), width), ""}
+	lines = append(lines, body...)
+	lines = append(lines, "")
+	lines = append(lines, details...)
+	lines = append(lines, diagnostics...)
+	lines = append(lines, search...)
 	lines = append(lines, "", fitLine(help(width), width))
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
+}
+
+func (value model) sessionLines(width int) ([]string, int) {
+	active, recent := splitSessions(value.visible)
+	lines := []string{value.stateText("Active", session.RuntimeAttached)}
+	lines = append(lines, value.renderGroup(active, width)...)
+	lines = append(lines, "", value.stateText("Recent", session.RuntimeSaved))
+	lines = append(lines, value.renderGroup(recent, width)...)
+
+	selectedLine := 0
+	for index, line := range lines {
+		if strings.HasPrefix(ansi.Strip(line), "> ") {
+			selectedLine = index
+			break
+		}
+	}
+	return lines, selectedLine
+}
+
+func visibleLines(lines []string, selected, height int) []string {
+	if height >= len(lines) {
+		return lines
+	}
+	start := selected - height + 1
+	if start < 0 {
+		start = 0
+	}
+	if start+height > len(lines) {
+		start = len(lines) - height
+	}
+	return lines[start : start+height]
 }
 
 func (value model) contentWidth() int {
@@ -105,16 +152,19 @@ func (value model) renderRow(item session.Session, width int) string {
 		runtime = fmt.Sprintf("attached(%d)", item.Runtime.AttachedClients)
 	}
 	fields := []string{state, sessionTitle(item)}
+	flexible := []int{1}
 	if width >= providerColumnWidth {
 		fields = append(fields, string(item.Provider))
 	}
 	fields = append(fields, location(item, value.deps.LocalTarget))
+	flexible = append(flexible, len(fields)-1)
 	if width >= projectColumnWidth {
 		fields = append(fields, session.Project(item.CWD))
+		flexible = append(flexible, len(fields)-1)
 	}
 	fields = append(fields, runtime, activityAge(value.deps.Now(), item.UpdatedAt))
 
-	fields[1] = truncateTitle(fields, width-lipgloss.Width(prefix))
+	truncateFlexibleFields(fields, flexible, width-lipgloss.Width(prefix))
 	fields[0] = value.stateText(fields[0], item.Runtime.State)
 	fields[len(fields)-2] = value.stateText(fields[len(fields)-2], item.Runtime.State)
 	row := prefix + strings.Join(fields, "  ")
@@ -125,18 +175,45 @@ func (value model) renderRow(item session.Session, width int) string {
 	return row
 }
 
-func truncateTitle(fields []string, width int) string {
+func truncateFlexibleFields(fields []string, flexible []int, width int) {
 	fixedWidth := 2 * (len(fields) - 1)
+	isFlexible := make([]bool, len(fields))
+	for _, index := range flexible {
+		isFlexible[index] = true
+	}
 	for index, field := range fields {
-		if index != 1 {
+		if !isFlexible[index] {
 			fixedWidth += lipgloss.Width(field)
 		}
 	}
-	available := width - fixedWidth
-	if available < 1 {
-		available = 1
+	remaining := width - fixedWidth
+	if remaining < 0 {
+		remaining = 0
 	}
-	return ansi.Truncate(fields[1], available, "…")
+	pending := append([]int(nil), flexible...)
+	for len(pending) > 0 {
+		share := remaining / len(pending)
+		foundShortField := false
+		for pendingIndex, fieldIndex := range pending {
+			fieldWidth := lipgloss.Width(fields[fieldIndex])
+			if fieldWidth > share {
+				continue
+			}
+			remaining -= fieldWidth
+			pending = append(pending[:pendingIndex], pending[pendingIndex+1:]...)
+			foundShortField = true
+			break
+		}
+		if foundShortField {
+			continue
+		}
+		for pendingIndex, fieldIndex := range pending {
+			fieldWidth := remaining / (len(pending) - pendingIndex)
+			fields[fieldIndex] = ansi.Truncate(fields[fieldIndex], fieldWidth, "…")
+			remaining -= fieldWidth
+		}
+		return
+	}
 }
 
 func sessionTitle(item session.Session) string {

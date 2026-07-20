@@ -3,11 +3,50 @@ package tui
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+	"github.com/baleen37/agent-remote-sessions/internal/output"
+	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
+
+func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model.height = 10
+	model.result.Sessions = nil
+	for index := range 16 {
+		item := twoSessions()[1]
+		item.NativeID = fmt.Sprintf("0195f5dc-9e3f-7c26-8000-%012d", index)
+		item.Title = fmt.Sprintf("session %02d", index)
+		model.result.Sessions = append(model.result.Sessions, item)
+	}
+	model.result.Errors = []output.HostError{
+		hostError("one", "failed", "first diagnostic"),
+		hostError("two", "failed", "second diagnostic"),
+	}
+	model.refreshVisible()
+	for range len(model.visible) - 1 {
+		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	}
+
+	content := ansi.Strip(model.View().Content)
+	for _, want := range []string{
+		"> ∙  session 15",
+		"0195f5dc-9e3f-7c26-8000-000000000015",
+		"↑↓/jk move",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("missing %q: %q", want, content)
+		}
+	}
+	if lines := strings.Count(content, "\n") + 1; lines > model.height {
+		t.Fatalf("view height = %d, want <= %d:\n%s", lines, model.height, content)
+	}
+}
 
 func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	model := readyModel()
@@ -77,6 +116,28 @@ func TestNarrowNoColorViewKeepsRequiredFields(t *testing.T) {
 	}
 }
 
+func TestNarrowRowKeepsLongTitleLocationRuntimeAndActivityVisible(t *testing.T) {
+	model := readyModel()
+	model.width = 60
+	model.height = 12
+	model.noColor = true
+	item := twoSessions()[0]
+	item.Host = "remote-host-" + strings.Repeat("a", session.MaxHostBytes-len("remote-host-"))
+	item.Title = "critical-title-" + strings.Repeat("b", 200)
+	model.result.Sessions = []session.Session{item}
+	model.refreshVisible()
+
+	row := selectedRow(model.View().Content)
+	for _, want := range []string{"critical-title", "remote-host", "attached(1)", "1d"} {
+		if !strings.Contains(row, want) {
+			t.Fatalf("row missing %q: %q", want, row)
+		}
+	}
+	if width := ansi.StringWidth(row); width > model.width {
+		t.Fatalf("row width = %d, want <= %d: %q", width, model.width, row)
+	}
+}
+
 func TestNarrowViewRemovesOptionalColumnsInOrder(t *testing.T) {
 	model := readyModel()
 	model.noColor = true
@@ -128,6 +189,15 @@ func activeRow(content string) string {
 	lines := strings.Split(ansi.Strip(content), "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "local") && strings.Contains(line, "attached") {
+			return line
+		}
+	}
+	return ""
+}
+
+func selectedRow(content string) string {
+	for _, line := range strings.Split(ansi.Strip(content), "\n") {
+		if strings.HasPrefix(line, "> ") {
 			return line
 		}
 	}
