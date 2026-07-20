@@ -257,7 +257,10 @@ func TestRunStopsBeforePickerWhenAllHostsFail(t *testing.T) {
 func TestRunWritesHealthyEmptyJSONSuccessfully(t *testing.T) {
 	deps, stdout, stderr := appDependencies()
 	deps.Collect = func(context.Context, []Host) Result {
-		return Result{Hosts: []output.HostResult{{Target: "devbox", Status: output.HostOK}}}
+		return Result{
+			Hosts:    []output.HostResult{{Target: "devbox", Status: output.HostOK}},
+			Warnings: []output.HostError{{Host: "devbox", Code: "corrupt", Message: "Claude discovery partial"}},
+		}
 	}
 	deps.Pick = func(context.Context, []session.Session) (session.Session, bool, error) {
 		t.Fatal("Pick called in JSON mode")

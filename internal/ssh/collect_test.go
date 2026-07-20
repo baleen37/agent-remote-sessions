@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,33 @@ func TestEmbeddedCollectorAssetsLoadGeneratedTargets(t *testing.T) {
 		if len(data) == 0 {
 			t.Fatalf("ForTarget(%q, %q) returned an empty asset", target[0], target[1])
 		}
+	}
+}
+
+func TestEmbeddedCollectorForCurrentPlatformMatchesProtocol(t *testing.T) {
+	if _, supported := collectorAssetNames[[2]string{goruntime.GOOS, goruntime.GOARCH}]; !supported {
+		t.Skipf("current platform %s/%s has no embedded collector", goruntime.GOOS, goruntime.GOARCH)
+	}
+	asset, err := (EmbeddedCollectorAssets{}).ForTarget(goruntime.GOOS, goruntime.GOARCH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "ars-collector")
+	if err := os.WriteFile(path, asset, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	const nonce = "0123456789abcdef0123456789abcdef"
+	command := exec.Command(path, nonce)
+	command.Env = append(os.Environ(), "HOME="+t.TempDir())
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("embedded collector failed: %v; stderr = %q", err, stderr.String())
+	}
+	if _, _, _, err := protocol.Decode(&stdout, nonce, protocol.DefaultLimits()); err != nil {
+		t.Fatalf("embedded collector is incompatible with current protocol: %v", err)
 	}
 }
 

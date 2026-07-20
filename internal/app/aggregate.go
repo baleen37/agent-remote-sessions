@@ -31,7 +31,7 @@ type hostCollection struct {
 	host     output.HostResult
 	sessions []session.Session
 	err      *output.HostError
-	warning  *output.HostError
+	warnings []output.HostError
 }
 
 func CollectHosts(ctx context.Context, hosts []Host, workerLimit int, collector Collector) Result {
@@ -67,15 +67,22 @@ func collectHost(ctx context.Context, host Host, collector Collector) hostCollec
 	if err := validateTarget(host.Target); err != nil {
 		return failedCollection(host.Target, "unsupported_target", "SSH target is unsupported")
 	}
-	discovered, _, report, err := collector(ctx, host)
+	discovered, providerResults, report, err := collector(ctx, host)
 	if err != nil {
 		code, message := classifyCollectionError(ctx, err)
 		return failedCollection(host.Target, code, message)
 	}
 
-	warning, err := runtimeWarning(host.Target, report)
+	warnings, err := providerWarnings(host.Target, providerResults)
 	if err != nil {
 		return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
+	}
+	runtimeDiagnostic, err := runtimeWarning(host.Target, report)
+	if err != nil {
+		return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
+	}
+	if runtimeDiagnostic != nil {
+		warnings = append(warnings, *runtimeDiagnostic)
 	}
 	sessions := make([]session.Session, 0, len(discovered))
 	for _, item := range discovered {
@@ -88,7 +95,53 @@ func collectHost(ctx context.Context, host Host, collector Collector) hostCollec
 	return hostCollection{
 		host:     output.HostResult{Target: host.Target, Status: output.HostOK},
 		sessions: sessions,
-		warning:  warning,
+		warnings: warnings,
+	}
+}
+
+func providerWarnings(target string, results []provider.Result) ([]output.HostError, error) {
+	warnings := make([]output.HostError, 0, len(results))
+	for _, result := range results {
+		var label string
+		switch result.Provider {
+		case session.Claude:
+			label = "Claude"
+		case session.Codex:
+			label = "Codex"
+		default:
+			return nil, errors.New("invalid provider result")
+		}
+
+		var state string
+		switch result.Status {
+		case provider.Absent, provider.OK:
+			if result.ErrorCode != "" {
+				return nil, errors.New("invalid provider result")
+			}
+			continue
+		case provider.Partial:
+			state = "partial"
+		case provider.Error:
+			state = "failed"
+		default:
+			return nil, errors.New("invalid provider result")
+		}
+		if !validProviderErrorCode(result.ErrorCode) {
+			return nil, errors.New("invalid provider result")
+		}
+		warnings = append(warnings, output.HostError{
+			Host: target, Code: result.ErrorCode, Message: label + " discovery " + state,
+		})
+	}
+	return warnings, nil
+}
+
+func validProviderErrorCode(code string) bool {
+	switch code {
+	case "unavailable", "incompatible", "corrupt", "resource_limit":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -158,9 +211,7 @@ func mergeCollections(collections []hostCollection) Result {
 		if collection.err != nil {
 			result.Errors = append(result.Errors, *collection.err)
 		}
-		if collection.warning != nil {
-			result.Warnings = append(result.Warnings, *collection.warning)
-		}
+		result.Warnings = append(result.Warnings, collection.warnings...)
 		for _, item := range collection.sessions {
 			identity := sessionIdentity{host: item.Host, provider: item.Provider, nativeID: item.NativeID}
 			current, exists := deduplicated[identity]

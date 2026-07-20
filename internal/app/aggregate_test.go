@@ -36,6 +36,31 @@ func TestCollectHostsKeepsSessionsBesideRuntimeWarning(t *testing.T) {
 	}
 }
 
+func TestCollectHostsKeepsSessionsBesideProviderWarnings(t *testing.T) {
+	candidate := aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Unix(10, 0).UTC())
+	collector := func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		return aggregateDiscovered(candidate), []provider.Result{
+			{
+				Provider: session.Claude, Status: provider.Partial,
+				Sessions: []session.Candidate{candidate}, Seen: 2, Skipped: 1, ErrorCode: "corrupt",
+			},
+			{Provider: session.Codex, Status: provider.Error, Seen: 1, Skipped: 1, ErrorCode: "unavailable"},
+		}, runtime.Report{Status: runtime.StatusOK}, nil
+	}
+
+	got := CollectHosts(context.Background(), []Host{{Target: "macbook", Local: true}}, 1, collector)
+	wantWarnings := []output.HostError{
+		{Host: "macbook", Code: "corrupt", Message: "Claude discovery partial"},
+		{Host: "macbook", Code: "unavailable", Message: "Codex discovery failed"},
+	}
+	if len(got.Sessions) != 1 || got.Hosts[0].Status != output.HostOK || len(got.Errors) != 0 {
+		t.Fatalf("result = %#v, want healthy session and host", got)
+	}
+	if !reflect.DeepEqual(got.Warnings, wantWarnings) {
+		t.Fatalf("warnings = %#v, want %#v", got.Warnings, wantWarnings)
+	}
+}
+
 func TestCollectHostsLimitsConcurrencyAndAttemptsEveryHostOnce(t *testing.T) {
 	hosts := make([]Host, 12)
 	for index := range hosts {
