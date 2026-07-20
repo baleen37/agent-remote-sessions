@@ -17,6 +17,7 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
@@ -163,7 +164,7 @@ func TestCollectMapsUnameAndUsesDedicatedSSHOptions(t *testing.T) {
 			assets := &fakeAssets{data: []byte("collector")}
 			target := "user@host;printf injected"
 			runner := successfulRunner(test.probe)
-			if _, _, err := Collect(context.Background(), runner, assets, target, CollectOptions{}); err != nil {
+			if _, _, _, err := Collect(context.Background(), runner, assets, target, CollectOptions{}); err != nil {
 				t.Fatalf("Collect() error = %v", err)
 			}
 			if !reflect.DeepEqual(assets.requests, [][2]string{test.wantTarget}) {
@@ -187,7 +188,7 @@ func TestCollectWrapsEachRemoteCommandForBinSh(t *testing.T) {
 
 	target := "host"
 	runner := successfulRunner("Linux\namd64\n")
-	if _, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, target, CollectOptions{}); err != nil {
+	if _, _, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, target, CollectOptions{}); err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
 	if len(runner.calls) != 2 {
@@ -229,11 +230,48 @@ func TestCollectRemoteLifecycle(t *testing.T) {
 		return nil
 	}}
 
-	if _, _, err := Collect(context.Background(), runner, assets, "host", CollectOptions{}); err != nil {
+	if _, _, _, err := Collect(context.Background(), runner, assets, "host", CollectOptions{}); err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
 	if matched, _ := regexp.MatchString(`^[0-9a-f]{32}$`, nonce); !matched {
 		t.Fatalf("nonce = %q, want 128-bit lowercase hexadecimal", nonce)
+	}
+}
+
+func TestCollectCarriesRuntimeStateAndReport(t *testing.T) {
+	candidate := session.Candidate{
+		Provider: session.Claude, NativeID: "123e4567-e89b-42d3-a456-426614174000",
+		UpdatedAt: time.Unix(10, 0).UTC(), CWD: "/work/app", Title: "Attached",
+	}
+	wantDiscovered := []session.Discovered{{
+		Candidate: candidate,
+		Runtime: session.Runtime{
+			State: session.RuntimeAttached, AttachedClients: 2, StartedAt: time.Unix(20, 0).UTC(),
+		},
+	}}
+	wantResults := []provider.Result{
+		{Provider: session.Claude, Sessions: []session.Candidate{candidate}, Status: provider.OK, Seen: 1},
+		{Provider: session.Codex, Status: provider.Absent},
+	}
+	wantReport := runtime.Report{Status: runtime.StatusOK}
+	runner := &fakeRunner{run: func(_ context.Context, index int, call runnerCall, stdout, _ io.Writer) error {
+		if index == 0 {
+			_, _ = io.WriteString(stdout, "Linux\namd64\n")
+			return nil
+		}
+		nonce := extractNonce(t, call.args[len(call.args)-1])
+		_, _ = fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonce)
+		return protocol.Encode(stdout, nonce, wantDiscovered, wantResults, wantReport)
+	}}
+
+	discovered, results, report, err := Collect(
+		context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(discovered, wantDiscovered) || !reflect.DeepEqual(results, wantResults) || report != wantReport {
+		t.Fatalf("Collect() = (%#v, %#v, %#v), want (%#v, %#v, %#v)", discovered, results, report, wantDiscovered, wantResults, wantReport)
 	}
 }
 
@@ -488,7 +526,7 @@ func TestCollectRejectsFailures(t *testing.T) {
 			if test.run == nil {
 				runner = successfulRunner(test.probe)
 			}
-			_, _, err := Collect(context.Background(), runner, test.assets, "host", CollectOptions{})
+			_, _, _, err := Collect(context.Background(), runner, test.assets, "host", CollectOptions{})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Collect() error = %v, want containing %q", err, test.want)
 			}
@@ -550,7 +588,7 @@ func TestCollectSanitizesUntrustedDiagnostics(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			runner := &fakeRunner{run: test.run}
-			_, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{})
+			_, _, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{})
 			if err == nil {
 				t.Fatal("Collect() error = nil")
 			}
@@ -590,7 +628,7 @@ func TestCollectAppliesSixtySecondHostDeadline(t *testing.T) {
 		writeValidProtocol(t, stdout, nonce)
 		return nil
 	}}
-	if _, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{}); err != nil {
+	if _, _, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{}); err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
 }
@@ -636,7 +674,7 @@ func TestCollectCancellationAttemptsBoundedExactCleanup(t *testing.T) {
 		}
 	}}
 
-	_, _, err := Collect(ctx, runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{})
+	_, _, _, err := Collect(ctx, runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Collect() error = %v, want context.Canceled", err)
 	}
@@ -683,7 +721,7 @@ func TestCollectHostTimeoutAttemptsBoundedExactCleanup(t *testing.T) {
 	}}
 
 	started := time.Now()
-	_, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{HostTimeout: hostTimeout})
+	_, _, _, err := Collect(context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{HostTimeout: hostTimeout})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Collect() error = %v, want context.DeadlineExceeded", err)
 	}
@@ -712,7 +750,7 @@ func TestCollectRejectsOptionsAboveHardBounds(t *testing.T) {
 	}
 	for _, options := range tests {
 		runner := &fakeRunner{}
-		_, _, err := Collect(context.Background(), runner, &fakeAssets{}, "host", options)
+		_, _, _, err := Collect(context.Background(), runner, &fakeAssets{}, "host", options)
 		if err == nil || !strings.Contains(err.Error(), "hard limit") {
 			t.Errorf("Collect(%+v) error = %v, want hard limit", options, err)
 		}
@@ -746,7 +784,7 @@ func successfulRunner(probe string) *fakeRunner {
 			return errors.New("missing nonce")
 		}
 		_, _ = fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonceMatch[1])
-		return protocol.Encode(stdout, nonceMatch[1], nil, emptyResults())
+		return protocol.Encode(stdout, nonceMatch[1], nil, emptyResults(), runtime.Report{Status: runtime.StatusOK})
 	}}
 }
 
@@ -833,7 +871,7 @@ func extractPathNonce(t *testing.T, command string) string {
 
 func writeValidProtocol(t *testing.T, output io.Writer, nonce string) {
 	t.Helper()
-	if err := protocol.Encode(output, nonce, nil, emptyResults()); err != nil {
+	if err := protocol.Encode(output, nonce, nil, emptyResults(), runtime.Report{Status: runtime.StatusOK}); err != nil {
 		t.Fatalf("protocol.Encode() error = %v", err)
 	}
 }

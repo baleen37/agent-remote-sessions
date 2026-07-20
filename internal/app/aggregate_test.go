@@ -12,8 +12,29 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
+
+func TestCollectHostsKeepsSessionsBesideRuntimeWarning(t *testing.T) {
+	for _, report := range []runtime.Report{
+		{Status: runtime.StatusUnavailable, ErrorCode: "tmux_unavailable"},
+		{Status: runtime.StatusFailed, ErrorCode: "tmux_failed"},
+	} {
+		t.Run(string(report.Status), func(t *testing.T) {
+			collector := func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+				return []session.Discovered{{
+					Candidate: aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Unix(10, 0).UTC()),
+					Runtime:   session.Runtime{State: session.RuntimeSaved},
+				}}, nil, report, nil
+			}
+			got := CollectHosts(context.Background(), []Host{{Target: "macbook", Local: true}}, 1, collector)
+			if len(got.Sessions) != 1 || got.Hosts[0].Status != output.HostOK || len(got.Warnings) != 1 || got.Warnings[0].Code != report.ErrorCode {
+				t.Fatalf("result = %#v", got)
+			}
+		})
+	}
+}
 
 func TestCollectHostsLimitsConcurrencyAndAttemptsEveryHostOnce(t *testing.T) {
 	hosts := make([]Host, 12)
@@ -27,9 +48,9 @@ func TestCollectHostsLimitsConcurrencyAndAttemptsEveryHostOnce(t *testing.T) {
 	var maximum atomic.Int32
 	var mu sync.Mutex
 	calls := make(map[string]int)
-	collector := func(_ context.Context, target string) ([]session.Candidate, []provider.Result, error) {
+	collector := func(_ context.Context, host Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 		mu.Lock()
-		calls[target]++
+		calls[host.Target]++
 		mu.Unlock()
 		current := active.Add(1)
 		defer active.Add(-1)
@@ -41,7 +62,7 @@ func TestCollectHostsLimitsConcurrencyAndAttemptsEveryHostOnce(t *testing.T) {
 		}
 		started <- struct{}{}
 		<-release
-		return nil, nil, nil
+		return nil, nil, runtime.Report{Status: runtime.StatusOK}, nil
 	}
 
 	done := make(chan Result, 1)
@@ -84,7 +105,7 @@ func TestCollectHostsPropagatesContextAndClassifiesTimeout(t *testing.T) {
 	defer cancel()
 
 	result := CollectHosts(ctx, []Host{{Target: "slow-host"}}, 4,
-		func(got context.Context, _ string) ([]session.Candidate, []provider.Result, error) {
+		func(got context.Context, _ Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 			if got.Value(key) != "value" {
 				t.Error("collector context lost request value")
 			}
@@ -92,7 +113,7 @@ func TestCollectHostsPropagatesContextAndClassifiesTimeout(t *testing.T) {
 			if !ok || !gotDeadline.Equal(deadline) {
 				t.Errorf("collector deadline = (%v, %v), want %v", gotDeadline, ok, deadline)
 			}
-			return nil, nil, fmt.Errorf("remote detail must not leak: %w", context.DeadlineExceeded)
+			return nil, nil, runtime.Report{}, fmt.Errorf("remote detail must not leak: %w", context.DeadlineExceeded)
 		})
 
 	wantHosts := []output.HostResult{{Target: "slow-host", Status: output.HostStatusError}}
@@ -110,17 +131,17 @@ func TestCollectHostsKeepsHealthyEmptyPartialAndPeerSessions(t *testing.T) {
 	candidate := aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Date(2026, 7, 19, 1, 2, 3, 4, time.UTC))
 
 	result := CollectHosts(context.Background(), hosts, 4,
-		func(_ context.Context, target string) ([]session.Candidate, []provider.Result, error) {
-			switch target {
+		func(_ context.Context, host Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			switch host.Target {
 			case "empty":
-				return nil, []provider.Result{{Provider: session.Claude, Status: provider.Absent}}, nil
+				return nil, []provider.Result{{Provider: session.Claude, Status: provider.Absent}}, runtime.Report{Status: runtime.StatusOK}, nil
 			case "partial":
-				return []session.Candidate{candidate}, []provider.Result{{
+				return aggregateDiscovered(candidate), []provider.Result{{
 					Provider: session.Claude, Status: provider.Partial, Sessions: []session.Candidate{candidate},
 					Seen: 2, Skipped: 1, ErrorCode: "corrupt",
-				}}, nil
+				}}, runtime.Report{Status: runtime.StatusOK}, nil
 			default:
-				return nil, nil, errors.New("dial failed\n/private/raw/transcript")
+				return nil, nil, runtime.Report{}, errors.New("dial failed\n/private/raw/transcript")
 			}
 		})
 
@@ -132,7 +153,7 @@ func TestCollectHostsKeepsHealthyEmptyPartialAndPeerSessions(t *testing.T) {
 	if !reflect.DeepEqual(result.Hosts, wantHosts) {
 		t.Fatalf("hosts = %#v, want %#v", result.Hosts, wantHosts)
 	}
-	wantSessions := []session.Session{{Host: "partial", Candidate: candidate}}
+	wantSessions := []session.Session{{Host: "partial", Candidate: candidate, Runtime: session.Runtime{State: session.RuntimeSaved}}}
 	if !reflect.DeepEqual(result.Sessions, wantSessions) {
 		t.Fatalf("sessions = %#v, want %#v", result.Sessions, wantSessions)
 	}
@@ -145,8 +166,8 @@ func TestCollectHostsKeepsHealthyEmptyPartialAndPeerSessions(t *testing.T) {
 func TestCollectHostsReportsAllHostFailure(t *testing.T) {
 	hosts := []Host{{Target: "one"}, {Target: "two"}}
 	result := CollectHosts(context.Background(), hosts, 4,
-		func(_ context.Context, _ string) ([]session.Candidate, []provider.Result, error) {
-			return nil, nil, errors.New("connection refused")
+		func(_ context.Context, _ Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			return nil, nil, runtime.Report{}, errors.New("connection refused")
 		})
 
 	wantHosts := []output.HostResult{
@@ -171,27 +192,27 @@ func TestCollectHostsDeduplicatesAndSortsSessionsDeterministically(t *testing.T)
 	hosts := []Host{{Target: "z-host"}, {Target: "a-host"}}
 
 	result := CollectHosts(context.Background(), hosts, 4,
-		func(_ context.Context, target string) ([]session.Candidate, []provider.Result, error) {
-			if target == "z-host" {
+		func(_ context.Context, host Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			if host.Target == "z-host" {
 				olderDuplicate := aggregateCandidate(session.Claude, idA, oldest)
 				newerDuplicate := aggregateCandidate(session.Claude, idA, newest)
-				return []session.Candidate{
+				return aggregateDiscovered(
 					aggregateCandidate(session.Claude, idB, tied),
 					olderDuplicate,
 					newerDuplicate,
-				}, nil, nil
+				), nil, runtime.Report{Status: runtime.StatusOK}, nil
 			}
-			return []session.Candidate{
+			return aggregateDiscovered(
 				aggregateCandidate(session.Codex, idC, tied),
 				aggregateCandidate(session.Claude, idA, tied),
-			}, nil, nil
+			), nil, runtime.Report{Status: runtime.StatusOK}, nil
 		})
 
 	want := []session.Session{
-		{Host: "z-host", Candidate: aggregateCandidate(session.Claude, idA, newest)},
-		{Host: "a-host", Candidate: aggregateCandidate(session.Claude, idA, tied)},
-		{Host: "a-host", Candidate: aggregateCandidate(session.Codex, idC, tied)},
-		{Host: "z-host", Candidate: aggregateCandidate(session.Claude, idB, tied)},
+		{Host: "z-host", Candidate: aggregateCandidate(session.Claude, idA, newest), Runtime: session.Runtime{State: session.RuntimeSaved}},
+		{Host: "a-host", Candidate: aggregateCandidate(session.Claude, idA, tied), Runtime: session.Runtime{State: session.RuntimeSaved}},
+		{Host: "a-host", Candidate: aggregateCandidate(session.Codex, idC, tied), Runtime: session.Runtime{State: session.RuntimeSaved}},
+		{Host: "z-host", Candidate: aggregateCandidate(session.Claude, idB, tied), Runtime: session.Runtime{State: session.RuntimeSaved}},
 	}
 	if !reflect.DeepEqual(result.Sessions, want) {
 		t.Fatalf("sessions =\n%#v\nwant\n%#v", result.Sessions, want)
@@ -207,36 +228,36 @@ func TestCollectHostsRejectsInvalidCollectorOutputAndNormalizesErrors(t *testing
 	}{
 		{
 			name: "invalid candidate is protocol error",
-			collector: func(context.Context, string) ([]session.Candidate, []provider.Result, error) {
-				return []session.Candidate{{Provider: "unknown"}}, nil, nil
+			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+				return []session.Discovered{{Candidate: session.Candidate{Provider: "unknown"}}}, nil, runtime.Report{Status: runtime.StatusOK}, nil
 			},
 			wantCode: "protocol_error", wantError: "Collector protocol failed",
 		},
 		{
 			name: "joined host deadline",
-			collector: func(context.Context, string) ([]session.Candidate, []provider.Result, error) {
-				return nil, nil, errors.Join(errors.New("process exit"), context.DeadlineExceeded)
+			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+				return nil, nil, runtime.Report{}, errors.Join(errors.New("process exit"), context.DeadlineExceeded)
 			},
 			wantCode: "ssh_timeout", wantError: "SSH collection timed out",
 		},
 		{
 			name: "unsupported target",
-			collector: func(context.Context, string) ([]session.Candidate, []provider.Result, error) {
-				return nil, nil, errors.New("unsupported SSH target FreeBSD/raw")
+			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+				return nil, nil, runtime.Report{}, errors.New("unsupported SSH target FreeBSD/raw")
 			},
 			wantCode: "unsupported_target", wantError: "SSH target is unsupported",
 		},
 		{
 			name: "resource limit",
-			collector: func(context.Context, string) ([]session.Candidate, []provider.Result, error) {
-				return nil, nil, errors.New("collector stdout exceeds limit: /secret/source")
+			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+				return nil, nil, runtime.Report{}, errors.New("collector stdout exceeds limit: /secret/source")
 			},
 			wantCode: "resource_limit", wantError: "Collector resource limit exceeded",
 		},
 		{
 			name: "protocol decode",
-			collector: func(context.Context, string) ([]session.Candidate, []provider.Result, error) {
-				return nil, nil, errors.New("collector protocol: malformed /private/transcript")
+			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+				return nil, nil, runtime.Report{}, errors.New("collector protocol: malformed /private/transcript")
 			},
 			wantCode: "protocol_error", wantError: "Collector protocol failed",
 		},
@@ -261,4 +282,12 @@ func aggregateCandidate(providerName session.Provider, id string, updatedAt time
 		Provider: providerName, NativeID: id, UpdatedAt: updatedAt,
 		CWD: "/work/project", Title: "Fix login",
 	}
+}
+
+func aggregateDiscovered(candidates ...session.Candidate) []session.Discovered {
+	discovered := make([]session.Discovered, len(candidates))
+	for i, candidate := range candidates {
+		discovered[i] = session.Discovered{Candidate: candidate, Runtime: session.Runtime{State: session.RuntimeSaved}}
+	}
+	return discovered
 }

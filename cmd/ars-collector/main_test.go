@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
@@ -54,13 +56,17 @@ func TestRunDiscoversBothProvidersAndSortsSessions(t *testing.T) {
 			claudeAdapter.calls, claudeAdapter.home, codexAdapter.calls, codexAdapter.home)
 	}
 
-	candidates, results, err := protocol.Decode(bytes.NewReader(stdout.Bytes()), collectorNonce, protocol.DefaultLimits())
+	discovered, results, _, err := protocol.Decode(bytes.NewReader(stdout.Bytes()), collectorNonce, protocol.DefaultLimits())
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	wantCandidates := []session.Candidate{claudeFirst, claudeSecond, codex}
-	if !reflect.DeepEqual(candidates, wantCandidates) {
-		t.Fatalf("candidates = %#v, want %#v", candidates, wantCandidates)
+	wantDiscovered := []session.Discovered{
+		{Candidate: claudeFirst, Runtime: session.Runtime{State: session.RuntimeSaved}},
+		{Candidate: claudeSecond, Runtime: session.Runtime{State: session.RuntimeSaved}},
+		{Candidate: codex, Runtime: session.Runtime{State: session.RuntimeSaved}},
+	}
+	if !reflect.DeepEqual(discovered, wantDiscovered) {
+		t.Fatalf("discovered = %#v, want %#v", discovered, wantDiscovered)
 	}
 	if len(results) != 2 || results[0].Provider != session.Claude || results[1].Provider != session.Codex {
 		t.Fatalf("results = %#v, want Claude then Codex summaries", results)
@@ -83,7 +89,7 @@ func TestRunEmitsPartialProviderSummaries(t *testing.T) {
 	if code := run(context.Background(), []string{collectorNonce}, "/remote/home", adapters, &stdout, &stderr); code != 0 {
 		t.Fatalf("run() code = %d, stderr = %q", code, stderr.String())
 	}
-	_, results, err := protocol.Decode(bytes.NewReader(stdout.Bytes()), collectorNonce, protocol.DefaultLimits())
+	_, results, _, err := protocol.Decode(bytes.NewReader(stdout.Bytes()), collectorNonce, protocol.DefaultLimits())
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
@@ -127,20 +133,23 @@ func TestRunReturnsNonZeroWhenEncodingFails(t *testing.T) {
 	}
 }
 
-func TestAppendCandidatesStopsAtCombinedLimit(t *testing.T) {
-	claude := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
-	codexFirst := validCollectorCandidate(session.Codex, "22222222-2222-2222-2222-222222222222")
-	codexExcess := validCollectorCandidate(session.Codex, "33333333-3333-3333-3333-333333333333")
-
-	candidates, err := appendCandidates([]session.Candidate{claude}, []session.Candidate{codexFirst, codexExcess}, session.Codex, 2)
-	if err == nil {
-		t.Fatal("appendCandidates() error = nil, want non-nil")
+func TestRunEncodesSessionsWhenRuntimeIsUnavailable(t *testing.T) {
+	candidate := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	adapters := []provider.Adapter{
+		&fakeAdapter{name: session.Claude, result: provider.Result{Provider: session.Claude, Sessions: []session.Candidate{candidate}, Status: provider.OK, Seen: 1}},
+		&fakeAdapter{name: session.Codex, result: provider.Result{Provider: session.Codex, Status: provider.Absent}},
 	}
-	if len(candidates) != 2 {
-		t.Fatalf("len(appendCandidates()) = %d, want 2", len(candidates))
+	var stdout, stderr bytes.Buffer
+	code := runWithRuntime(context.Background(), []string{collectorNonce}, "/remote/home", adapters, unavailableRuntimeRunner{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("runWithRuntime() = %d, stderr = %q", code, stderr.String())
 	}
-	if candidates[1] != codexFirst {
-		t.Fatalf("last retained candidate = %#v, want %#v", candidates[1], codexFirst)
+	discovered, _, report, err := protocol.Decode(&stdout, collectorNonce, protocol.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovered) != 1 || discovered[0].Runtime.State != session.RuntimeSaved || report != (runtime.Report{Status: runtime.StatusUnavailable, ErrorCode: "tmux_unavailable"}) {
+		t.Fatalf("decoded = %#v %#v", discovered, report)
 	}
 }
 
@@ -187,3 +196,13 @@ type errorWriter struct{}
 func (errorWriter) Write([]byte) (int, error) { return 0, errors.New("synthetic write failure") }
 
 var _ io.Writer = errorWriter{}
+
+type unavailableRuntimeRunner struct{}
+
+func (unavailableRuntimeRunner) Output(context.Context, runtime.Command) ([]byte, error) {
+	return nil, exec.ErrNotFound
+}
+
+func (unavailableRuntimeRunner) Run(context.Context, runtime.Command, io.Reader, io.Writer, io.Writer) error {
+	return nil
+}

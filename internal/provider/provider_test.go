@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,6 +31,44 @@ func TestBuiltinRegistersOnlyClaudeThenCodex(t *testing.T) {
 			t.Fatalf("Builtin() contains duplicate provider %q", name)
 		}
 		seen[name] = true
+	}
+}
+
+func TestDiscoverAllValidatesRegistryBoundsAndSorts(t *testing.T) {
+	claudeFirst := discoveredCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	claudeSecond := discoveredCandidate(session.Claude, "33333333-3333-3333-3333-333333333333")
+	codex := discoveredCandidate(session.Codex, "22222222-2222-2222-2222-222222222222")
+	adapters := []Adapter{
+		&discoveryAdapter{name: session.Codex, result: Result{Provider: session.Codex, Sessions: []session.Candidate{codex}, Status: OK, Seen: 1}},
+		&discoveryAdapter{name: session.Claude, result: Result{Provider: session.Claude, Sessions: []session.Candidate{claudeSecond, claudeFirst}, Status: OK, Seen: 2}},
+	}
+
+	gotCandidates, gotResults, err := DiscoverAll(context.Background(), "/remote/home", adapters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCandidates := []session.Candidate{claudeFirst, claudeSecond, codex}
+	if !reflect.DeepEqual(gotCandidates, wantCandidates) {
+		t.Fatalf("DiscoverAll() candidates = %#v, want %#v", gotCandidates, wantCandidates)
+	}
+	if gotResults[0].Provider != session.Claude || gotResults[1].Provider != session.Codex {
+		t.Fatalf("DiscoverAll() results = %#v, want provider order", gotResults)
+	}
+
+	if candidates, results, err := DiscoverAll(context.Background(), "/remote/home", adapters[:1]); err == nil || candidates != nil || results != nil {
+		t.Fatalf("DiscoverAll(invalid registry) = (%#v, %#v, %v), want nil data and error", candidates, results, err)
+	}
+
+	excess := make([]session.Candidate, maxDiscoveredSessions+1)
+	for i := range excess {
+		excess[i] = discoveredCandidate(session.Claude, fmt.Sprintf("%08x-0000-0000-0000-%012x", i, i))
+	}
+	overLimit := []Adapter{
+		&discoveryAdapter{name: session.Claude, result: Result{Provider: session.Claude, Sessions: excess, Status: OK, Seen: len(excess)}},
+		&discoveryAdapter{name: session.Codex, result: Result{Provider: session.Codex, Status: Absent}},
+	}
+	if candidates, results, err := DiscoverAll(context.Background(), "/remote/home", overLimit); err == nil || candidates != nil || results != nil {
+		t.Fatalf("DiscoverAll(over limit) = (%d candidates, %#v, %v), want nil data and error", len(candidates), results, err)
 	}
 }
 
@@ -157,5 +196,25 @@ func TestReadDirBatchesVisitsEveryEntry(t *testing.T) {
 	}
 	if visited != directoryBatchSize+1 {
 		t.Fatalf("readDirBatches() visited %d entries, want %d", visited, directoryBatchSize+1)
+	}
+}
+
+type discoveryAdapter struct {
+	name   session.Provider
+	result Result
+}
+
+func (adapter *discoveryAdapter) Name() session.Provider { return adapter.name }
+
+func (adapter *discoveryAdapter) Discover(context.Context, string) Result { return adapter.result }
+
+func (adapter *discoveryAdapter) ValidateID(string) error { return nil }
+
+func (adapter *discoveryAdapter) Resume(string) (ResumeSpec, error) { return ResumeSpec{}, nil }
+
+func discoveredCandidate(name session.Provider, id string) session.Candidate {
+	return session.Candidate{
+		Provider: name, NativeID: id, UpdatedAt: time.Unix(10, 0).UTC(),
+		CWD: "/work/project", Title: "Synthetic",
 	}
 }

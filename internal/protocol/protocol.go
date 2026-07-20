@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	arsruntime "github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
@@ -35,12 +36,15 @@ func DefaultLimits() Limits {
 }
 
 type sessionFrame struct {
-	Type      string           `json:"type"`
-	Provider  session.Provider `json:"provider"`
-	NativeID  string           `json:"native_id"`
-	UpdatedAt time.Time        `json:"updated_at"`
-	CWD       string           `json:"cwd"`
-	Title     string           `json:"title"`
+	Type            string               `json:"type"`
+	Provider        session.Provider     `json:"provider"`
+	NativeID        string               `json:"native_id"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+	CWD             string               `json:"cwd"`
+	Title           string               `json:"title"`
+	RuntimeState    session.RuntimeState `json:"runtime_state"`
+	AttachedClients int                  `json:"attached_clients"`
+	RuntimeStarted  *time.Time           `json:"runtime_started_at,omitempty"`
 }
 
 type summaryFrame struct {
@@ -52,7 +56,13 @@ type summaryFrame struct {
 	ErrorCode string           `json:"error_code,omitempty"`
 }
 
-func Encode(output io.Writer, nonce string, candidates []session.Candidate, results []provider.Result) error {
+type runtimeFrame struct {
+	Type      string            `json:"type"`
+	Status    arsruntime.Status `json:"status"`
+	ErrorCode string            `json:"error_code,omitempty"`
+}
+
+func Encode(output io.Writer, nonce string, discovered []session.Discovered, results []provider.Result, report arsruntime.Report) error {
 	if output == nil {
 		return fmt.Errorf("protocol output is nil")
 	}
@@ -60,33 +70,46 @@ func Encode(output io.Writer, nonce string, candidates []session.Candidate, resu
 		return err
 	}
 	limits := DefaultLimits()
-	if len(candidates) > limits.Sessions {
+	if len(discovered) > limits.Sessions {
 		return fmt.Errorf("session count exceeds limit")
 	}
-	for _, candidate := range candidates {
-		if err := session.ValidateCandidate(candidate); err != nil {
-			return fmt.Errorf("invalid session candidate: %w", err)
+	for _, item := range discovered {
+		if _, err := session.BindDiscovered("protocol", item); err != nil {
+			return fmt.Errorf("invalid discovered session: %w", err)
 		}
 	}
 	if err := validateResults(results); err != nil {
 		return err
 	}
-	if err := validateCandidateSummaries(candidates, results); err != nil {
+	if err := validateCandidateSummaries(discovered, results); err != nil {
+		return err
+	}
+	if err := validateRuntimeReport(report); err != nil {
+		return err
+	}
+	if err := validateReportSessions(discovered, report); err != nil {
 		return err
 	}
 
 	encoder := boundedEncoder{output: output, limits: limits}
-	if err := encoder.writeLine([]byte("ARS/1 BEGIN " + nonce)); err != nil {
+	if err := encoder.writeLine([]byte("ARS/2 BEGIN " + nonce)); err != nil {
 		return err
 	}
-	for _, candidate := range candidates {
+	for _, item := range discovered {
+		candidate := item.Candidate
 		frame := sessionFrame{
-			Type:      "session",
-			Provider:  candidate.Provider,
-			NativeID:  candidate.NativeID,
-			UpdatedAt: candidate.UpdatedAt,
-			CWD:       candidate.CWD,
-			Title:     candidate.Title,
+			Type:            "session",
+			Provider:        candidate.Provider,
+			NativeID:        candidate.NativeID,
+			UpdatedAt:       candidate.UpdatedAt,
+			CWD:             candidate.CWD,
+			Title:           candidate.Title,
+			RuntimeState:    item.Runtime.State,
+			AttachedClients: item.Runtime.AttachedClients,
+		}
+		if !item.Runtime.StartedAt.IsZero() {
+			startedAt := item.Runtime.StartedAt
+			frame.RuntimeStarted = &startedAt
 		}
 		if err := encoder.writeJSON(frame); err != nil {
 			return err
@@ -105,18 +128,24 @@ func Encode(output io.Writer, nonce string, candidates []session.Candidate, resu
 			return err
 		}
 	}
-	return encoder.writeLine([]byte(fmt.Sprintf("ARS/1 END %s %d", nonce, len(candidates))))
+	if err := encoder.writeJSON(runtimeFrame{Type: "runtime", Status: report.Status, ErrorCode: report.ErrorCode}); err != nil {
+		return err
+	}
+	return encoder.writeLine([]byte(fmt.Sprintf("ARS/2 END %s %d", nonce, len(discovered))))
 }
 
-func Decode(input io.Reader, nonce string, limits Limits) ([]session.Candidate, []provider.Result, error) {
+func Decode(input io.Reader, nonce string, limits Limits) ([]session.Discovered, []provider.Result, arsruntime.Report, error) {
+	fail := func(err error) ([]session.Discovered, []provider.Result, arsruntime.Report, error) {
+		return nil, nil, arsruntime.Report{}, err
+	}
 	if input == nil {
-		return nil, nil, fmt.Errorf("protocol input is nil")
+		return fail(fmt.Errorf("protocol input is nil"))
 	}
 	if err := validateNonce(nonce); err != nil {
-		return nil, nil, err
+		return fail(err)
 	}
 	if err := validateLimits(limits); err != nil {
-		return nil, nil, err
+		return fail(err)
 	}
 
 	limited := &io.LimitedReader{R: input, N: limits.TotalBytes + 1}
@@ -126,115 +155,153 @@ func Decode(input io.Reader, nonce string, limits Limits) ([]session.Candidate, 
 		line, consumed, err := readLine(reader, limited, limits)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, nil, fmt.Errorf("missing protocol begin")
+				return fail(fmt.Errorf("missing protocol begin"))
 			}
-			return nil, nil, err
+			return fail(err)
 		}
 		if strings.HasPrefix(string(line), "ARS/") {
 			if err := parseBegin(line, nonce); err != nil {
-				return nil, nil, err
+				return fail(err)
 			}
 			break
 		}
 		startupBytes += int64(consumed)
 		if startupBytes > limits.StartupBytes {
-			return nil, nil, fmt.Errorf("startup output exceeds limit")
+			return fail(fmt.Errorf("startup output exceeds limit"))
 		}
 	}
 
-	candidates := make([]session.Candidate, 0)
+	discovered := make([]session.Discovered, 0)
 	results := make([]provider.Result, 0, 2)
 	summaries := make(map[session.Provider]struct{}, 2)
+	var report arsruntime.Report
+	runtimeSeen := false
 	for {
 		line, _, err := readLine(reader, limited, limits)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, nil, fmt.Errorf("missing protocol end")
+				return fail(fmt.Errorf("missing protocol end"))
 			}
-			return nil, nil, err
+			return fail(err)
 		}
 		if strings.HasPrefix(string(line), "ARS/") {
 			count, err := parseEnd(line, nonce)
 			if err != nil {
-				return nil, nil, err
+				return fail(err)
 			}
-			if count != len(candidates) {
-				return nil, nil, fmt.Errorf("session count mismatch")
+			if count != len(discovered) {
+				return fail(fmt.Errorf("session count mismatch"))
 			}
 			if err := validateDecodedSummaries(summaries); err != nil {
-				return nil, nil, err
+				return fail(err)
 			}
-			if err := validateCandidateSummaries(candidates, results); err != nil {
-				return nil, nil, err
+			if !runtimeSeen {
+				return fail(fmt.Errorf("missing runtime summary"))
+			}
+			if err := validateReportSessions(discovered, report); err != nil {
+				return fail(err)
+			}
+			if err := validateCandidateSummaries(discovered, results); err != nil {
+				return fail(err)
 			}
 			if trailing, _, err := readLine(reader, limited, limits); err == nil || len(trailing) != 0 {
-				return nil, nil, fmt.Errorf("trailing protocol output")
+				return fail(fmt.Errorf("trailing protocol output"))
 			} else if !errors.Is(err, io.EOF) {
-				return nil, nil, err
+				return fail(err)
 			}
 			for i := range results {
-				for _, candidate := range candidates {
-					if candidate.Provider == results[i].Provider {
-						results[i].Sessions = append(results[i].Sessions, candidate)
+				for _, item := range discovered {
+					if item.Candidate.Provider == results[i].Provider {
+						results[i].Sessions = append(results[i].Sessions, item.Candidate)
 					}
 				}
 			}
-			return candidates, results, nil
+			return discovered, results, report, nil
 		}
 
 		var header struct {
 			Type string `json:"type"`
 		}
 		if !utf8.Valid(line) {
-			return nil, nil, fmt.Errorf("protocol line is not valid UTF-8")
+			return fail(fmt.Errorf("protocol line is not valid UTF-8"))
 		}
 		if err := json.Unmarshal(line, &header); err != nil {
-			return nil, nil, fmt.Errorf("invalid protocol frame")
+			return fail(fmt.Errorf("invalid protocol frame"))
 		}
 		switch header.Type {
 		case "session":
-			if len(candidates) >= limits.Sessions {
-				return nil, nil, fmt.Errorf("session count exceeds limit")
+			if len(discovered) >= limits.Sessions {
+				return fail(fmt.Errorf("session count exceeds limit"))
 			}
 			var frame sessionFrame
-			if err := strictJSON(line, &frame); err != nil {
-				return nil, nil, fmt.Errorf("invalid session frame")
+			if err := strictJSON(line, &frame, "type", "provider", "native_id", "updated_at", "cwd", "title", "runtime_state", "attached_clients"); err != nil {
+				return fail(fmt.Errorf("invalid session frame"))
 			}
-			candidate := session.Candidate{
-				Provider:  frame.Provider,
-				NativeID:  frame.NativeID,
-				UpdatedAt: frame.UpdatedAt,
-				CWD:       frame.CWD,
-				Title:     frame.Title,
+			if err := validateRuntimeFrame(frame); err != nil {
+				return fail(err)
 			}
-			if err := session.ValidateCandidate(candidate); err != nil {
-				return nil, nil, fmt.Errorf("invalid session candidate: %w", err)
+			item := session.Discovered{Candidate: session.Candidate{
+				Provider: frame.Provider, NativeID: frame.NativeID, UpdatedAt: frame.UpdatedAt,
+				CWD: frame.CWD, Title: frame.Title,
+			}, Runtime: session.Runtime{State: frame.RuntimeState, AttachedClients: frame.AttachedClients}}
+			if frame.RuntimeStarted != nil {
+				item.Runtime.StartedAt = *frame.RuntimeStarted
 			}
-			candidates = append(candidates, candidate)
+			if _, err := session.BindDiscovered("protocol", item); err != nil {
+				return fail(fmt.Errorf("invalid discovered session: %w", err))
+			}
+			discovered = append(discovered, item)
 		case "summary":
 			var frame summaryFrame
-			if err := strictJSON(line, &frame); err != nil {
-				return nil, nil, fmt.Errorf("invalid summary frame")
+			if err := strictJSON(line, &frame, "type", "provider", "status", "seen", "skipped"); err != nil {
+				return fail(fmt.Errorf("invalid summary frame"))
 			}
-			result := provider.Result{
-				Provider:  frame.Provider,
-				Status:    frame.Status,
-				Seen:      frame.Seen,
-				Skipped:   frame.Skipped,
-				ErrorCode: frame.ErrorCode,
-			}
+			result := provider.Result{Provider: frame.Provider, Status: frame.Status, Seen: frame.Seen, Skipped: frame.Skipped, ErrorCode: frame.ErrorCode}
 			if _, exists := summaries[result.Provider]; exists {
-				return nil, nil, fmt.Errorf("duplicate provider summary")
+				return fail(fmt.Errorf("duplicate provider summary"))
 			}
 			if err := validateResult(result); err != nil {
-				return nil, nil, err
+				return fail(err)
 			}
 			summaries[result.Provider] = struct{}{}
 			results = append(results, result)
+		case "runtime":
+			if runtimeSeen {
+				return fail(fmt.Errorf("duplicate runtime summary"))
+			}
+			var frame runtimeFrame
+			if err := strictJSON(line, &frame, "type", "status"); err != nil {
+				return fail(fmt.Errorf("invalid runtime frame"))
+			}
+			report = arsruntime.Report{Status: frame.Status, ErrorCode: frame.ErrorCode}
+			if err := validateRuntimeReport(report); err != nil {
+				return fail(err)
+			}
+			runtimeSeen = true
 		default:
-			return nil, nil, fmt.Errorf("unknown protocol frame type")
+			return fail(fmt.Errorf("unknown protocol frame type"))
 		}
 	}
+}
+
+func validateRuntimeFrame(frame sessionFrame) error {
+	switch frame.RuntimeState {
+	case session.RuntimeSaved:
+		if frame.AttachedClients != 0 || frame.RuntimeStarted != nil {
+			return fmt.Errorf("invalid session runtime")
+		}
+	case session.RuntimeRunning:
+		if frame.AttachedClients != 0 || frame.RuntimeStarted == nil || frame.RuntimeStarted.IsZero() {
+			return fmt.Errorf("invalid session runtime")
+		}
+	case session.RuntimeAttached:
+		if frame.AttachedClients <= 0 || frame.RuntimeStarted == nil || frame.RuntimeStarted.IsZero() {
+			return fmt.Errorf("invalid session runtime")
+		}
+	default:
+		return fmt.Errorf("invalid session runtime")
+	}
+	return nil
 }
 
 type boundedEncoder struct {
@@ -307,7 +374,7 @@ func readLine(reader *bufio.Reader, limited *io.LimitedReader, limits Limits) ([
 
 func parseBegin(line []byte, nonce string) error {
 	fields := strings.Fields(string(line))
-	if len(fields) == 0 || fields[0] != "ARS/1" {
+	if len(fields) == 0 || fields[0] != "ARS/2" {
 		return fmt.Errorf("unsupported protocol version")
 	}
 	if len(fields) != 3 || fields[1] != "BEGIN" || string(line) != strings.Join(fields, " ") {
@@ -321,7 +388,7 @@ func parseBegin(line []byte, nonce string) error {
 
 func parseEnd(line []byte, nonce string) (int, error) {
 	fields := strings.Fields(string(line))
-	if len(fields) == 0 || fields[0] != "ARS/1" {
+	if len(fields) == 0 || fields[0] != "ARS/2" {
 		return 0, fmt.Errorf("unsupported protocol version")
 	}
 	if len(fields) != 4 || fields[1] != "END" || string(line) != strings.Join(fields, " ") {
@@ -337,7 +404,10 @@ func parseEnd(line []byte, nonce string) (int, error) {
 	return count, nil
 }
 
-func strictJSON(line []byte, target any) error {
+func strictJSON(line []byte, target any, required ...string) error {
+	if err := validateRequiredFields(line, required); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -345,6 +415,46 @@ func strictJSON(line []byte, target any) error {
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("multiple JSON values")
+	}
+	return nil
+}
+
+func validateRequiredFields(line []byte, required []string) error {
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return fmt.Errorf("protocol frame is not an object")
+	}
+	fields := make(map[string]json.RawMessage)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("invalid protocol field name")
+		}
+		if _, exists := fields[name]; exists {
+			return fmt.Errorf("duplicate protocol field")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		fields[name] = value
+	}
+	if end, err := decoder.Token(); err != nil || end != json.Delim('}') {
+		return fmt.Errorf("invalid protocol object")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("multiple JSON values")
+	}
+	for _, name := range required {
+		value, ok := fields[name]
+		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("missing protocol field")
+		}
 	}
 	return nil
 }
@@ -423,10 +533,10 @@ func validateResult(result provider.Result) error {
 	return nil
 }
 
-func validateCandidateSummaries(candidates []session.Candidate, results []provider.Result) error {
+func validateCandidateSummaries(discovered []session.Discovered, results []provider.Result) error {
 	counts := make(map[session.Provider]int, 2)
-	for _, candidate := range candidates {
-		counts[candidate.Provider]++
+	for _, item := range discovered {
+		counts[item.Candidate.Provider]++
 	}
 	for _, result := range results {
 		count := counts[result.Provider]
@@ -446,6 +556,38 @@ func validateCandidateSummaries(candidates []session.Candidate, results []provid
 			if count != 0 {
 				return fmt.Errorf("failed provider has candidates")
 			}
+		}
+	}
+	return nil
+}
+
+func validateRuntimeReport(report arsruntime.Report) error {
+	switch report.Status {
+	case arsruntime.StatusOK:
+		if report.ErrorCode != "" {
+			return fmt.Errorf("unexpected runtime error code")
+		}
+	case arsruntime.StatusUnavailable:
+		if report.ErrorCode != "tmux_unavailable" {
+			return fmt.Errorf("invalid runtime error code")
+		}
+	case arsruntime.StatusFailed:
+		if report.ErrorCode != "tmux_failed" {
+			return fmt.Errorf("invalid runtime error code")
+		}
+	default:
+		return fmt.Errorf("invalid runtime status")
+	}
+	return nil
+}
+
+func validateReportSessions(discovered []session.Discovered, report arsruntime.Report) error {
+	if report.Status == arsruntime.StatusOK {
+		return nil
+	}
+	for _, item := range discovered {
+		if item.Runtime.State != session.RuntimeSaved {
+			return fmt.Errorf("runtime report conflicts with session state")
 		}
 	}
 	return nil

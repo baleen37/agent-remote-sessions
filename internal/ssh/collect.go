@@ -18,6 +18,7 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
@@ -39,16 +40,16 @@ type CollectOptions struct {
 	ProtocolLimits protocol.Limits
 }
 
-func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target string, options CollectOptions) ([]session.Candidate, []provider.Result, error) {
+func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target string, options CollectOptions) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 	if runner == nil {
-		return nil, nil, fmt.Errorf("SSH runner is nil")
+		return nil, nil, runtime.Report{}, fmt.Errorf("SSH runner is nil")
 	}
 	if assets == nil {
-		return nil, nil, fmt.Errorf("collector assets are nil")
+		return nil, nil, runtime.Report{}, fmt.Errorf("collector assets are nil")
 	}
 	options = withDefaults(options)
 	if err := validateOptions(options); err != nil {
-		return nil, nil, err
+		return nil, nil, runtime.Report{}, err
 	}
 
 	hostCtx, cancel := context.WithTimeout(ctx, options.HostTimeout)
@@ -58,22 +59,22 @@ func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target 
 	probeError := newBoundedBuffer(stderrOutputLimit)
 	probeRunErr := runner.Run(hostCtx, "ssh", collectionSSHArgs(target, options.ConnectTimeout, remoteShellCommand("uname -s; uname -m")), nil, probeOutput, probeError)
 	if err := joinContextError(probeRunErr, hostCtx.Err()); err != nil {
-		return nil, nil, commandError("SSH target probe", err, probeError)
+		return nil, nil, runtime.Report{}, commandError("SSH target probe", err, probeError)
 	}
 	if probeOutput.exceeded {
-		return nil, nil, fmt.Errorf("SSH target probe stdout exceeds limit")
+		return nil, nil, runtime.Report{}, fmt.Errorf("SSH target probe stdout exceeds limit")
 	}
 	goos, goarch, err := parseTarget(probeOutput.Bytes())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, runtime.Report{}, err
 	}
 	collector, err := assets.ForTarget(goos, goarch)
 	if err != nil {
-		return nil, nil, fmt.Errorf("collector asset: %w", err)
+		return nil, nil, runtime.Report{}, fmt.Errorf("collector asset: %w", err)
 	}
 	nonce, err := newNonce()
 	if err != nil {
-		return nil, nil, fmt.Errorf("generate collector nonce: %w", err)
+		return nil, nil, runtime.Report{}, fmt.Errorf("generate collector nonce: %w", err)
 	}
 
 	collectorOutput := newBoundedBuffer(options.ProtocolLimits.TotalBytes)
@@ -92,19 +93,19 @@ func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target 
 		attemptCleanup(runner, target, options.ConnectTimeout, tempPath)
 	}
 	if runErr != nil {
-		return nil, nil, commandError("SSH collector", runErr, collectorError)
+		return nil, nil, runtime.Report{}, commandError("SSH collector", runErr, collectorError)
 	}
 	if collectorOutput.exceeded {
-		return nil, nil, fmt.Errorf("collector stdout exceeds limit")
+		return nil, nil, runtime.Report{}, fmt.Errorf("collector stdout exceeds limit")
 	}
 	if pathErr != nil {
-		return nil, nil, pathErr
+		return nil, nil, runtime.Report{}, pathErr
 	}
-	candidates, results, err := protocol.Decode(bytes.NewReader(collectorOutput.Bytes()), nonce, options.ProtocolLimits)
+	discovered, results, report, err := protocol.Decode(bytes.NewReader(collectorOutput.Bytes()), nonce, options.ProtocolLimits)
 	if err != nil {
-		return nil, nil, fmt.Errorf("collector protocol: %w", err)
+		return nil, nil, runtime.Report{}, fmt.Errorf("collector protocol: %w", err)
 	}
-	return candidates, results, nil
+	return discovered, results, report, nil
 }
 
 func withDefaults(options CollectOptions) CollectOptions {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
@@ -16,11 +17,13 @@ type Result struct {
 	Hosts    []output.HostResult
 	Sessions []session.Session
 	Errors   []output.HostError
+	Warnings []output.HostError
 }
 
-type Collector func(context.Context, string) (
-	[]session.Candidate,
+type Collector func(context.Context, Host) (
+	[]session.Discovered,
 	[]provider.Result,
+	runtime.Report,
 	error,
 )
 
@@ -28,6 +31,7 @@ type hostCollection struct {
 	host     output.HostResult
 	sessions []session.Session
 	err      *output.HostError
+	warning  *output.HostError
 }
 
 func CollectHosts(ctx context.Context, hosts []Host, workerLimit int, collector Collector) Result {
@@ -63,15 +67,19 @@ func collectHost(ctx context.Context, host Host, collector Collector) hostCollec
 	if err := validateTarget(host.Target); err != nil {
 		return failedCollection(host.Target, "unsupported_target", "SSH target is unsupported")
 	}
-	candidates, _, err := collector(ctx, host.Target)
+	discovered, _, report, err := collector(ctx, host)
 	if err != nil {
 		code, message := classifyCollectionError(ctx, err)
 		return failedCollection(host.Target, code, message)
 	}
 
-	sessions := make([]session.Session, 0, len(candidates))
-	for _, candidate := range candidates {
-		bound, err := session.Bind(host.Target, candidate)
+	warning, err := runtimeWarning(host.Target, report)
+	if err != nil {
+		return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
+	}
+	sessions := make([]session.Session, 0, len(discovered))
+	for _, item := range discovered {
+		bound, err := session.BindDiscovered(host.Target, item)
 		if err != nil {
 			return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
 		}
@@ -80,6 +88,31 @@ func collectHost(ctx context.Context, host Host, collector Collector) hostCollec
 	return hostCollection{
 		host:     output.HostResult{Target: host.Target, Status: output.HostOK},
 		sessions: sessions,
+		warning:  warning,
+	}
+}
+
+func runtimeWarning(target string, report runtime.Report) (*output.HostError, error) {
+	switch report.Status {
+	case runtime.StatusOK:
+		if report.ErrorCode != "" {
+			return nil, errors.New("invalid runtime report")
+		}
+		return nil, nil
+	case runtime.StatusUnavailable:
+		if report.ErrorCode != "tmux_unavailable" {
+			return nil, errors.New("invalid runtime report")
+		}
+		warning := output.HostError{Host: target, Code: report.ErrorCode, Message: "Runtime inspection unavailable"}
+		return &warning, nil
+	case runtime.StatusFailed:
+		if report.ErrorCode != "tmux_failed" {
+			return nil, errors.New("invalid runtime report")
+		}
+		warning := output.HostError{Host: target, Code: report.ErrorCode, Message: "Runtime inspection failed"}
+		return &warning, nil
+	default:
+		return nil, errors.New("invalid runtime report")
 	}
 }
 
@@ -115,14 +148,18 @@ func classifyCollectionError(ctx context.Context, err error) (string, string) {
 
 func mergeCollections(collections []hostCollection) Result {
 	result := Result{
-		Hosts:  make([]output.HostResult, 0, len(collections)),
-		Errors: make([]output.HostError, 0),
+		Hosts:    make([]output.HostResult, 0, len(collections)),
+		Errors:   make([]output.HostError, 0),
+		Warnings: make([]output.HostError, 0),
 	}
 	deduplicated := make(map[sessionIdentity]session.Session)
 	for _, collection := range collections {
 		result.Hosts = append(result.Hosts, collection.host)
 		if collection.err != nil {
 			result.Errors = append(result.Errors, *collection.err)
+		}
+		if collection.warning != nil {
+			result.Warnings = append(result.Warnings, *collection.warning)
 		}
 		for _, item := range collection.sessions {
 			identity := sessionIdentity{host: item.Host, provider: item.Provider, nativeID: item.NativeID}

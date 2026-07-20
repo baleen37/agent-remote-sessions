@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
@@ -16,21 +18,21 @@ func FuzzDecode(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, input []byte) {
-		candidates, results, err := Decode(bytes.NewReader(input), testNonce, DefaultLimits())
+		discovered, results, report, err := Decode(bytes.NewReader(input), testNonce, DefaultLimits())
 		if err != nil {
-			if candidates != nil || results != nil {
-				t.Fatalf("Decode() returned data on error: candidates=%#v results=%#v", candidates, results)
+			if discovered != nil || results != nil || report != (runtime.Report{}) {
+				t.Fatalf("Decode() returned data on error: discovered=%#v results=%#v report=%#v", discovered, results, report)
 			}
 			return
 		}
 
-		begin := []byte("ARS/1 BEGIN " + testNonce + "\n")
-		end := []byte(fmt.Sprintf("ARS/1 END %s %d\n", testNonce, len(candidates)))
+		begin := []byte("ARS/2 BEGIN " + testNonce + "\n")
+		end := []byte(fmt.Sprintf("ARS/2 END %s %d\n", testNonce, len(discovered)))
 		beginAt := bytes.Index(input, begin)
 		if beginAt < 0 || !bytes.Equal(input[len(input)-len(end):], end) {
 			t.Fatal("Decode() accepted an incomplete envelope")
 		}
-		if err := successfulDecodeSemantics(candidates, results); err != nil {
+		if err := successfulDecodeSemantics(discovered, results, report); err != nil {
 			t.Fatalf("Decode() accepted invalid success semantics: %v", err)
 		}
 	})
@@ -47,7 +49,7 @@ func TestSuccessfulDecodeSemanticsRejectsImpossibleSummaries(t *testing.T) {
 					}
 				}
 			}
-			if err := successfulDecodeSemantics(tt.candidates, results); err == nil {
+			if err := successfulDecodeSemantics(savedDiscovered(tt.candidates), results, runtime.Report{Status: runtime.StatusOK}); err == nil {
 				t.Fatal("successfulDecodeSemantics() error = nil, want non-nil")
 			}
 		})
@@ -60,18 +62,22 @@ func TestSuccessfulDecodeSemanticsAllowsDeduplicatedSeenCount(t *testing.T) {
 		{Provider: session.Claude, Sessions: []session.Candidate{candidate}, Status: provider.OK, Seen: 2},
 		{Provider: session.Codex, Status: provider.Absent},
 	}
-	if err := successfulDecodeSemantics([]session.Candidate{candidate}, results); err != nil {
+	if err := successfulDecodeSemantics(savedDiscovered([]session.Candidate{candidate}), results, runtime.Report{Status: runtime.StatusOK}); err != nil {
 		t.Fatalf("successfulDecodeSemantics() error = %v", err)
 	}
 }
 
-func successfulDecodeSemantics(candidates []session.Candidate, results []provider.Result) error {
+func successfulDecodeSemantics(discovered []session.Discovered, results []provider.Result, report runtime.Report) error {
 	candidatesByProvider := make(map[session.Provider][]session.Candidate, 2)
-	for _, candidate := range candidates {
-		if err := session.ValidateCandidate(candidate); err != nil {
-			return fmt.Errorf("invalid candidate: %w", err)
+	for _, item := range discovered {
+		if _, err := session.BindDiscovered("fuzz", item); err != nil {
+			return fmt.Errorf("invalid discovered session: %w", err)
 		}
+		candidate := item.Candidate
 		candidatesByProvider[candidate.Provider] = append(candidatesByProvider[candidate.Provider], candidate)
+	}
+	if err := validateRuntimeReport(report); err != nil {
+		return err
 	}
 	if len(results) != 2 {
 		return fmt.Errorf("got %d summaries, want 2", len(results))
@@ -140,7 +146,7 @@ func fuzzSeeds(t testing.TB) [][]byte {
 	line := sessionLine(t, candidate)
 
 	var tooMany bytes.Buffer
-	tooMany.WriteString("ARS/1 BEGIN " + testNonce + "\n")
+	tooMany.WriteString("ARS/2 BEGIN " + testNonce + "\n")
 	for range limits.Sessions + 1 {
 		tooMany.Write(line)
 	}
@@ -149,47 +155,60 @@ func fuzzSeeds(t testing.TB) [][]byte {
 	candidate.Title = strings.Repeat("t", session.MaxTitleBytes)
 	largeLine := sessionLine(t, candidate)
 	var tooLarge bytes.Buffer
-	tooLarge.WriteString("ARS/1 BEGIN " + testNonce + "\n")
+	tooLarge.WriteString("ARS/2 BEGIN " + testNonce + "\n")
 	for tooLarge.Len() <= int(limits.TotalBytes) {
 		tooLarge.Write(largeLine)
 	}
 
 	invalidCandidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	invalidCandidate.CWD = "relative/path"
-	begin := []byte("ARS/1 BEGIN " + testNonce)
-	end := []byte("ARS/1 END " + testNonce + " 2")
+	begin := []byte("ARS/2 BEGIN " + testNonce)
+	end := []byte("ARS/2 END " + testNonce + " 2")
 	empty := rawTranscript(t, nil, []provider.Result{
 		{Provider: session.Claude, Status: provider.OK},
 		{Provider: session.Codex, Status: provider.OK},
 	})
-	emptyEnd := []byte("ARS/1 END " + testNonce + " 0")
+	emptyEnd := []byte("ARS/2 END " + testNonce + " 0")
 	seeds := [][]byte{
 		valid,
 		bytes.TrimSuffix(valid, []byte{'\n'}),
 		bytes.ReplaceAll(valid, []byte{'\n'}, []byte{'\r', '\n'}),
 		bytes.Replace(valid, begin, append([]byte{' '}, begin...), 1),
-		bytes.Replace(valid, begin, []byte("ARS/1\tBEGIN\t"+testNonce), 1),
-		bytes.Replace(valid, begin, []byte("ARS/1  BEGIN "+testNonce), 1),
+		bytes.Replace(valid, begin, []byte("ARS/2\tBEGIN\t"+testNonce), 1),
+		bytes.Replace(valid, begin, []byte("ARS/2  BEGIN "+testNonce), 1),
 		bytes.Replace(valid, begin, append(append([]byte(nil), begin...), ' '), 1),
 		bytes.Replace(valid, end, append([]byte{' '}, end...), 1),
-		bytes.Replace(valid, end, []byte("ARS/1\tEND\t"+testNonce+"\t2"), 1),
-		bytes.Replace(valid, end, []byte("ARS/1  END "+testNonce+" 2"), 1),
+		bytes.Replace(valid, end, []byte("ARS/2\tEND\t"+testNonce+"\t2"), 1),
+		bytes.Replace(valid, end, []byte("ARS/2  END "+testNonce+" 2"), 1),
 		bytes.Replace(valid, end, append(append([]byte(nil), end...), ' '), 1),
-		bytes.Replace(valid, end, []byte("ARS/1 END "+testNonce+" +2"), 1),
-		bytes.Replace(valid, end, []byte("ARS/1 END "+testNonce+" 02"), 1),
-		bytes.Replace(empty, emptyEnd, []byte("ARS/1 END "+testNonce+" -0"), 1),
-		[]byte("ARS/1 BEGIN ffffffffffffffffffffffffffffffff\n"),
-		[]byte("ARS/1 BEGIN\n"),
-		[]byte("ARS/2 BEGIN " + testNonce + "\n"),
-		[]byte("ARS/1 BEGIN " + testNonce + "\n{\"type\":\"prompt\"}\n"),
-		append([]byte("ARS/1 BEGIN "+testNonce+"\n"), 0xff),
-		[]byte("ARS/1 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"),
-		[]byte(strings.Repeat("x\n", int(limits.StartupBytes/2)+1) + "ARS/1 BEGIN " + testNonce + "\n"),
+		bytes.Replace(valid, end, []byte("ARS/2 END "+testNonce+" +2"), 1),
+		bytes.Replace(valid, end, []byte("ARS/2 END "+testNonce+" 02"), 1),
+		bytes.Replace(empty, emptyEnd, []byte("ARS/2 END "+testNonce+" -0"), 1),
+		[]byte("ARS/2 BEGIN ffffffffffffffffffffffffffffffff\n"),
+		[]byte("ARS/2 BEGIN\n"),
+		[]byte("ARS/1 BEGIN " + testNonce + "\n"),
+		[]byte("ARS/2 BEGIN " + testNonce + "\n{\"type\":\"prompt\"}\n"),
+		append([]byte("ARS/2 BEGIN "+testNonce+"\n"), 0xff),
+		[]byte("ARS/2 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"),
+		[]byte(strings.Repeat("x\n", int(limits.StartupBytes/2)+1) + "ARS/2 BEGIN " + testNonce + "\n"),
 		tooLarge.Bytes(),
 		tooMany.Bytes(),
-		valid[:bytes.LastIndex(valid, []byte("ARS/1 END"))],
-		bytes.Replace(valid, []byte("ARS/1 END "+testNonce+" 2"), []byte("ARS/1 END "+testNonce+" 1"), 1),
-		append([]byte("ARS/1 BEGIN "+testNonce+"\n"), sessionLine(t, invalidCandidate)...),
+		valid[:bytes.LastIndex(valid, []byte("ARS/2 END"))],
+		bytes.Replace(valid, []byte("ARS/2 END "+testNonce+" 2"), []byte("ARS/2 END "+testNonce+" 1"), 1),
+		append([]byte("ARS/2 BEGIN "+testNonce+"\n"), sessionLine(t, invalidCandidate)...),
+	}
+	for _, state := range []session.Runtime{
+		{State: session.RuntimeSaved},
+		{State: session.RuntimeRunning, StartedAt: time.Unix(10, 0).UTC()},
+		{State: session.RuntimeAttached, AttachedClients: 1, StartedAt: time.Unix(10, 0).UTC()},
+	} {
+		var output bytes.Buffer
+		item := session.Discovered{Candidate: validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111"), Runtime: state}
+		results := []provider.Result{{Provider: session.Claude, Sessions: []session.Candidate{item.Candidate}, Status: provider.OK, Seen: 1}, {Provider: session.Codex, Status: provider.Absent}}
+		if err := Encode(&output, testNonce, []session.Discovered{item}, results, runtime.Report{Status: runtime.StatusOK}); err != nil {
+			t.Fatal(err)
+		}
+		seeds = append(seeds, output.Bytes())
 	}
 	for _, tt := range impossibleSummaryCases() {
 		seeds = append(seeds, rawTranscript(t, tt.candidates, tt.results))

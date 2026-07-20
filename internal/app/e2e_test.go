@@ -20,6 +20,7 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	arsSSH "github.com/baleen37/agent-remote-sessions/internal/ssh"
 )
@@ -118,8 +119,8 @@ func e2eDependencies(runner *e2eRunner, stdout, stderr io.Writer) app.Dependenci
 	return app.Dependencies{
 		LoadHosts: app.Load,
 		Collect: func(ctx context.Context, hosts []app.Host) app.Result {
-			return app.CollectHosts(ctx, hosts, 4, func(ctx context.Context, target string) ([]session.Candidate, []provider.Result, error) {
-				return arsSSH.Collect(ctx, runner, assets, target, arsSSH.CollectOptions{
+			return app.CollectHosts(ctx, hosts, 4, func(ctx context.Context, host app.Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+				return arsSSH.Collect(ctx, runner, assets, host.Target, arsSSH.CollectOptions{
 					ConnectTimeout: 5 * time.Second,
 					HostTimeout:    60 * time.Second,
 					ProtocolLimits: protocol.DefaultLimits(),
@@ -257,17 +258,18 @@ func (runner *e2eRunner) Run(ctx context.Context, name string, args []string, st
 		return fmt.Errorf("collector nonce missing")
 	}
 	nonce := match[1]
-	results := make([]provider.Result, 0, 2)
-	candidates := make([]session.Candidate, 0, 2)
-	for _, adapter := range provider.Builtin() {
-		result := adapter.Discover(ctx, runner.remoteHome)
-		results = append(results, result)
-		candidates = append(candidates, result.Sessions...)
+	candidates, results, err := provider.DiscoverAll(ctx, runner.remoteHome, provider.Builtin())
+	if err != nil {
+		return err
+	}
+	discovered := make([]session.Discovered, len(candidates))
+	for i, candidate := range candidates {
+		discovered[i] = session.Discovered{Candidate: candidate, Runtime: session.Runtime{State: session.RuntimeSaved}}
 	}
 	if _, err := fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonce); err != nil {
 		return err
 	}
-	if err := protocol.Encode(stdout, nonce, candidates, results); err != nil {
+	if err := protocol.Encode(stdout, nonce, discovered, results, runtime.Report{Status: runtime.StatusOK}); err != nil {
 		return err
 	}
 	runner.mu.Lock()

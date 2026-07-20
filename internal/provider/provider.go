@@ -72,6 +72,66 @@ func Lookup(name session.Provider) (Adapter, bool) {
 	return nil, false
 }
 
+func DiscoverAll(ctx context.Context, home string, adapters []Adapter) ([]session.Candidate, []Result, error) {
+	if !validRegistry(adapters) {
+		return nil, nil, fmt.Errorf("invalid provider registry")
+	}
+
+	results := make([]Result, 0, len(adapters))
+	candidates := make([]session.Candidate, 0)
+	for _, adapter := range adapters {
+		result := adapter.Discover(ctx, home)
+		if result.Provider != adapter.Name() {
+			return nil, nil, fmt.Errorf("invalid provider result")
+		}
+		for _, candidate := range result.Sessions {
+			if candidate.Provider != result.Provider || session.ValidateCandidate(candidate) != nil {
+				return nil, nil, fmt.Errorf("invalid provider candidate")
+			}
+			if len(candidates) >= maxDiscoveredSessions {
+				return nil, nil, fmt.Errorf("combined session count exceeds limit")
+			}
+			candidates = append(candidates, candidate)
+		}
+		results = append(results, result)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Provider != candidates[j].Provider {
+			return providerOrder(candidates[i].Provider) < providerOrder(candidates[j].Provider)
+		}
+		return candidates[i].NativeID < candidates[j].NativeID
+	})
+	sort.Slice(results, func(i, j int) bool {
+		return providerOrder(results[i].Provider) < providerOrder(results[j].Provider)
+	})
+	return candidates, results, nil
+}
+
+func validRegistry(adapters []Adapter) bool {
+	if len(adapters) != 2 {
+		return false
+	}
+	seen := make(map[session.Provider]struct{}, len(adapters))
+	for _, adapter := range adapters {
+		if adapter == nil || (adapter.Name() != session.Claude && adapter.Name() != session.Codex) {
+			return false
+		}
+		if _, exists := seen[adapter.Name()]; exists {
+			return false
+		}
+		seen[adapter.Name()] = struct{}{}
+	}
+	return true
+}
+
+func providerOrder(name session.Provider) int {
+	if name == session.Claude {
+		return 0
+	}
+	return 1
+}
+
 func validateID(provider session.Provider, id string) error {
 	candidate := session.Candidate{
 		Provider:  provider,

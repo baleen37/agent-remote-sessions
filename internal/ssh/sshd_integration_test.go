@@ -32,13 +32,14 @@ func TestEphemeralSSHDCollectsAndResumes(t *testing.T) {
 
 	collector := []byte("#!/bin/sh\n" +
 		"nonce=$1\n" +
-		"printf 'ARS/1 BEGIN %s\\n' \"$nonce\"\n" +
-		`printf '%s\n' '{"type":"session","provider":"claude","native_id":"123e4567-e89b-42d3-a456-426614174000","updated_at":"2026-07-19T01:02:03Z","cwd":"/work/app","title":"Ephemeral SSH"}'` + "\n" +
+		"printf 'ARS/2 BEGIN %s\\n' \"$nonce\"\n" +
+		`printf '%s\n' '{"type":"session","provider":"claude","native_id":"123e4567-e89b-42d3-a456-426614174000","updated_at":"2026-07-19T01:02:03Z","cwd":"/work/app","title":"Ephemeral SSH","runtime_state":"saved","attached_clients":0}'` + "\n" +
 		`printf '%s\n' '{"type":"summary","provider":"claude","status":"ok","seen":1,"skipped":0}'` + "\n" +
 		`printf '%s\n' '{"type":"summary","provider":"codex","status":"absent","seen":0,"skipped":0}'` + "\n" +
-		"printf 'ARS/1 END %s 1\\n' \"$nonce\"\n")
+		`printf '%s\n' '{"type":"runtime","status":"ok"}'` + "\n" +
+		"printf 'ARS/2 END %s 1\\n' \"$nonce\"\n")
 
-	candidates, results, err := Collect(
+	discovered, results, _, err := Collect(
 		context.Background(),
 		runner,
 		integrationAssets{data: collector},
@@ -48,8 +49,8 @@ func TestEphemeralSSHDCollectsAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect() through ephemeral sshd: %v", err)
 	}
-	if len(candidates) != 1 || candidates[0].NativeID != "123e4567-e89b-42d3-a456-426614174000" || len(results) != 2 {
-		t.Fatalf("decoded collector result = (%#v, %#v), want one Claude session and two summaries", candidates, results)
+	if len(discovered) != 1 || discovered[0].Candidate.NativeID != "123e4567-e89b-42d3-a456-426614174000" || len(results) != 2 {
+		t.Fatalf("decoded collector result = (%#v, %#v), want one Claude session and two summaries", discovered, results)
 	}
 	leftovers, err := filepath.Glob(filepath.Join(server.remoteTemp, "ars-*"))
 	if err != nil {
@@ -59,7 +60,7 @@ func TestEphemeralSSHDCollectsAndResumes(t *testing.T) {
 		t.Fatalf("collector cleanup left nonce directories: %#v", leftovers)
 	}
 
-	item, err := session.Bind(server.target, candidates[0])
+	item, err := session.BindDiscovered(server.target, discovered[0])
 	if err != nil {
 		t.Fatal(err)
 	}

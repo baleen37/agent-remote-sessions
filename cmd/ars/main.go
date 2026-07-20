@@ -12,6 +12,7 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
+	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/baleen37/agent-remote-sessions/internal/ssh"
 )
@@ -21,8 +22,8 @@ func main() {
 
 	runner := ssh.SystemRunner{}
 	assets := ssh.EmbeddedCollectorAssets{}
-	collector := func(ctx context.Context, target string) ([]session.Candidate, []provider.Result, error) {
-		return ssh.Collect(ctx, runner, assets, target, ssh.CollectOptions{
+	collector := func(ctx context.Context, host app.Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		return ssh.Collect(ctx, runner, assets, host.Target, ssh.CollectOptions{
 			ConnectTimeout: 5 * time.Second,
 			HostTimeout:    60 * time.Second,
 			ProtocolLimits: protocol.DefaultLimits(),
