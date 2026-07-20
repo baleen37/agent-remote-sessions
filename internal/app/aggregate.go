@@ -77,6 +77,9 @@ func collectHost(ctx context.Context, host Host, collector Collector) hostCollec
 	if err != nil {
 		return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
 	}
+	if err := validateRuntimeSessions(discovered, report); err != nil {
+		return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
+	}
 	runtimeDiagnostic, err := runtimeWarning(host.Target, report)
 	if err != nil {
 		return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
@@ -143,6 +146,18 @@ func validProviderErrorCode(code string) bool {
 	default:
 		return false
 	}
+}
+
+func validateRuntimeSessions(discovered []session.Discovered, report runtime.Report) error {
+	if report.Status == runtime.StatusOK {
+		return nil
+	}
+	for _, item := range discovered {
+		if item.Runtime.State != session.RuntimeSaved {
+			return errors.New("runtime report conflicts with session state")
+		}
+	}
+	return nil
 }
 
 func runtimeWarning(target string, report runtime.Report) (*output.HostError, error) {

@@ -221,6 +221,55 @@ func TestDecodeRejectsMissingNullAndDuplicateFrameFields(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsCaseVariantAndAliasCollisionFields(t *testing.T) {
+	valid := validTranscript(t)
+	tests := map[string][]byte{
+		"session case variant": bytes.Replace(valid,
+			[]byte("{\"type\":\"session\",\"provider\":"),
+			[]byte("{\"type\":\"session\",\"Provider\":"), 1),
+		"session alias collision": bytes.Replace(valid,
+			[]byte("\"provider\":\"claude\""),
+			[]byte("\"provider\":\"claude\",\"Provider\":\"claude\""), 1),
+		"summary case variant": bytes.Replace(valid,
+			[]byte("{\"type\":\"summary\",\"provider\":\"claude\",\"status\":"),
+			[]byte("{\"type\":\"summary\",\"provider\":\"claude\",\"Status\":"), 1),
+		"summary alias collision": bytes.Replace(valid,
+			[]byte("{\"type\":\"summary\",\"provider\":\"claude\",\"status\":\"ok\""),
+			[]byte("{\"type\":\"summary\",\"provider\":\"claude\",\"status\":\"ok\",\"Status\":\"ok\""), 1),
+		"runtime case variant": bytes.Replace(valid,
+			[]byte("{\"type\":\"runtime\",\"status\":"),
+			[]byte("{\"type\":\"runtime\",\"Status\":"), 1),
+		"runtime alias collision": bytes.Replace(valid,
+			[]byte("{\"type\":\"runtime\",\"status\":\"ok\"}"),
+			[]byte("{\"type\":\"runtime\",\"status\":\"ok\",\"Status\":\"ok\"}"), 1),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeFailsClosed(t, input, DefaultLimits())
+		})
+	}
+}
+
+func TestDecodeRejectsNullOptionalFields(t *testing.T) {
+	valid := validTranscript(t)
+	tests := map[string][]byte{
+		"session runtime start": bytes.Replace(valid,
+			[]byte("\"attached_clients\":0}"),
+			[]byte("\"attached_clients\":0,\"runtime_started_at\":null}"), 1),
+		"summary error code": bytes.Replace(valid,
+			[]byte("{\"type\":\"summary\",\"provider\":\"claude\",\"status\":\"ok\",\"seen\":1,\"skipped\":0}"),
+			[]byte("{\"type\":\"summary\",\"provider\":\"claude\",\"status\":\"ok\",\"seen\":1,\"skipped\":0,\"error_code\":null}"), 1),
+		"runtime error code": bytes.Replace(valid,
+			[]byte("{\"type\":\"runtime\",\"status\":\"ok\"}"),
+			[]byte("{\"type\":\"runtime\",\"status\":\"ok\",\"error_code\":null}"), 1),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeFailsClosed(t, input, DefaultLimits())
+		})
+	}
+}
+
 func TestProtocolRejectsLiveSessionsWithNonOKRuntimeReport(t *testing.T) {
 	item := session.Discovered{
 		Candidate: validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111"),

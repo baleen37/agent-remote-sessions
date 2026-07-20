@@ -405,7 +405,14 @@ func parseEnd(line []byte, nonce string) (int, error) {
 }
 
 func strictJSON(line []byte, target any, required ...string) error {
-	if err := validateRequiredFields(line, required); err != nil {
+	optional := []string(nil)
+	switch target.(type) {
+	case *sessionFrame:
+		optional = []string{"runtime_started_at"}
+	case *summaryFrame, *runtimeFrame:
+		optional = []string{"error_code"}
+	}
+	if err := validateFrameFields(line, required, optional); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(line))
@@ -419,13 +426,20 @@ func strictJSON(line []byte, target any, required ...string) error {
 	return nil
 }
 
-func validateRequiredFields(line []byte, required []string) error {
+func validateFrameFields(line []byte, required, optional []string) error {
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	start, err := decoder.Token()
 	if err != nil || start != json.Delim('{') {
 		return fmt.Errorf("protocol frame is not an object")
 	}
-	fields := make(map[string]json.RawMessage)
+	allowed := make(map[string]struct{}, len(required)+len(optional))
+	for _, name := range required {
+		allowed[name] = struct{}{}
+	}
+	for _, name := range optional {
+		allowed[name] = struct{}{}
+	}
+	fields := make(map[string]json.RawMessage, len(allowed))
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
@@ -438,9 +452,15 @@ func validateRequiredFields(line []byte, required []string) error {
 		if _, exists := fields[name]; exists {
 			return fmt.Errorf("duplicate protocol field")
 		}
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("unknown protocol field")
+		}
 		var value json.RawMessage
 		if err := decoder.Decode(&value); err != nil {
 			return err
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("null protocol field")
 		}
 		fields[name] = value
 	}
@@ -451,8 +471,7 @@ func validateRequiredFields(line []byte, required []string) error {
 		return fmt.Errorf("multiple JSON values")
 	}
 	for _, name := range required {
-		value, ok := fields[name]
-		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		if _, ok := fields[name]; !ok {
 			return fmt.Errorf("missing protocol field")
 		}
 	}

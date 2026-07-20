@@ -61,6 +61,22 @@ func TestCollectHostsKeepsSessionsBesideProviderWarnings(t *testing.T) {
 	}
 }
 
+func TestCollectHostsRejectsLiveSessionWithNonOKRuntimeReport(t *testing.T) {
+	started := time.Unix(20, 0).UTC()
+	collector := func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		return []session.Discovered{{
+			Candidate: aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Unix(10, 0).UTC()),
+			Runtime:   session.Runtime{State: session.RuntimeAttached, AttachedClients: 1, StartedAt: started},
+		}}, nil, runtime.Report{Status: runtime.StatusUnavailable, ErrorCode: "tmux_unavailable"}, nil
+	}
+
+	got := CollectHosts(context.Background(), []Host{{Target: "macbook", Local: true}}, 1, collector)
+	wantErrors := []output.HostError{{Host: "macbook", Code: "protocol_error", Message: "Collector protocol failed"}}
+	if len(got.Sessions) != 0 || got.Hosts[0].Status != output.HostStatusError || !reflect.DeepEqual(got.Errors, wantErrors) || len(got.Warnings) != 0 {
+		t.Fatalf("result = %#v", got)
+	}
+}
+
 func TestCollectHostsLimitsConcurrencyAndAttemptsEveryHostOnce(t *testing.T) {
 	hosts := make([]Host, 12)
 	for index := range hosts {
