@@ -72,6 +72,29 @@ func TestValidateCandidateAcceptsBoundedUTF8Fields(t *testing.T) {
 	}
 }
 
+func TestValidateRuntime(t *testing.T) {
+	started := time.Unix(10, 0).UTC()
+	tests := []struct {
+		runtime Runtime
+		valid   bool
+	}{
+		{Runtime{State: RuntimeSaved}, true},
+		{Runtime{State: RuntimeRunning, StartedAt: started}, true},
+		{Runtime{State: RuntimeAttached, AttachedClients: 2, StartedAt: started}, true},
+		{Runtime{State: "other"}, false},
+		{Runtime{State: RuntimeSaved, AttachedClients: 1}, false},
+		{Runtime{State: RuntimeRunning, AttachedClients: 1, StartedAt: started}, false},
+		{Runtime{State: RuntimeAttached, StartedAt: started}, false},
+		{Runtime{State: RuntimeRunning}, false},
+	}
+	for _, test := range tests {
+		err := ValidateRuntime(test.runtime)
+		if (err == nil) != test.valid {
+			t.Fatalf("%#v error = %v", test.runtime, err)
+		}
+	}
+}
+
 func TestBindValidatesHostAndCandidate(t *testing.T) {
 	candidate := validCandidate(Claude)
 	session, err := Bind("user@devbox", candidate)
@@ -80,6 +103,9 @@ func TestBindValidatesHostAndCandidate(t *testing.T) {
 	}
 	if session.Host != "user@devbox" || session.Candidate != candidate {
 		t.Fatalf("Bind() = %#v, want host and candidate preserved", session)
+	}
+	if session.Runtime != (Runtime{State: RuntimeSaved}) {
+		t.Fatalf("Bind() runtime = %#v, want saved runtime", session.Runtime)
 	}
 
 	tests := []struct {
@@ -101,6 +127,32 @@ func TestBindValidatesHostAndCandidate(t *testing.T) {
 				t.Fatalf("Bind() = (%#v, %v), want zero Session and error", got, err)
 			}
 		})
+	}
+}
+
+func TestBindDiscoveredValidatesRuntime(t *testing.T) {
+	started := time.Unix(10, 0).UTC()
+	candidate := validCandidate(Codex)
+	discovered := Discovered{
+		Candidate: candidate,
+		Runtime: Runtime{
+			State:           RuntimeAttached,
+			AttachedClients: 2,
+			StartedAt:       started,
+		},
+	}
+
+	got, err := BindDiscovered("devbox", discovered)
+	if err != nil {
+		t.Fatalf("BindDiscovered() error = %v", err)
+	}
+	if got.Host != "devbox" || got.Candidate != candidate || got.Runtime != discovered.Runtime {
+		t.Fatalf("BindDiscovered() = %#v, want discovered metadata preserved", got)
+	}
+
+	discovered.Runtime = Runtime{State: RuntimeAttached, StartedAt: started}
+	if got, err := BindDiscovered("devbox", discovered); err == nil || got != (Session{}) {
+		t.Fatalf("BindDiscovered() = (%#v, %v), want zero Session and error", got, err)
 	}
 }
 

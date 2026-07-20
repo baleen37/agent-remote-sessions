@@ -29,9 +29,29 @@ type Candidate struct {
 	Title     string
 }
 
+type RuntimeState string
+
+const (
+	RuntimeSaved    RuntimeState = "saved"
+	RuntimeRunning  RuntimeState = "running"
+	RuntimeAttached RuntimeState = "attached"
+)
+
+type Runtime struct {
+	State           RuntimeState
+	AttachedClients int
+	StartedAt       time.Time
+}
+
+type Discovered struct {
+	Candidate Candidate
+	Runtime   Runtime
+}
+
 type Session struct {
 	Host string
 	Candidate
+	Runtime Runtime
 }
 
 func ValidateCandidate(candidate Candidate) error {
@@ -56,14 +76,44 @@ func ValidateCandidate(candidate Candidate) error {
 	return nil
 }
 
-func Bind(host string, candidate Candidate) (Session, error) {
+func ValidateRuntime(value Runtime) error {
+	switch value.State {
+	case RuntimeSaved:
+		if value.AttachedClients != 0 || !value.StartedAt.IsZero() {
+			return fmt.Errorf("saved runtime has live metadata")
+		}
+	case RuntimeRunning:
+		if value.AttachedClients != 0 || value.StartedAt.IsZero() {
+			return fmt.Errorf("invalid running runtime")
+		}
+	case RuntimeAttached:
+		if value.AttachedClients < 1 || value.StartedAt.IsZero() {
+			return fmt.Errorf("invalid attached runtime")
+		}
+	default:
+		return fmt.Errorf("invalid runtime state")
+	}
+	return nil
+}
+
+func BindDiscovered(host string, value Discovered) (Session, error) {
 	if err := validateHost(host); err != nil {
 		return Session{}, err
 	}
-	if err := ValidateCandidate(candidate); err != nil {
+	if err := ValidateCandidate(value.Candidate); err != nil {
 		return Session{}, err
 	}
-	return Session{Host: host, Candidate: candidate}, nil
+	if err := ValidateRuntime(value.Runtime); err != nil {
+		return Session{}, err
+	}
+	return Session{Host: host, Candidate: value.Candidate, Runtime: value.Runtime}, nil
+}
+
+func Bind(host string, candidate Candidate) (Session, error) {
+	return BindDiscovered(host, Discovered{
+		Candidate: candidate,
+		Runtime:   Runtime{State: RuntimeSaved},
+	})
 }
 
 func Project(cwd string) string {
