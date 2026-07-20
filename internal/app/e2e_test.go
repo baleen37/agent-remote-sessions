@@ -16,131 +16,258 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/app"
-	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
 	"github.com/baleen37/agent-remote-sessions/internal/runtime"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	arsSSH "github.com/baleen37/agent-remote-sessions/internal/ssh"
+	"github.com/baleen37/agent-remote-sessions/internal/tui"
 )
 
 const (
-	e2eClaudeID = "11111111-1111-1111-1111-111111111111"
-	e2eCodexID  = "22222222-2222-2222-2222-222222222222"
-	e2eSecret   = "RAW_TRANSCRIPT_MUST_NOT_CROSS_BOUNDARY"
+	e2eLocalClaudeID = "11111111-1111-1111-1111-111111111111"
+	e2eRemoteCodexID = "22222222-2222-2222-2222-222222222222"
+	e2eSecret        = "RAW_TRANSCRIPT_MUST_NOT_CROSS_BOUNDARY"
 )
 
-func TestEndToEndListAndResumeThroughSSHBoundary(t *testing.T) {
-	remoteHome := writeSyntheticProviderHomes(t)
+func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T) {
+	localHome := writeSyntheticClaudeHome(t)
+	remoteHome := writeSyntheticCodexHome(t)
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
-	inventory := filepath.Join(configHome, "ars", "hosts")
-	if err := os.MkdirAll(filepath.Dir(inventory), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(inventory, []byte("healthy\ndown\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTopology(t, configHome)
 
-	t.Run("list JSON keeps healthy sessions beside an unreachable peer", func(t *testing.T) {
-		runner := &e2eRunner{remoteHome: remoteHome, collectorAsset: []byte("synthetic collector")}
+	t.Run("interactive routes canonical local and remote sessions and refreshes after attach", func(t *testing.T) {
+		harness := newE2EHarness(localHome, remoteHome)
 		var stdout, stderr bytes.Buffer
-		dependencies := e2eDependencies(runner, &stdout, &stderr)
+		harness.dependencies.Stdout = &stdout
+		harness.dependencies.Stderr = &stderr
+		started := false
+		harness.dependencies.RunInteractive = func(ctx context.Context, hosts []app.Host) error {
+			started = true
+			if want := []app.Host{{Target: "macbook", Local: true}, {Target: "healthy"}, {Target: "down"}}; !slices.Equal(hosts, want) {
+				t.Fatalf("hosts = %#v, want %#v", hosts, want)
+			}
 
-		if code := app.Run(context.Background(), []string{"list", "--json"}, dependencies); code != 0 {
+			result := harness.collect(ctx, hosts)
+			assertCanonicalResult(t, result)
+			tuiResult := tui.Result{
+				Hosts: result.Hosts, Sessions: result.Sessions, Errors: result.Errors, Warnings: result.Warnings,
+			}
+			if len(tuiResult.Sessions) != 2 || tuiResult.Sessions[0].Host != "healthy" || tuiResult.Sessions[1].Host != "macbook" {
+				t.Fatalf("TUI sessions = %#v", tuiResult.Sessions)
+			}
+
+			remoteCommand, err := harness.attach(ctx, hosts, tuiResult.Sessions[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := remoteCommand.(*arsSSH.AttachCommand); !ok {
+				t.Fatalf("remote command = %T", remoteCommand)
+			}
+			localCommand, err := harness.attach(ctx, hosts, tuiResult.Sessions[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := localCommand.(*runtime.AttachCommand); !ok {
+				t.Fatalf("local command = %T", localCommand)
+			}
+			localCommand.SetStdin(strings.NewReader(""))
+			localCommand.SetStdout(io.Discard)
+			localCommand.SetStderr(io.Discard)
+			if err := localCommand.Run(); err != nil {
+				t.Fatal(err)
+			}
+
+			refreshed := harness.collect(ctx, hosts)
+			assertCanonicalResult(t, refreshed)
+			return nil
+		}
+
+		if code := app.Run(context.Background(), nil, harness.dependencies); code != 0 {
+			t.Fatalf("Run() = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		if !started || harness.collections != 2 || harness.sshRunner.uploadCount() != 2 {
+			t.Fatalf("started/collections/uploads = %v/%d/%d", started, harness.collections, harness.sshRunner.uploadCount())
+		}
+		if want := []string{"has-session", "bind-key", "attach-session"}; !slices.Equal(harness.runtimeRunner.attachCommands(), want) {
+			t.Fatalf("local attach commands = %v, want %v", harness.runtimeRunner.attachCommands(), want)
+		}
+		if harness.sshRunner.sawUnexpectedCommand() {
+			t.Fatalf("unexpected command names = %v", harness.sshRunner.commandNames())
+		}
+	})
+
+	t.Run("JSON collects topology once and never starts interactive mode", func(t *testing.T) {
+		harness := newE2EHarness(localHome, remoteHome)
+		var stdout, stderr bytes.Buffer
+		harness.dependencies.Stdout = &stdout
+		harness.dependencies.Stderr = &stderr
+		harness.dependencies.RunInteractive = func(context.Context, []app.Host) error {
+			t.Fatal("interactive mode started")
+			return nil
+		}
+
+		if code := app.Run(context.Background(), []string{"list", "--json"}, harness.dependencies); code != 0 {
 			t.Fatalf("Run() = %d, want 0; stderr = %q", code, stderr.String())
 		}
 		var document e2eDocument
 		if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
 			t.Fatalf("decode JSON output: %v; output = %q", err, stdout.String())
 		}
-		if document.SchemaVersion != 1 {
-			t.Fatalf("schema_version = %d, want 1", document.SchemaVersion)
+		if document.SchemaVersion != 1 || harness.collections != 1 || harness.sshRunner.uploadCount() != 1 {
+			t.Fatalf("schema/collections/uploads = %d/%d/%d", document.SchemaVersion, harness.collections, harness.sshRunner.uploadCount())
 		}
 		wantSessions := []e2eSession{
-			{Host: "healthy", Provider: "codex", NativeID: e2eCodexID, UpdatedAt: "2026-07-19T02:00:00Z", CWD: "/work/codex"},
-			{Host: "healthy", Provider: "claude", NativeID: e2eClaudeID, UpdatedAt: "2026-07-19T01:00:00Z", CWD: "/work/claude", Title: "Synthetic Claude task"},
+			{Host: "healthy", Provider: "codex", NativeID: e2eRemoteCodexID, UpdatedAt: "2026-07-19T02:00:00Z", CWD: "/work/remote"},
+			{Host: "macbook", Provider: "claude", NativeID: e2eLocalClaudeID, UpdatedAt: "2026-07-19T01:00:00Z", CWD: "/work/local", Title: "Local task"},
 		}
 		if !slices.Equal(document.Sessions, wantSessions) {
 			t.Fatalf("sessions = %#v, want %#v", document.Sessions, wantSessions)
 		}
-		if len(document.Hosts) != 2 || document.Hosts[0] != (e2eHost{Target: "healthy", Status: "ok"}) ||
-			document.Hosts[1] != (e2eHost{Target: "down", Status: "error"}) {
-			t.Fatalf("hosts = %#v, want healthy and unreachable results", document.Hosts)
-		}
-		if len(document.Errors) != 1 || document.Errors[0] != (e2eHostError{Host: "down", Code: "ssh_failed", Message: "SSH collection failed"}) {
-			t.Fatalf("errors = %#v, want structured unreachable-host error", document.Errors)
-		}
-		if strings.Contains(stdout.String(), e2eSecret) || strings.Contains(stdout.String(), remoteHome) {
+		if strings.Contains(stdout.String(), e2eSecret) || strings.Contains(stdout.String(), localHome) || strings.Contains(stdout.String(), remoteHome) {
 			t.Fatalf("public JSON leaked raw content or provider source path: %q", stdout.String())
 		}
-		if runner.uploadCount() != 1 {
-			t.Fatalf("collector uploads = %d, want one healthy-host upload", runner.uploadCount())
-		}
-	})
-
-	t.Run("opaque fzf index resumes the selected native session", func(t *testing.T) {
-		runner := &e2eRunner{
-			remoteHome:     remoteHome,
-			collectorAsset: []byte("synthetic collector"),
-			fzfSelection:   "1\n",
-		}
-		var stdout, stderr bytes.Buffer
-		dependencies := e2eDependencies(runner, &stdout, &stderr)
-
-		if code := app.Run(context.Background(), nil, dependencies); code != 0 {
-			t.Fatalf("Run() = %d, want 0; stderr = %q", code, stderr.String())
-		}
-		if !strings.Contains(stderr.String(), "down: SSH collection failed (ssh_failed)") {
-			t.Fatalf("stderr = %q, want partial-host diagnostic", stderr.String())
-		}
-		fzfInput, resumeArgs := runner.observations()
-		rows := strings.Split(strings.TrimSuffix(fzfInput, "\n"), "\n")
-		if len(rows) != 2 || !strings.HasPrefix(rows[0], "0\t") || !strings.HasPrefix(rows[1], "1\t") {
-			t.Fatalf("fzf input = %q, want two opaque indexed rows", fzfInput)
-		}
-		wantResume := []string{
-			"-tt",
-			"healthy",
-			"cd '/work/claude' && exec claude --resume '" + e2eClaudeID + "'",
-		}
-		if !slices.Equal(resumeArgs, wantResume) {
-			t.Fatalf("resume argv = %#v, want %#v", resumeArgs, wantResume)
-		}
-		if strings.Contains(fzfInput, e2eSecret) || strings.Contains(fzfInput, remoteHome) {
-			t.Fatalf("fzf input leaked raw content or provider source path: %q", fzfInput)
+		if harness.sshRunner.sawUnexpectedCommand() {
+			t.Fatalf("unexpected command names = %v", harness.sshRunner.commandNames())
 		}
 	})
 }
 
-func e2eDependencies(runner *e2eRunner, stdout, stderr io.Writer) app.Dependencies {
-	assets := e2eAssets{data: runner.collectorAsset}
-	return app.Dependencies{
-		LoadHosts: app.Load,
-		Collect: func(ctx context.Context, hosts []app.Host) app.Result {
-			return app.CollectHosts(ctx, hosts, 4, func(ctx context.Context, host app.Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
-				return arsSSH.Collect(ctx, runner, assets, host.Target, arsSSH.CollectOptions{
-					ConnectTimeout: 5 * time.Second,
-					HostTimeout:    60 * time.Second,
-					ProtocolLimits: protocol.DefaultLimits(),
-				})
-			})
-		},
-		Pick: (output.FZF{Runner: runner}).Select,
-		Resume: func(ctx context.Context, item session.Session) error {
-			adapter, ok := provider.Lookup(item.Provider)
-			if !ok {
-				return fmt.Errorf("unsupported provider")
+type e2eHarness struct {
+	dependencies  app.Dependencies
+	collect       func(context.Context, []app.Host) app.Result
+	attach        func(context.Context, []app.Host, session.Session) (tea.ExecCommand, error)
+	sshRunner     *e2eRunner
+	runtimeRunner *e2eRuntimeRunner
+	collections   int
+}
+
+func newE2EHarness(localHome, remoteHome string) *e2eHarness {
+	harness := &e2eHarness{
+		sshRunner:     &e2eRunner{remoteHome: remoteHome, collectorAsset: []byte("synthetic collector")},
+		runtimeRunner: &e2eRuntimeRunner{},
+	}
+	assets := e2eAssets{data: harness.sshRunner.collectorAsset}
+	collector := func(ctx context.Context, host app.Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		if host.Local {
+			candidates, results, err := provider.DiscoverAll(ctx, localHome, provider.Builtin())
+			if err != nil {
+				return nil, nil, runtime.Report{}, err
 			}
-			return arsSSH.Resume(ctx, runner, item.Host, item, adapter)
-		},
-		Stdout: stdout,
-		Stderr: stderr,
+			states, report := runtime.Inspect(ctx, harness.runtimeRunner, candidates)
+			return combineE2ERuntime(candidates, states), results, report, nil
+		}
+		return arsSSH.Collect(ctx, harness.sshRunner, assets, host.Target, arsSSH.CollectOptions{
+			ConnectTimeout: 5 * time.Second,
+			HostTimeout:    60 * time.Second,
+			ProtocolLimits: protocol.DefaultLimits(),
+		})
+	}
+	harness.collect = func(ctx context.Context, hosts []app.Host) app.Result {
+		harness.collections++
+		return app.CollectHosts(ctx, hosts, 4, collector)
+	}
+	harness.attach = func(ctx context.Context, hosts []app.Host, item session.Session) (tea.ExecCommand, error) {
+		host, ok := findHost(hosts, item.Host)
+		if !ok {
+			return nil, fmt.Errorf("session host is not selected")
+		}
+		adapter, ok := provider.Lookup(item.Provider)
+		if !ok {
+			return nil, fmt.Errorf("unsupported session provider")
+		}
+		spec, err := adapter.Resume(item.NativeID)
+		if err != nil {
+			return nil, err
+		}
+		if host.Local {
+			return runtime.NewAttachCommand(ctx, harness.runtimeRunner, item, spec)
+		}
+		return arsSSH.NewAttachCommand(ctx, host.Target, item, spec)
+	}
+	harness.dependencies = app.Dependencies{
+		LoadTopology: app.LoadTopology,
+		Collect:      harness.collect,
+		Stdout:       io.Discard,
+		Stderr:       io.Discard,
+	}
+	return harness
+}
+
+func findHost(hosts []app.Host, target string) (app.Host, bool) {
+	for _, host := range hosts {
+		if host.Target == target {
+			return host, true
+		}
+	}
+	return app.Host{}, false
+}
+
+func combineE2ERuntime(candidates []session.Candidate, states map[string]session.Runtime) []session.Discovered {
+	discovered := make([]session.Discovered, len(candidates))
+	for index, candidate := range candidates {
+		state := states[runtime.Key(string(candidate.Provider), candidate.NativeID)]
+		discovered[index] = session.Discovered{Candidate: candidate, Runtime: state}
+	}
+	return discovered
+}
+
+func assertCanonicalResult(t *testing.T, result app.Result) {
+	t.Helper()
+	if len(result.Hosts) != 3 || result.Hosts[0].Target != "macbook" || result.Hosts[0].Status != "ok" ||
+		result.Hosts[1].Target != "healthy" || result.Hosts[1].Status != "ok" ||
+		result.Hosts[2].Target != "down" || result.Hosts[2].Status != "error" {
+		t.Fatalf("hosts = %#v", result.Hosts)
+	}
+	if len(result.Sessions) != 2 || result.Sessions[0].Host != "healthy" || result.Sessions[0].NativeID != e2eRemoteCodexID ||
+		result.Sessions[1].Host != "macbook" || result.Sessions[1].NativeID != e2eLocalClaudeID || result.Sessions[1].Runtime.State != session.RuntimeAttached {
+		t.Fatalf("sessions = %#v", result.Sessions)
+	}
+	if len(result.Errors) != 1 || result.Errors[0].Host != "down" || result.Errors[0].Code != "ssh_failed" {
+		t.Fatalf("errors = %#v", result.Errors)
 	}
 }
 
-func writeSyntheticProviderHomes(t *testing.T) string {
+func writeTopology(t *testing.T, configHome string) {
+	t.Helper()
+	directory := filepath.Join(configHome, "ars")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "hosts"), []byte("macbook\nhealthy\ndown\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "local-host"), []byte("macbook\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSyntheticClaudeHome(t *testing.T) string {
+	t.Helper()
+	home := writeProviderExecutables(t)
+	path := filepath.Join(home, ".claude", "projects", "synthetic", "session.jsonl")
+	writeHistory(t, path, strings.Join([]string{
+		`{"type":"user","sessionId":"` + e2eLocalClaudeID + `","cwd":"/work/local","message":{"content":"` + e2eSecret + `"}}`,
+		`{"type":"ai-title","sessionId":"` + e2eLocalClaudeID + `","title":"Local task"}`,
+	}, "\n")+"\n", time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC))
+	return home
+}
+
+func writeSyntheticCodexHome(t *testing.T) string {
+	t.Helper()
+	home := writeProviderExecutables(t)
+	path := filepath.Join(home, ".codex", "sessions", "2026", "07", "19", "session.jsonl")
+	writeHistory(t, path, strings.Join([]string{
+		`{"type":"session_meta","payload":{"id":"` + e2eRemoteCodexID + `","cwd":"/work/remote","source":"cli","thread_source":"user"}}`,
+		`{"type":"response_item","payload":{"content":"` + e2eSecret + `"}}`,
+	}, "\n")+"\n", time.Date(2026, 7, 19, 2, 0, 0, 0, time.UTC))
+	return home
+}
+
+func writeProviderExecutables(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	bin := filepath.Join(home, "bin")
@@ -153,39 +280,20 @@ func writeSyntheticProviderHomes(t *testing.T) string {
 		}
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	claudePath := filepath.Join(home, ".claude", "projects", "synthetic", "session.jsonl")
-	if err := os.MkdirAll(filepath.Dir(claudePath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	claudeHistory := strings.Join([]string{
-		`{"type":"user","sessionId":"` + e2eClaudeID + `","cwd":"/work/claude","message":{"content":"` + e2eSecret + `"}}`,
-		`{"type":"ai-title","sessionId":"` + e2eClaudeID + `","title":"Synthetic Claude task"}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(claudePath, []byte(claudeHistory), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	codexPath := filepath.Join(home, ".codex", "sessions", "2026", "07", "19", "session.jsonl")
-	if err := os.MkdirAll(filepath.Dir(codexPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	codexHistory := strings.Join([]string{
-		`{"type":"session_meta","payload":{"id":"` + e2eCodexID + `","cwd":"/work/codex","source":"cli","thread_source":"user"}}`,
-		`{"type":"response_item","payload":{"content":"` + e2eSecret + `"}}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(codexPath, []byte(codexHistory), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	claudeTime := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
-	codexTime := claudeTime.Add(time.Hour)
-	if err := os.Chtimes(claudePath, claudeTime, claudeTime); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(codexPath, codexTime, codexTime); err != nil {
-		t.Fatal(err)
-	}
 	return home
+}
+
+func writeHistory(t *testing.T, path, contents string, updatedAt time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, updatedAt, updatedAt); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type e2eAssets struct{ data []byte }
@@ -201,35 +309,17 @@ type e2eRunner struct {
 	mu             sync.Mutex
 	remoteHome     string
 	collectorAsset []byte
-	fzfSelection   string
-	fzfInput       string
-	resumeArgs     []string
+	commands       []string
 	uploads        int
 }
 
 var e2eNoncePattern = regexp.MustCompile(`([0-9a-f]{32})`)
 
 func (runner *e2eRunner) Run(ctx context.Context, name string, args []string, stdin io.Reader, stdout, _ io.Writer) error {
-	switch name {
-	case "fzf":
-		input, err := io.ReadAll(stdin)
-		if err != nil {
-			return err
-		}
-		runner.mu.Lock()
-		runner.fzfInput = string(input)
-		selection := runner.fzfSelection
-		runner.mu.Unlock()
-		_, err = io.WriteString(stdout, selection)
-		return err
-	case "ssh":
-		if len(args) >= 3 && args[0] == "-tt" {
-			runner.mu.Lock()
-			runner.resumeArgs = append([]string(nil), args...)
-			runner.mu.Unlock()
-			return nil
-		}
-	default:
+	runner.mu.Lock()
+	runner.commands = append(runner.commands, name)
+	runner.mu.Unlock()
+	if name != "ssh" {
 		return fmt.Errorf("unexpected command %q", name)
 	}
 
@@ -263,8 +353,8 @@ func (runner *e2eRunner) Run(ctx context.Context, name string, args []string, st
 		return err
 	}
 	discovered := make([]session.Discovered, len(candidates))
-	for i, candidate := range candidates {
-		discovered[i] = session.Discovered{Candidate: candidate, Runtime: session.Runtime{State: session.RuntimeSaved}}
+	for index, candidate := range candidates {
+		discovered[index] = session.Discovered{Candidate: candidate, Runtime: session.Runtime{State: session.RuntimeSaved}}
 	}
 	if _, err := fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonce); err != nil {
 		return err
@@ -293,10 +383,46 @@ func (runner *e2eRunner) uploadCount() int {
 	return runner.uploads
 }
 
-func (runner *e2eRunner) observations() (string, []string) {
+func (runner *e2eRunner) commandNames() []string {
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	return runner.fzfInput, append([]string(nil), runner.resumeArgs...)
+	return append([]string(nil), runner.commands...)
+}
+
+func (runner *e2eRunner) sawUnexpectedCommand() bool {
+	for _, name := range runner.commandNames() {
+		if name != "ssh" {
+			return true
+		}
+	}
+	return false
+}
+
+type e2eRuntimeRunner struct {
+	mu       sync.Mutex
+	commands []runtime.Command
+}
+
+func (*e2eRuntimeRunner) Output(context.Context, runtime.Command) ([]byte, error) {
+	key := runtime.Key(string(session.Claude), e2eLocalClaudeID)
+	return []byte(key + "\t1\t1752790800\n"), nil
+}
+
+func (runner *e2eRuntimeRunner) Run(_ context.Context, command runtime.Command, _ io.Reader, _, _ io.Writer) error {
+	runner.mu.Lock()
+	runner.commands = append(runner.commands, command)
+	runner.mu.Unlock()
+	return nil
+}
+
+func (runner *e2eRuntimeRunner) attachCommands() []string {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	commands := make([]string, 0, len(runner.commands))
+	for _, command := range runner.commands {
+		commands = append(commands, command.Args[4])
+	}
+	return commands
 }
 
 type e2eDocument struct {

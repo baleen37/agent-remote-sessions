@@ -13,14 +13,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/baleen37/agent-remote-sessions/internal/provider"
-	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
 const runSSHDIntegration = "ARS_RUN_SSHD_INTEGRATION"
 
-func TestEphemeralSSHDCollectsAndResumes(t *testing.T) {
+func TestEphemeralSSHDCollects(t *testing.T) {
 	if os.Getenv(runSSHDIntegration) != "1" {
 		t.Skip("set ARS_RUN_SSHD_INTEGRATION=1 to run the disposable loopback sshd integration")
 	}
@@ -60,32 +57,12 @@ func TestEphemeralSSHDCollectsAndResumes(t *testing.T) {
 		t.Fatalf("collector cleanup left nonce directories: %#v", leftovers)
 	}
 
-	item, err := session.BindDiscovered(server.target, discovered[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter, ok := provider.Lookup(session.Claude)
-	if !ok {
-		t.Fatal("Claude provider is unavailable")
-	}
-	if err := Resume(context.Background(), runner, server.target, item, adapter); err != nil {
-		t.Fatalf("Resume() through ephemeral sshd: %v", err)
-	}
-	resumeCommand, err := os.ReadFile(server.resumeLog)
-	if err != nil {
-		t.Fatalf("read captured resume command: %v", err)
-	}
-	wantResume := "cd '/work/app' && exec claude --resume '123e4567-e89b-42d3-a456-426614174000'\n"
-	if string(resumeCommand) != wantResume {
-		t.Fatalf("remote resume command = %q, want %q", resumeCommand, wantResume)
-	}
 }
 
 type ephemeralSSHD struct {
 	target       string
 	clientConfig string
 	remoteTemp   string
-	resumeLog    string
 }
 
 func startEphemeralSSHD(t *testing.T, sshd, sshKeygen string) ephemeralSSHD {
@@ -108,15 +85,8 @@ func startEphemeralSSHD(t *testing.T, sshd, sshKeygen string) ephemeralSSHD {
 		t.Fatal(err)
 	}
 
-	resumeLog := filepath.Join(root, "resume-command")
 	forceCommand := filepath.Join(root, "force-command")
 	forceScript := "#!/bin/sh\n" +
-		"case \"$SSH_ORIGINAL_COMMAND\" in\n" +
-		"  *\"exec claude --resume\"*)\n" +
-		"    printf '%s\\n' \"$SSH_ORIGINAL_COMMAND\" > " + singleQuote(resumeLog) + "\n" +
-		"    exit 0\n" +
-		"    ;;\n" +
-		"esac\n" +
 		"export TMPDIR=" + singleQuote(remoteTemp) + "\n" +
 		"exec /bin/sh -c \"$SSH_ORIGINAL_COMMAND\"\n"
 	if err := os.WriteFile(forceCommand, []byte(forceScript), 0o700); err != nil {
@@ -217,7 +187,6 @@ func startEphemeralSSHD(t *testing.T, sshd, sshKeygen string) ephemeralSSHD {
 		target:       "ars-integration",
 		clientConfig: clientConfig,
 		remoteTemp:   remoteTemp,
-		resumeLog:    resumeLog,
 	}
 }
 
