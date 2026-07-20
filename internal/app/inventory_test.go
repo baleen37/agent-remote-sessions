@@ -1,6 +1,8 @@
 package app
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -103,6 +105,67 @@ func TestSetLocalWritesOnlyExactConfiguredTarget(t *testing.T) {
 	got, _ = os.ReadFile(localPath)
 	if string(got) != "macbook\n" {
 		t.Fatalf("failed write changed file: %q", got)
+	}
+}
+
+func TestSetLocalAtomicallyReplacesExistingFile(t *testing.T) {
+	hostsPath := writeInventory(t, "macbook\nserver\n")
+	localPath := filepath.Join(t.TempDir(), "local-host")
+	if err := os.WriteFile(localPath, []byte("server\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.Open(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer previous.Close()
+
+	if err := SetLocal(hostsPath, localPath, "macbook"); err != nil {
+		t.Fatal(err)
+	}
+	pathValue, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptorValue, err := io.ReadAll(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(pathValue), "macbook\n"; got != want {
+		t.Fatalf("replacement path = %q, want %q", got, want)
+	}
+	if got, want := string(descriptorValue), "server\n"; got != want {
+		t.Fatalf("previous descriptor = %q, want %q", got, want)
+	}
+}
+
+func TestSetLocalPreservesExistingFileWhenRenameFails(t *testing.T) {
+	hostsPath := writeInventory(t, "macbook\nserver\n")
+	dir := t.TempDir()
+	localPath := filepath.Join(dir, "local-host")
+	if err := os.WriteFile(localPath, []byte("server\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := setLocal(hostsPath, localPath, "macbook", func(string, string) error {
+		return errors.New("forced rename failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "replace local host file") {
+		t.Fatalf("SetLocal() error = %v, want replace failure", err)
+	}
+	got, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "server\n"; string(got) != want {
+		t.Fatalf("local-host = %q, want preserved %q", got, want)
+	}
+	temps, err := filepath.Glob(filepath.Join(dir, ".local-host-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("temporary files remain: %v", temps)
 	}
 }
 

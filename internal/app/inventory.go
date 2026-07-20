@@ -135,6 +135,10 @@ func Add(path string, target string) error {
 }
 
 func SetLocal(hostsPath, localPath, target string) error {
+	return setLocal(hostsPath, localPath, target, os.Rename)
+}
+
+func setLocal(hostsPath, localPath, target string, renameFile func(string, string) error) error {
 	hosts, err := Load(hostsPath)
 	if err != nil {
 		return err
@@ -170,7 +174,7 @@ func SetLocal(hostsPath, localPath, target string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(name, localPath); err != nil {
+	if err := renameFile(name, localPath); err != nil {
 		return fmt.Errorf("replace local host file: %w", err)
 	}
 	return nil
