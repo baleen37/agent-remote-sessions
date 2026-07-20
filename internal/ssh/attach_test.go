@@ -16,6 +16,28 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
+type terminalCommand interface {
+	Run() error
+	SetStdin(io.Reader)
+	SetStdout(io.Writer)
+	SetStderr(io.Writer)
+}
+
+func TestAttachCommandImplementsTerminalCommandContract(t *testing.T) {
+	command, err := NewAttachCommand(context.Background(), "devbox", remoteAttachedSession(), remoteClaudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var _ terminalCommand = command
+	stdin := strings.NewReader("input")
+	command.SetStdin(stdin)
+	command.SetStdout(io.Discard)
+	command.SetStderr(io.Discard)
+	if command.command.Stdin != stdin || command.command.Stdout != io.Discard || command.command.Stderr != io.Discard {
+		t.Fatal("terminal stream setters did not configure SSH command")
+	}
+}
+
 func TestRemoteAttachUsesOneTargetAndFixedLauncher(t *testing.T) {
 	item := remoteAttachedSession()
 	item.Host = "user@host;$literal"
@@ -23,11 +45,11 @@ func TestRemoteAttachUsesOneTargetAndFixedLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(command.Path) != "ssh" || len(command.Args) != 4 ||
-		!slices.Equal(command.Args[:3], []string{"ssh", "-tt", item.Host}) {
-		t.Fatalf("argv = %#v", command.Args)
+	if filepath.Base(command.command.Path) != "ssh" || len(command.command.Args) != 4 ||
+		!slices.Equal(command.command.Args[:3], []string{"ssh", "-tt", item.Host}) {
+		t.Fatalf("argv = %#v", command.command.Args)
 	}
-	script := command.Args[3]
+	script := command.command.Args[3]
 	for _, want := range []string{
 		"set -eu",
 		"TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp",
@@ -52,7 +74,7 @@ func TestRemoteAttachScriptRechecksCreateRaceAndUsesExactTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := command.Args[3]
+	script := command.command.Args[3]
 	key := remoteRuntimeKey(item)
 	if count := strings.Count(script, "has-session -t '="+key+"'"); count != 2 {
 		t.Fatalf("has-session exact target count = %d, want 2:\n%s", count, script)
@@ -93,12 +115,12 @@ func TestRemoteAttachCommandPreservesSSHExitCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command.Path = os.Args[0]
-	command.Args = []string{os.Args[0], "-test.run=TestRemoteAttachHelperProcess", "--"}
-	command.Env = append(os.Environ(), "GO_WANT_REMOTE_ATTACH_HELPER=1")
-	command.Stdin = strings.NewReader("")
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	command.command.Path = os.Args[0]
+	command.command.Args = []string{os.Args[0], "-test.run=TestRemoteAttachHelperProcess", "--"}
+	command.command.Env = append(os.Environ(), "GO_WANT_REMOTE_ATTACH_HELPER=1")
+	command.SetStdin(strings.NewReader(""))
+	command.SetStdout(io.Discard)
+	command.SetStderr(io.Discard)
 
 	err = command.Run()
 	exitError, ok := err.(*exec.ExitError)

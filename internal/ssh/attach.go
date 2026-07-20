@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 
@@ -11,12 +12,32 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
+type AttachCommand struct {
+	command *exec.Cmd
+}
+
+func (command *AttachCommand) Run() error {
+	return command.command.Run()
+}
+
+func (command *AttachCommand) SetStdin(stdin io.Reader) {
+	command.command.Stdin = stdin
+}
+
+func (command *AttachCommand) SetStdout(stdout io.Writer) {
+	command.command.Stdout = stdout
+}
+
+func (command *AttachCommand) SetStderr(stderr io.Writer) {
+	command.command.Stderr = stderr
+}
+
 func NewAttachCommand(
 	ctx context.Context,
 	target string,
 	item session.Session,
 	spec provider.ResumeSpec,
-) (*exec.Cmd, error) {
+) (*AttachCommand, error) {
 	if item.Host != target {
 		return nil, fmt.Errorf("session host does not match SSH target")
 	}
@@ -35,7 +56,9 @@ func NewAttachCommand(
 		item.CWD,
 		spec,
 	)
-	return exec.CommandContext(ctx, "ssh", "-tt", target, script), nil
+	return &AttachCommand{
+		command: exec.CommandContext(ctx, "ssh", "-tt", target, script),
+	}, nil
 }
 
 func remoteAttachScript(name, cwd string, spec provider.ResumeSpec) string {
