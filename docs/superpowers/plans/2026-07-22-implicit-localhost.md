@@ -39,18 +39,20 @@
 
 **Interfaces:**
 - Produces: `const LocalhostTarget = "localhost"`
-- Produces: `func LoadTopology(hostsPath string) ([]Host, error)`
+- Produces temporarily: `func LoadTopology(hostsPath, localPath string) ([]Host, error)` with `localPath` ignored until Task 2 removes the compatibility parameter
 - Preserves: `type Host struct { Target string; Local bool }`
 - Preserves: `func Load(path string) ([]Host, error)` and `func Add(path, target string) error`
 
 - [ ] **Step 1: Replace explicit-local tests with failing implicit-topology tests**
 
-Remove the `LocalConfigPath`, `SetLocal`, and explicit `local-host` tests. Add:
+Keep the `LocalConfigPath`, `SetLocal`, and explicit `local-host` tests until
+Task 2 removes their application call sites. Replace only the old
+`LoadTopology` tests and add:
 
 ```go
 func TestLoadTopologyPrependsImplicitLocalhost(t *testing.T) {
 	path := writeInventory(t, "devbox\nserver\n")
-	got, err := LoadTopology(path)
+	got, err := LoadTopology(path, "ignored")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +67,7 @@ func TestLoadTopologyPrependsImplicitLocalhost(t *testing.T) {
 }
 
 func TestLoadTopologyAllowsMissingRemoteInventory(t *testing.T) {
-	got, err := LoadTopology(filepath.Join(t.TempDir(), "missing", "hosts"))
+	got, err := LoadTopology(filepath.Join(t.TempDir(), "missing", "hosts"), "ignored")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +93,8 @@ func TestRemoteInventoryRejectsReservedLocalhost(t *testing.T) {
 
 Run: `go test ./internal/app -run 'TestLoadTopology|TestRemoteInventoryRejectsReservedLocalhost'`
 
-Expected: build failure because `LoadTopology` has the old two-argument signature and missing inventory still fails.
+Expected: assertion failure because the old topology requires a `local-host`
+file and missing inventory still fails.
 
 - [ ] **Step 3: Implement the smallest topology change**
 
@@ -100,7 +103,7 @@ Add the reserved identity and replace the local-file topology:
 ```go
 const LocalhostTarget = "localhost"
 
-func LoadTopology(hostsPath string) ([]Host, error) {
+func LoadTopology(hostsPath, _ string) ([]Host, error) {
 	hosts, err := Load(hostsPath)
 	if err != nil {
 		return nil, err
@@ -133,8 +136,9 @@ if err != nil {
 ```
 
 In `Add`, replace its first validation call with
-`validateRemoteTarget(target)`. Remove `LocalConfigPath`, `SetLocal`, and
-`setLocal`; retain the existing atomic append behavior for remote targets.
+`validateRemoteTarget(target)`. Retain `LocalConfigPath`, `SetLocal`, and
+`setLocal` temporarily so the pre-Task-2 application still builds; retain the
+existing atomic append behavior for remote targets.
 
 - [ ] **Step 4: Run app package tests and confirm GREEN**
 
@@ -154,6 +158,8 @@ git commit -m "feat: make localhost implicit in topology"
 ### Task 2: Remove explicit local configuration from the CLI
 
 **Files:**
+- Modify: `internal/app/inventory.go:33-181`
+- Test: `internal/app/inventory_test.go:35-160`
 - Modify: `internal/app/app.go:18-152`
 - Modify: `cmd/ars/main.go:51-95`
 - Test: `internal/app/app_test.go:12-360`
@@ -163,6 +169,7 @@ git commit -m "feat: make localhost implicit in topology"
 - Consumes: `app.LocalhostTarget`
 - Produces: `Dependencies.LoadTopology func(string) ([]Host, error)`
 - Removes: `Dependencies.SetLocal` and the `ars local set <host>` command
+- Produces: `func LoadTopology(hostsPath string) ([]Host, error)` after removing the temporary compatibility parameter
 
 - [ ] **Step 1: Write failing CLI tests for the reduced command surface**
 
@@ -234,6 +241,10 @@ ars list --json
 ars remote add <host>
 ```
 
+In `internal/app/inventory.go`, change `LoadTopology(hostsPath, _ string)` to
+`LoadTopology(hostsPath string)`, then remove `LocalConfigPath`, `SetLocal`,
+and `setLocal`. Remove their obsolete tests from `inventory_test.go`.
+
 In `cmd/ars/main.go`, remove `SetLocal: app.SetLocal`, remove dynamic
 `localTarget` discovery, and pass:
 
@@ -252,7 +263,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit the CLI change**
 
 ```bash
-git add internal/app/app.go internal/app/app_test.go cmd/ars/main.go
+git add internal/app/inventory.go internal/app/inventory_test.go internal/app/app.go internal/app/app_test.go cmd/ars/main.go
 git commit -m "feat: remove explicit local configuration"
 ```
 
