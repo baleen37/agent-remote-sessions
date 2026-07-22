@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -54,7 +55,7 @@ func TestSelectedRowKeepsBackgroundAcrossNestedANSIStyles(t *testing.T) {
 	value := readyModel()
 	value.width, value.height, value.noColor = 120, 24, false
 	_, usable := contentFrame(value.width)
-	layout := newRowLayout(value.visible, usable, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(value.visible, value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
 	line := value.renderRow(value.visible[0], layout)
 
 	if missing := cellsWithoutBackground(line); len(missing) > 0 {
@@ -65,6 +66,44 @@ func TestSelectedRowKeepsBackgroundAcrossNestedANSIStyles(t *testing.T) {
 	}
 	if stateStyle := value.stateText("attached(1)", session.RuntimeAttached); !strings.Contains(line, stateStyle[:strings.Index(stateStyle, "attached(1)")]) {
 		t.Fatalf("runtime foreground missing: %q", line)
+	}
+}
+
+func TestCachedColumnAlignsAcrossGroupsAndKeepsSelectedBackground(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	value.stale = map[string]struct{}{"localhost": {}}
+
+	plainContent := value.View().Content
+	if ansi.Strip(plainContent) != plainContent {
+		t.Fatalf("NO_COLOR cached rows emitted ANSI: %q", plainContent)
+	}
+	active := rowContaining(plainContent, "connection check")
+	recent := rowContaining(plainContent, "API repair")
+	if strings.Contains(recent, "cached") {
+		t.Fatalf("fresh row has cached marker: %q", recent)
+	}
+	activityColumn := renderedColumn(active, "1d")
+	if got := renderedColumn(recent, "2d"); got != activityColumn {
+		t.Fatalf("activity columns = (%d, %d), rows = %q", activityColumn, got, []string{active, recent})
+	}
+	cachedColumn := renderedColumn(active, "cached")
+	if cachedColumn != activityColumn+lipgloss.Width("1d")+lipgloss.Width(columnGutter) {
+		t.Fatalf("cached column = %d, want %d: %q", cachedColumn, activityColumn+4, active)
+	}
+	if suffix := ansi.Cut(recent, cachedColumn, ansi.StringWidth(recent)); strings.TrimSpace(suffix) != "" {
+		t.Fatalf("fresh row did not reserve cached gutter: %q", suffix)
+	}
+
+	value.noColor = false
+	_, usable := contentFrame(value.width)
+	layout := newRowLayout(value.visible, value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
+	selected := value.renderRow(value.visible[0], layout)
+	if !strings.Contains(selected, value.styles.saved.Render("cached")[:strings.Index(value.styles.saved.Render("cached"), "cached")]) {
+		t.Fatalf("cached marker is not faint-styled: %q", selected)
+	}
+	if missing := cellsWithoutBackground(selected); len(missing) > 0 {
+		t.Fatalf("selected cached row background missing from cells %v: %q", missing, selected)
 	}
 }
 
@@ -91,6 +130,21 @@ func TestVeryNarrowViewsStayWithinTerminalWidth(t *testing.T) {
 		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
 			value := readyModel()
 			value.width, value.height, value.noColor = width, 24, false
+			for _, line := range strings.Split(value.View().Content, "\n") {
+				if got := ansi.StringWidth(line); got > width {
+					t.Fatalf("line width = %d, want <= %d: %q", got, width, line)
+				}
+			}
+		})
+	}
+}
+
+func TestVeryNarrowCachedRowsStayWithinTerminalWidth(t *testing.T) {
+	for width := 1; width < 40; width++ {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			value := readyModel()
+			value.width, value.height, value.noColor = width, 24, false
+			value.stale = map[string]struct{}{"localhost": {}}
 			for _, line := range strings.Split(value.View().Content, "\n") {
 				if got := ansi.StringWidth(line); got > width {
 					t.Fatalf("line width = %d, want <= %d: %q", got, width, line)
@@ -164,4 +218,13 @@ func renderedColumn(line, value string) int {
 		return -1
 	}
 	return ansi.StringWidth(line[:index])
+}
+
+func rowContaining(content, text string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(ansi.Strip(line), text) {
+			return line
+		}
+	}
+	return ""
 }

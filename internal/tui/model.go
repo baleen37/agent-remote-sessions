@@ -22,6 +22,12 @@ type Result struct {
 	Warnings []output.HostError
 }
 
+type Update struct {
+	Result Result
+	Stale  []string
+	Done   bool
+}
+
 type ExecCommand interface {
 	Run() error
 	SetStdin(io.Reader)
@@ -30,16 +36,17 @@ type ExecCommand interface {
 }
 
 type Dependencies struct {
-	Collect     func(context.Context) Result
+	Collect     func(context.Context) <-chan Update
 	Attach      func(context.Context, session.Session) (ExecCommand, error)
 	LocalTarget string
 	Now         func() time.Time
 	NoColor     bool
 }
 
-type collectDoneMsg struct {
+type collectUpdateMsg struct {
 	generation uint64
-	result     Result
+	update     Update
+	channel    <-chan Update
 }
 
 type attachDoneMsg struct {
@@ -47,21 +54,24 @@ type attachDoneMsg struct {
 }
 
 type model struct {
-	ctx         context.Context
-	deps        Dependencies
-	result      Result
-	visible     []session.Session
-	selected    int
-	selectedKey sessionKey
-	query       string
-	searching   bool
-	collecting  bool
-	generation  uint64
-	status      string
-	width       int
-	height      int
-	noColor     bool
-	styles      viewStyles
+	ctx            context.Context
+	deps           Dependencies
+	result         Result
+	visible        []session.Session
+	selected       int
+	selectedKey    sessionKey
+	query          string
+	searching      bool
+	collecting     bool
+	generation     uint64
+	stale          map[string]struct{}
+	cancelCollect  context.CancelFunc
+	initialCollect tea.Cmd
+	status         string
+	width          int
+	height         int
+	noColor        bool
+	styles         viewStyles
 }
 
 func newModel(ctx context.Context, deps Dependencies) model {
@@ -69,7 +79,7 @@ func newModel(ctx context.Context, deps Dependencies) model {
 		deps.Now = time.Now
 	}
 	_, noColor := os.LookupEnv("NO_COLOR")
-	return model{
+	value := model{
 		ctx:        ctx,
 		deps:       deps,
 		collecting: true,
@@ -77,11 +87,15 @@ func newModel(ctx context.Context, deps Dependencies) model {
 		noColor:    deps.NoColor || noColor,
 		styles:     newViewStyles(true),
 	}
+	collectCtx, cancel := context.WithCancel(ctx)
+	value.cancelCollect = cancel
+	value.initialCollect = waitForUpdate(value.generation, deps.Collect(collectCtx))
+	return value
 }
 
 func (value model) Init() tea.Cmd {
 	return tea.Batch(
-		value.collectCommand(value.generation),
+		value.initialCollect,
 		tea.RequestBackgroundColor,
 	)
 }
@@ -93,14 +107,20 @@ func (value model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 	switch message := message.(type) {
-	case collectDoneMsg:
+	case collectUpdateMsg:
 		if message.generation != value.generation {
 			return value, nil
 		}
-		value.collecting = false
-		value.result = message.result
+		value.result = message.update.Result
+		value.stale = make(map[string]struct{}, len(message.update.Stale))
+		for _, target := range message.update.Stale {
+			value.stale[target] = struct{}{}
+		}
+		if message.update.Done {
+			value.collecting = false
+		}
 		value.refreshVisible()
-		return value, nil
+		return value, waitForUpdate(message.generation, message.channel)
 	case attachDoneMsg:
 		if message.err != nil {
 			value.status = boundedStatus("attach failed: " + message.err.Error())
@@ -125,6 +145,9 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	key := message.Key()
 	if key.Code == 'c' && key.Mod&tea.ModCtrl != 0 {
+		if value.cancelCollect != nil {
+			value.cancelCollect()
+		}
 		return value, tea.Quit
 	}
 	if value.searching {
@@ -170,20 +193,32 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			return attachDoneMsg{err: err}
 		})
 	case 'q':
+		if value.cancelCollect != nil {
+			value.cancelCollect()
+		}
 		return value, tea.Quit
 	}
 	return value, nil
 }
 
 func (value model) restartCollection() (model, tea.Cmd) {
+	if value.cancelCollect != nil {
+		value.cancelCollect()
+	}
+	collectCtx, cancel := context.WithCancel(value.ctx)
+	value.cancelCollect = cancel
 	value.generation++
 	value.collecting = true
-	return value, value.collectCommand(value.generation)
+	return value, waitForUpdate(value.generation, value.deps.Collect(collectCtx))
 }
 
-func (value model) collectCommand(generation uint64) tea.Cmd {
+func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 	return func() tea.Msg {
-		return collectDoneMsg{generation: generation, result: value.deps.Collect(value.ctx)}
+		update, ok := <-channel
+		if !ok {
+			return nil
+		}
+		return collectUpdateMsg{generation: generation, update: update, channel: channel}
 	}
 }
 

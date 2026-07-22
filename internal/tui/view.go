@@ -82,7 +82,7 @@ func (value model) View() tea.View {
 
 func (value model) sessionLines(width int) ([]string, int) {
 	active, recent := splitSessions(value.visible)
-	layout := newRowLayout(value.visible, width, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(value.visible, value.stale, width, value.deps.Now(), value.deps.LocalTarget)
 	lines := []string{fitLine(value.stateText("Active", session.RuntimeAttached), width)}
 	lines = append(lines, value.renderGroup(active, layout)...)
 	lines = append(lines, "", fitLine(value.stateText("Recent", session.RuntimeSaved), width))

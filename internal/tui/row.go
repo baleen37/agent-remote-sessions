@@ -20,8 +20,10 @@ type rowLayout struct {
 	width                      int
 	showProvider, showProject  bool
 	showClients                bool
+	showCached                 bool
 	title, provider, location  int
 	project, runtime, activity int
+	cached                     int
 	now                        time.Time
 }
 
@@ -79,15 +81,19 @@ func column(value string, width int, right bool) string {
 	return value + padding
 }
 
-func newRowLayout(items []session.Session, width int, now time.Time, localTarget string) rowLayout {
+func newRowLayout(items []session.Session, stale map[string]struct{}, width int, now time.Time, localTarget string) rowLayout {
 	layout := rowLayout{
 		width:        width,
 		showProvider: width >= providerColumnWidth,
 		showProject:  width >= projectColumnWidth,
 		showClients:  width >= clientColumnWidth,
+		cached:       lipgloss.Width("cached"),
 		now:          now,
 	}
 	for _, item := range items {
+		if _, ok := stale[item.Host]; ok {
+			layout.showCached = true
+		}
 		layout.title = max(layout.title, lipgloss.Width(sessionTitle(item)))
 		layout.location = max(layout.location, lipgloss.Width(location(item, localTarget)))
 		layout.runtime = max(layout.runtime, lipgloss.Width(runtimeLabel(item, layout.showClients)))
@@ -108,6 +114,10 @@ func newRowLayout(items []session.Session, width int, now time.Time, localTarget
 	}
 	if layout.showProject {
 		fieldCount++
+	}
+	if layout.showCached {
+		fieldCount++
+		fixed += layout.cached
 	}
 	fixed += (fieldCount - 1) * lipgloss.Width(columnGutter)
 
@@ -158,6 +168,13 @@ func (value model) renderRow(item session.Session, layout rowLayout) string {
 		column(value.stateText(runtimeLabel(item, layout.showClients), item.Runtime.State), layout.runtime, true),
 		column(activityAge(layout.now, item.UpdatedAt), layout.activity, true),
 	)
+	if layout.showCached {
+		cached := ""
+		if _, ok := value.stale[item.Host]; ok {
+			cached = value.stateText("cached", session.RuntimeSaved)
+		}
+		fields = append(fields, column(cached, layout.cached, false))
+	}
 
 	padding := rowPadding(layout.width)
 	innerWidth := layout.width - 2*padding
