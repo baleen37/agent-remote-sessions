@@ -51,41 +51,41 @@ func TestLocalConfigPathUsesInventoryDirectory(t *testing.T) {
 	}
 }
 
-func TestLoadTopologyMarksExactlyOneConfiguredLocalHost(t *testing.T) {
-	hostsPath := writeInventory(t, "macbook\nserver\n")
-	localPath := filepath.Join(t.TempDir(), "local-host")
-	if err := os.WriteFile(localPath, []byte("server\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := LoadTopology(hostsPath, localPath)
+func TestLoadTopologyPrependsImplicitLocalhost(t *testing.T) {
+	path := writeInventory(t, "devbox\nserver\n")
+	got, err := LoadTopology(path, "ignored")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Host{{Target: "macbook"}, {Target: "server", Local: true}}
+	want := []Host{
+		{Target: LocalhostTarget, Local: true},
+		{Target: "devbox"},
+		{Target: "server"},
+	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %#v, want %#v", got, want)
+		t.Fatalf("LoadTopology() = %#v, want %#v", got, want)
 	}
 }
 
-func TestLoadTopologyRejectsInvalidLocalHost(t *testing.T) {
-	hostsPath := writeInventory(t, "macbook\nserver\n")
-	for _, test := range []struct{ name, contents, want string }{
-		{"missing", "", "read local host"},
-		{"multiple", "macbook\nserver\n", "exactly one"},
-		{"unknown", "other\n", "not configured"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			localPath := filepath.Join(t.TempDir(), "local-host")
-			if test.contents != "" {
-				if err := os.WriteFile(localPath, []byte(test.contents), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err := LoadTopology(hostsPath, localPath)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v", err)
-			}
-		})
+func TestLoadTopologyAllowsMissingRemoteInventory(t *testing.T) {
+	got, err := LoadTopology(filepath.Join(t.TempDir(), "missing", "hosts"), "ignored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Host{{Target: LocalhostTarget, Local: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LoadTopology() = %#v, want %#v", got, want)
+	}
+}
+
+func TestRemoteInventoryRejectsReservedLocalhost(t *testing.T) {
+	path := writeInventory(t, "devbox\nlocalhost\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "localhost is reserved") {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if err := Add(filepath.Join(t.TempDir(), "hosts"), LocalhostTarget); err == nil ||
+		!strings.Contains(err.Error(), "localhost is reserved") {
+		t.Fatalf("Add() error = %v", err)
 	}
 }
 

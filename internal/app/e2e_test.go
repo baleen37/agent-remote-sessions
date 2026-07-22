@@ -47,7 +47,7 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 		started := false
 		harness.dependencies.RunInteractive = func(ctx context.Context, hosts []app.Host) error {
 			started = true
-			if want := []app.Host{{Target: "macbook", Local: true}, {Target: "healthy"}, {Target: "down"}}; !slices.Equal(hosts, want) {
+			if want := []app.Host{{Target: app.LocalhostTarget, Local: true}, {Target: "healthy"}, {Target: "down"}}; !slices.Equal(hosts, want) {
 				t.Fatalf("hosts = %#v, want %#v", hosts, want)
 			}
 
@@ -123,8 +123,8 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 		assertJSONV1Shape(t, stdout.Bytes())
 		wantSessions := []e2eSession{
 			{Host: "healthy", Provider: "codex", NativeID: e2eRemoteCodexID, UpdatedAt: "2026-07-19T02:00:00Z", CWD: "/work/remote"},
-			{Host: "macbook", Provider: "claude", NativeID: e2eLocalRunningID, UpdatedAt: "2026-07-19T01:30:00Z", CWD: "/work/running", Title: "Running task"},
-			{Host: "macbook", Provider: "claude", NativeID: e2eLocalClaudeID, UpdatedAt: "2026-07-19T01:00:00Z", CWD: "/work/local", Title: "Local task"},
+			{Host: app.LocalhostTarget, Provider: "claude", NativeID: e2eLocalRunningID, UpdatedAt: "2026-07-19T01:30:00Z", CWD: "/work/running", Title: "Running task"},
+			{Host: app.LocalhostTarget, Provider: "claude", NativeID: e2eLocalClaudeID, UpdatedAt: "2026-07-19T01:00:00Z", CWD: "/work/local", Title: "Local task"},
 		}
 		if !slices.Equal(document.Sessions, wantSessions) {
 			t.Fatalf("sessions = %#v, want %#v", document.Sessions, wantSessions)
@@ -220,7 +220,7 @@ func combineE2ERuntime(candidates []session.Candidate, states map[string]session
 
 func assertCanonicalResult(t *testing.T, result app.Result) {
 	t.Helper()
-	if len(result.Hosts) != 3 || result.Hosts[0].Target != "macbook" || result.Hosts[0].Status != "ok" ||
+	if len(result.Hosts) != 3 || result.Hosts[0].Target != app.LocalhostTarget || result.Hosts[0].Status != "ok" ||
 		result.Hosts[1].Target != "healthy" || result.Hosts[1].Status != "ok" ||
 		result.Hosts[2].Target != "down" || result.Hosts[2].Status != "error" {
 		t.Fatalf("hosts = %#v", result.Hosts)
@@ -328,7 +328,7 @@ func writeTopology(t *testing.T, configHome string) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "hosts"), []byte("macbook\nhealthy\ndown\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, "hosts"), []byte("healthy\ndown\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(directory, "local-host"), []byte("macbook\n"), 0o600); err != nil {
