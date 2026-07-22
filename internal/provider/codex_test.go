@@ -235,6 +235,7 @@ func TestCodexTitleNormalizesAndBounds(t *testing.T) {
 		{name: "first line only", message: "line one\nline two", want: "line one"},
 		{name: "controls become spaces", message: "\t do\tthing \r", want: "do thing"},
 		{name: "whitespace only", message: "   \n\t", want: ""},
+		{name: "leading blank lines", message: "\n\n do this\nrest", want: "do this"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

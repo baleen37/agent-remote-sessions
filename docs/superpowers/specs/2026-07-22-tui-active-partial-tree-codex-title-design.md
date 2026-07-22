@@ -29,7 +29,7 @@ Status: approved
 - While scanning lines, also capture the first envelope with
   `type == "event_msg"` whose payload has `type == "user_message"`; take its
   `message` string.
-- Normalize: trim whitespace, use only the first line of multi-line prompts,
+- Normalize: trim whitespace, use the first non-empty line of multi-line prompts,
   truncate to `session.MaxTitleBytes` on a UTF-8 boundary.
 - If the resulting title fails candidate validation, drop the title (keep the
   session) so the TUI falls back to the ID prefix as today.
@@ -82,7 +82,7 @@ ordering (active first, then newest), filtering, attach flow, header stats.
 
 - codex provider: fixture with a `user_message` event → title populated;
   fixture without → empty title; oversized/multi-line message → trimmed and
-  truncated; invalid UTF-8 in message → title dropped, session kept.
+  truncated; invalid UTF-8 in a message never reaches the title (JSON decoding replaces it with U+FFFD); a defensive fallback drops the title (keeping the session) if title validation ever fails.
 - tree/model: auto group emits active sessions + more-row with correct count;
   inactive groups start collapsed; enter on more-row opens the group; header
   toggle transitions (auto-partial→closed, closed→open, open→closed); search

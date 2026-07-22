@@ -190,25 +190,31 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 		CWD:       meta.CWD,
 		Title:     title,
 	}
+	if candidate.Title != "" && session.ValidateCandidate(candidate) != nil {
+		candidate.Title = ""
+	}
 	if err := session.ValidateCandidate(candidate); err != nil {
 		return session.Candidate{}, false, strongerError(errorCode, "incompatible")
 	}
 	return candidate, true, errorCode
 }
 
-// codexTitle turns the first user message into a display title that always
+// codexTitle turns the first non-empty line of the first user message into a display title that always
 // satisfies candidate text validation: single line, no control runes, at most
 // MaxTitleBytes bytes.
 func codexTitle(message string) string {
-	if index := strings.IndexByte(message, '\n'); index >= 0 {
-		message = message[:index]
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.Join(strings.FieldsFunc(line, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.IsControl(r)
+		}), " ")
+		if line == "" {
+			continue
+		}
+		for len(line) > session.MaxTitleBytes {
+			_, size := utf8.DecodeLastRuneInString(line)
+			line = line[:len(line)-size]
+		}
+		return strings.TrimSpace(line)
 	}
-	message = strings.Join(strings.FieldsFunc(message, func(r rune) bool {
-		return unicode.IsSpace(r) || unicode.IsControl(r)
-	}), " ")
-	for len(message) > session.MaxTitleBytes {
-		_, size := utf8.DecodeLastRuneInString(message)
-		message = message[:len(message)-size]
-	}
-	return strings.TrimSpace(message)
+	return ""
 }
