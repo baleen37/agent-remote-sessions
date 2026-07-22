@@ -2,10 +2,13 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
@@ -209,6 +212,60 @@ func TestCodexDiscoverSkipsFIFOHistoryWithoutOpeningIt(t *testing.T) {
 	assertAbsentResult(t, result, session.Codex)
 }
 
+func TestCodexDiscoverTitlesSessionsFromFirstUserMessage(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "codex")
+	id := fixtureID(1)
+	writeFile(t, filepath.Join(home, ".codex", "sessions", "titled.jsonl"),
+		codexMeta(id, "/synthetic/codex/titled", "cli", "user")+
+			codexUserMessage("fix the flaky test\nplus more context")+
+			codexUserMessage("second message is ignored"))
+
+	result := (codexAdapter{}).Discover(context.Background(), home)
+	if result.Status != OK || len(result.Sessions) != 1 {
+		t.Fatalf("Discover() = %#v, want one OK session", result)
+	}
+	if got := result.Sessions[0].Title; got != "fix the flaky test" {
+		t.Fatalf("Title = %q, want first line of first user message", got)
+	}
+}
+
+func TestCodexTitleNormalizesAndBounds(t *testing.T) {
+	tests := []struct{ name, message, want string }{
+		{name: "first line only", message: "line one\nline two", want: "line one"},
+		{name: "controls become spaces", message: "\t do\tthing \r", want: "do thing"},
+		{name: "whitespace only", message: "   \n\t", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexTitle(tt.message); got != tt.want {
+				t.Fatalf("codexTitle(%q) = %q, want %q", tt.message, got, tt.want)
+			}
+		})
+	}
+
+	long := strings.Repeat("가", session.MaxTitleBytes)
+	got := codexTitle(long)
+	if got == "" || len(got) > session.MaxTitleBytes || !utf8.ValidString(got) || !strings.HasPrefix(long, got) {
+		t.Fatalf("codexTitle(long) = %d bytes, want non-empty bounded valid UTF-8 prefix", len(got))
+	}
+	if err := session.ValidateCandidate(session.Candidate{
+		Provider: session.Codex, NativeID: fixtureID(1),
+		UpdatedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		CWD:       "/synthetic/codex", Title: got,
+	}); err != nil {
+		t.Fatalf("normalized title fails validation: %v", err)
+	}
+}
+
 func codexMeta(id, cwd, source, threadSource string) string {
 	return "{\"type\":\"session_meta\",\"payload\":{\"id\":\"" + id + "\",\"cwd\":\"" + cwd + "\",\"source\":\"" + source + "\",\"thread_source\":\"" + threadSource + "\"}}\n"
+}
+
+func codexUserMessage(message string) string {
+	payload, err := json.Marshal(map[string]any{"type": "user_message", "message": message})
+	if err != nil {
+		panic(err)
+	}
+	return `{"type":"event_msg","payload":` + string(payload) + "}\n"
 }

@@ -8,6 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
@@ -110,6 +113,11 @@ type codexSessionMeta struct {
 	ThreadSource string `json:"thread_source"`
 }
 
+type codexEventMsg struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
 func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, string) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -126,6 +134,7 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 	}
 
 	var meta *codexSessionMeta
+	title := ""
 	multipleMeta := false
 	errorCode := ""
 	scanner := bufio.NewScanner(file)
@@ -134,6 +143,13 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 		var envelope codexEnvelope
 		if err := json.Unmarshal(scanner.Bytes(), &envelope); err != nil {
 			errorCode = strongerError(errorCode, "corrupt")
+			continue
+		}
+		if envelope.Type == "event_msg" && title == "" && len(envelope.Payload) > 0 {
+			var event codexEventMsg
+			if json.Unmarshal(envelope.Payload, &event) == nil && event.Type == "user_message" {
+				title = codexTitle(event.Message)
+			}
 			continue
 		}
 		if envelope.Type != "session_meta" {
@@ -172,10 +188,27 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 		NativeID:  meta.ID,
 		UpdatedAt: info.ModTime().UTC(),
 		CWD:       meta.CWD,
-		Title:     "",
+		Title:     title,
 	}
 	if err := session.ValidateCandidate(candidate); err != nil {
 		return session.Candidate{}, false, strongerError(errorCode, "incompatible")
 	}
 	return candidate, true, errorCode
+}
+
+// codexTitle turns the first user message into a display title that always
+// satisfies candidate text validation: single line, no control runes, at most
+// MaxTitleBytes bytes.
+func codexTitle(message string) string {
+	if index := strings.IndexByte(message, '\n'); index >= 0 {
+		message = message[:index]
+	}
+	message = strings.Join(strings.FieldsFunc(message, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}), " ")
+	for len(message) > session.MaxTitleBytes {
+		_, size := utf8.DecodeLastRuneInString(message)
+		message = message[:len(message)-size]
+	}
+	return strings.TrimSpace(message)
 }
