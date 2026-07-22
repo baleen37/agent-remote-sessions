@@ -3,7 +3,15 @@ const fs = require("node:fs");
 const test = require("node:test");
 
 const workflow = fs.readFileSync(".github/workflows/ci.yml", "utf8");
+const verifyJob = workflow.slice(workflow.indexOf("\n  verify:"), workflow.indexOf("\n  release:"));
 const releaseJob = workflow.slice(workflow.indexOf("\n  release:"));
+
+test("macOS installs tmux before the required tmux and PTY checks", () => {
+  assert.match(
+    verifyJob,
+    /- name: Install tmux on macOS\n\s+if: runner\.os == 'macOS'\n\s+run: brew install tmux[\s\S]*- name: Test disposable tmux and PTY flow[\s\S]*tmux -V[\s\S]*TestPTYAttachDetachRestoresTUI/,
+  );
+});
 
 test("release waits for verification and is restricted to main pushes", () => {
   assert.notEqual(releaseJob, "");
@@ -27,4 +35,12 @@ test("release pins third-party actions by full commit SHA", () => {
   assert.match(releaseJob, /actions\/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff/);
   assert.match(releaseJob, /actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
   assert.doesNotMatch(releaseJob, /uses: actions\/[^@]+@v[0-9]/);
+});
+
+test("release smoke configures the same local target in hosts and local-host", () => {
+  assert.match(
+    releaseJob,
+    /printf '%s\\n' localhost \| tee "\$RUNNER_TEMP\/config\/ars\/hosts" "\$RUNNER_TEMP\/config\/ars\/local-host"/,
+  );
+  assert.doesNotMatch(releaseJob, /: > "\$RUNNER_TEMP\/config\/ars\/hosts"/);
 });

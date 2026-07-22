@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/baleen37/agent-remote-sessions/internal/ssh"
 	"github.com/baleen37/agent-remote-sessions/internal/tui"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -60,7 +62,7 @@ func main() {
 					localTarget = host.Target
 				}
 			}
-			return tui.Run(ctx, tui.Dependencies{
+			return runTUI(ctx, tui.Dependencies{
 				Collect: func(ctx context.Context) tui.Result {
 					result := collectHosts(ctx, hosts)
 					return tui.Result{
@@ -89,7 +91,7 @@ func main() {
 					return ssh.NewAttachCommand(ctx, host.Target, item, spec)
 				},
 				LocalTarget: localTarget,
-			}, os.Stdin, os.Stdout)
+			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
@@ -97,6 +99,13 @@ func main() {
 	exitCode := app.Run(ctx, os.Args[1:], dependencies)
 	stop()
 	os.Exit(exitCode)
+}
+
+func runTUI(ctx context.Context, deps tui.Dependencies, stdin, stdout *os.File, isTerminal func(int) bool) error {
+	if !isTerminal(int(stdin.Fd())) || !isTerminal(int(stdout.Fd())) {
+		return errors.New("interactive mode requires a TTY; use ars list --json")
+	}
+	return tui.Run(ctx, deps, stdin, stdout)
 }
 
 func combineRuntime(candidates []session.Candidate, states map[string]session.Runtime) []session.Discovered {

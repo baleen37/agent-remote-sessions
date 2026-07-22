@@ -30,6 +30,9 @@ jobs:
         run: npm test
       - name: Build embedded ARS/2 collector assets
         run: go run ./cmd/ars-build --assets-only
+      - name: Install tmux on macOS
+        if: runner.os == 'macOS'
+        run: brew install tmux
       - name: Test disposable tmux and PTY flow
         run: |
           tmux -V
@@ -77,7 +80,7 @@ jobs:
           npm pack ./dist/npm --pack-destination "$RUNNER_TEMP"
           npm install --global --prefix "$RUNNER_TEMP/ars-prefix" "$RUNNER_TEMP/baleen37-ars-0.0.0.tgz"
           mkdir -p "$RUNNER_TEMP/config/ars"
-          : > "$RUNNER_TEMP/config/ars/hosts"
+          printf '%s\n' localhost | tee "$RUNNER_TEMP/config/ars/hosts" "$RUNNER_TEMP/config/ars/local-host" >/dev/null
           XDG_CONFIG_HOME="$RUNNER_TEMP/config" "$RUNNER_TEMP/ars-prefix/bin/ars" list --json | grep -F '"schema_version":1'
       - name: Preview release
         run: npm run release -- --dry-run

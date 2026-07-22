@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/creack/pty v1.1.24
+	golang.org/x/term v0.44.0
 )
 
 require (
