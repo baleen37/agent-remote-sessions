@@ -174,10 +174,18 @@ func (value model) renderRow(item session.Session, width int) string {
 		flexible = append(flexible, len(fields)-1)
 	}
 	fields = append(fields, runtime, activityAge(value.deps.Now(), item.UpdatedAt))
+	runtimeIndex := len(fields) - 2
+	_, isStale := value.stale[item.Host]
+	if isStale {
+		fields = append(fields, "cached")
+	}
 
 	truncateFlexibleFields(fields, flexible, width-lipgloss.Width(prefix))
 	fields[0] = value.stateText(fields[0], item.Runtime.State)
-	fields[len(fields)-2] = value.stateText(fields[len(fields)-2], item.Runtime.State)
+	fields[runtimeIndex] = value.stateText(fields[runtimeIndex], item.Runtime.State)
+	if isStale {
+		fields[len(fields)-1] = value.stateText(fields[len(fields)-1], session.RuntimeSaved)
+	}
 	row := prefix + strings.Join(fields, "  ")
 	row = fitLine(row, width)
 	if selected && !value.noColor {

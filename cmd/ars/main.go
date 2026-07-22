@@ -48,6 +48,17 @@ func main() {
 	collectHosts := func(ctx context.Context, hosts []app.Host) app.Result {
 		return app.CollectHosts(ctx, hosts, 4, collectHost)
 	}
+	hostCache := app.HostCache{}
+	if cacheDir, err := app.CachePath(); err == nil {
+		hostCache = app.HostCache{
+			Load: func(target string) ([]session.Session, bool) {
+				return app.LoadHostCache(cacheDir, target)
+			},
+			Save: func(target string, sessions []session.Session) {
+				_ = app.SaveHostCache(cacheDir, target, sessions)
+			},
+		}
+	}
 	dependencies := app.Dependencies{
 		LoadTopology: app.LoadTopology,
 		AddHost:      app.Add,
@@ -58,14 +69,29 @@ func main() {
 				hostsByTarget[host.Target] = host
 			}
 			return runTUI(ctx, tui.Dependencies{
-				Collect: func(ctx context.Context) tui.Result {
-					result := collectHosts(ctx, hosts)
-					return tui.Result{
-						Hosts:    result.Hosts,
-						Sessions: result.Sessions,
-						Errors:   result.Errors,
-						Warnings: result.Warnings,
-					}
+				Collect: func(ctx context.Context) <-chan tui.Update {
+					updates := make(chan tui.Update)
+					go func() {
+						defer close(updates)
+						app.CollectHostsStream(ctx, hosts, 4, collectHost, hostCache, func(snapshot app.Snapshot) {
+							update := tui.Update{
+								Result: tui.Result{
+									Hosts:    snapshot.Result.Hosts,
+									Sessions: snapshot.Result.Sessions,
+									Errors:   snapshot.Result.Errors,
+									Warnings: snapshot.Result.Warnings,
+								},
+								Stale: snapshot.Stale,
+								Done:  snapshot.Done,
+							}
+							select {
+							case updates <- update:
+							case <-ctx.Done():
+								return
+							}
+						})
+					}()
+					return updates
 				},
 				Attach: func(ctx context.Context, item session.Session) (tui.ExecCommand, error) {
 					host, ok := hostsByTarget[item.Host]

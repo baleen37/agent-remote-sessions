@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
@@ -35,32 +34,11 @@ type hostCollection struct {
 }
 
 func CollectHosts(ctx context.Context, hosts []Host, workerLimit int, collector Collector) Result {
-	collections := make([]hostCollection, len(hosts))
-	if workerLimit <= 0 || collector == nil {
-		for index, host := range hosts {
-			collections[index] = failedCollection(host.Target, "resource_limit", "Collector resource limit exceeded")
-		}
-		return mergeCollections(collections)
-	}
-
-	workers := min(workerLimit, len(hosts))
-	jobs := make(chan int)
-	var waitGroup sync.WaitGroup
-	waitGroup.Add(workers)
-	for range workers {
-		go func() {
-			defer waitGroup.Done()
-			for index := range jobs {
-				collections[index] = collectHost(ctx, hosts[index], collector)
-			}
-		}()
-	}
-	for index := range hosts {
-		jobs <- index
-	}
-	close(jobs)
-	waitGroup.Wait()
-	return mergeCollections(collections)
+	var last Snapshot
+	CollectHostsStream(ctx, hosts, workerLimit, collector, HostCache{}, func(update Snapshot) {
+		last = update
+	})
+	return last.Result
 }
 
 func collectHost(ctx context.Context, host Host, collector Collector) hostCollection {

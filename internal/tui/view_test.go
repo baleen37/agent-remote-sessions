@@ -221,7 +221,7 @@ func TestNarrowViewRemovesOptionalColumnsInOrder(t *testing.T) {
 
 func TestNewModelHonorsNoColorEnvironment(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	model := newModel(context.Background(), Dependencies{})
+	model := newModel(context.Background(), Dependencies{Collect: staticCollect(Result{})})
 	if !model.noColor {
 		t.Fatal("NO_COLOR environment was ignored")
 	}
@@ -251,4 +251,42 @@ func selectedRow(content string) string {
 		}
 	}
 	return ""
+}
+
+func TestViewMarksStaleHostRowsAsCached(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model.stale = map[string]struct{}{"server": {}}
+	model.refreshVisible()
+
+	content := ansi.Strip(model.View().Content)
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		switch {
+		case strings.Contains(line, "API repair"):
+			if !strings.HasSuffix(strings.TrimRight(line, " "), "cached") {
+				t.Fatalf("stale row missing cached marker: %q", line)
+			}
+		case strings.Contains(line, "connection check"):
+			if strings.Contains(line, "cached") {
+				t.Fatalf("fresh row has cached marker: %q", line)
+			}
+		}
+	}
+
+	model.noColor = false
+	rawContent := model.View().Content
+	faintCached := model.stateText("cached", session.RuntimeSaved)
+	for _, line := range strings.Split(rawContent, "\n") {
+		switch {
+		case strings.Contains(line, "API repair"):
+			if !strings.HasSuffix(line, faintCached) {
+				t.Fatalf("stale row cached marker not faint-styled: %q", line)
+			}
+		case strings.Contains(line, "connection check"):
+			if strings.Contains(line, "cached") {
+				t.Fatalf("fresh row has cached marker: %q", line)
+			}
+		}
+	}
 }
