@@ -50,6 +50,24 @@ func TestSelectedRowFillsUsableWidthInsideInset(t *testing.T) {
 	}
 }
 
+func TestSelectedRowKeepsBackgroundAcrossNestedANSIStyles(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	_, usable := contentFrame(value.width)
+	layout := newRowLayout(value.visible, usable, value.deps.Now(), value.deps.LocalTarget)
+	line := value.renderRow(value.visible[0], layout)
+
+	if missing := cellsWithoutBackground(line); len(missing) > 0 {
+		t.Fatalf("selected background missing from cells %v: %q", missing, line)
+	}
+	if cursorStyle := value.styles.selectedCursor.Render("> "); !strings.Contains(line, cursorStyle[:strings.Index(cursorStyle, "> ")]) {
+		t.Fatalf("selected cursor foreground missing: %q", line)
+	}
+	if stateStyle := value.stateText("attached(1)", session.RuntimeAttached); !strings.Contains(line, stateStyle[:strings.Index(stateStyle, "attached(1)")]) {
+		t.Fatalf("runtime foreground missing: %q", line)
+	}
+}
+
 func TestRowsUseTwoCellColumnGutter(t *testing.T) {
 	value := readyModel()
 	value.width, value.height, value.noColor = 120, 24, true
@@ -69,7 +87,7 @@ func TestVeryNarrowFrameDropsInset(t *testing.T) {
 }
 
 func TestVeryNarrowViewsStayWithinTerminalWidth(t *testing.T) {
-	for _, width := range []int{1, 2, 3, 4, 10, 39} {
+	for width := 1; width < 40; width++ {
 		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
 			value := readyModel()
 			value.width, value.height, value.noColor = width, 24, false
@@ -80,6 +98,45 @@ func TestVeryNarrowViewsStayWithinTerminalWidth(t *testing.T) {
 			}
 		})
 	}
+}
+
+func cellsWithoutBackground(line string) []int {
+	background := false
+	cell := 0
+	var missing []int
+	parser := ansi.NewParser()
+	parser.SetHandler(ansi.Handler{
+		Print: func(character rune) {
+			width := ansi.StringWidth(string(character))
+			if !background {
+				for offset := range width {
+					missing = append(missing, cell+offset)
+				}
+			}
+			cell += width
+		},
+		HandleCsi: func(command ansi.Cmd, params ansi.Params) {
+			if command.Final() != 'm' {
+				return
+			}
+			if len(params) == 0 {
+				background = false
+				return
+			}
+			params.ForEach(0, func(_ int, parameter int, _ bool) {
+				switch {
+				case parameter == 0 || parameter == 49:
+					background = false
+				case parameter >= 40 && parameter <= 48:
+					background = true
+				case parameter >= 100 && parameter <= 107:
+					background = true
+				}
+			})
+		},
+	})
+	parser.Parse([]byte(line))
+	return missing
 }
 
 func sessionRows(content string) []string {

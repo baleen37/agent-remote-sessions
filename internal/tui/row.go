@@ -166,7 +166,8 @@ func (value model) renderRow(item session.Session, layout rowLayout) string {
 	row += strings.Repeat(" ", max(0, layout.width-padding-lipgloss.Width(row)))
 	row += strings.Repeat(" ", padding)
 	if selected && !value.noColor {
-		row = value.styles.selected.Render(row)
+		background := ansi.Style{}.BackgroundColor(value.styles.selected.GetBackground()).String()
+		row = background + strings.ReplaceAll(row, ansi.ResetStyle, ansi.ResetStyle+background) + ansi.ResetStyle
 	}
 	return row
 }
