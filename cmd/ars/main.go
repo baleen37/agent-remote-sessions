@@ -19,6 +19,9 @@ import (
 	"golang.org/x/term"
 )
 
+// version is the release version embedded by ars-build; empty for dev builds.
+var version string
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 

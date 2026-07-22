@@ -74,7 +74,8 @@ func buildRelease(ctx context.Context, root, version string, execute commandExec
 		binaryName := "ars-" + goos + "-" + goarch
 		binaryPath := filepath.Join(packageRoot, "vendor", binaryName)
 		args := []string{
-			"go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=",
+			"go", "build", "-trimpath", "-buildvcs=false",
+			"-ldflags=-buildid= -X main.version=" + version,
 			"-o", binaryPath, "./cmd/ars",
 		}
 		environment := []string{"CGO_ENABLED=0", "GOOS=" + goos, "GOARCH=" + goarch}

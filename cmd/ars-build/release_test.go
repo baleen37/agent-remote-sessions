@@ -61,7 +61,7 @@ func TestBuildReleaseBuildsExactTargetsAndNpmPackage(t *testing.T) {
 		if environment["CGO_ENABLED"] != "0" {
 			t.Errorf("CGO_ENABLED = %q, want 0", environment["CGO_ENABLED"])
 		}
-		wantPrefix := []string{"go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o"}
+		wantPrefix := []string{"go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid= -X main.version=1.2.3", "-o"}
 		if len(call.args) != len(wantPrefix)+2 || !reflect.DeepEqual(call.args[:len(wantPrefix)], wantPrefix) || call.args[len(call.args)-1] != "./cmd/ars" {
 			t.Errorf("ars command args = %#v", call.args)
 		}
