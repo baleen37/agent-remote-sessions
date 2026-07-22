@@ -34,6 +34,9 @@ func (value model) View() tea.View {
 		prefix := "search: "
 		if value.searching {
 			prefix = "/"
+			if !value.noColor {
+				prefix = value.styles.selectedCursor.Render(prefix)
+			}
 		}
 		search = append(search, fitLine(prefix+value.query, width))
 	}
@@ -58,13 +61,16 @@ func (value model) View() tea.View {
 		}
 	}
 
+	for index, line := range details {
+		details[index] = value.mutedText(line, width)
+	}
 	lines := []string{fitLine(value.header(), width), ""}
 	lines = append(lines, body...)
 	lines = append(lines, "")
 	lines = append(lines, details...)
 	lines = append(lines, diagnostics...)
 	lines = append(lines, search...)
-	lines = append(lines, "", fitLine(help(width), width))
+	lines = append(lines, "", value.mutedText(help(width), width))
 	if inset > 0 {
 		margin := strings.Repeat(" ", inset)
 		for index, line := range lines {
@@ -128,11 +134,14 @@ func (value model) header() string {
 			hosts++
 		}
 	}
-	header := fmt.Sprintf("ars  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
+	stats := fmt.Sprintf("%d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
 	if value.collecting {
-		header += " · refreshing"
+		stats += " · refreshing"
 	}
-	return header
+	if value.noColor {
+		return "ars  " + stats
+	}
+	return value.styles.title.Render("ars") + "  " + value.styles.muted.Render(stats)
 }
 
 func splitSessions(items []session.Session) (active, recent []session.Session) {
@@ -234,12 +243,12 @@ func (value model) diagnostics(width int) []string {
 		lines = append(lines, value.errorText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	for _, diagnostic := range value.result.Warnings {
-		lines = append(lines, fitLine(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
+		lines = append(lines, value.mutedText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	if value.status != "" {
-		status := fitLine(value.status, width)
+		status := value.mutedText(value.status, width)
 		if strings.HasPrefix(value.status, "attach failed:") {
-			status = value.errorText(status, width)
+			status = value.errorText(value.status, width)
 		}
 		lines = append(lines, status)
 	}
@@ -257,16 +266,22 @@ func (value model) stateText(text string, state session.RuntimeState) string {
 	if value.noColor {
 		return text
 	}
-	style := lipgloss.NewStyle()
 	switch state {
 	case session.RuntimeAttached:
-		style = style.Foreground(lipgloss.Color("2"))
+		return value.styles.attached.Render(text)
 	case session.RuntimeRunning:
-		style = style.Foreground(lipgloss.Color("3"))
+		return value.styles.running.Render(text)
 	default:
-		style = style.Faint(true)
+		return value.styles.saved.Render(text)
 	}
-	return style.Render(text)
+}
+
+func (value model) mutedText(text string, width int) string {
+	text = fitLine(text, width)
+	if value.noColor {
+		return text
+	}
+	return value.styles.muted.Render(text)
 }
 
 func (value model) errorText(text string, width int) string {
@@ -274,7 +289,7 @@ func (value model) errorText(text string, width int) string {
 	if value.noColor {
 		return text
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(text)
+	return value.styles.failure.Render(text)
 }
 
 func fitLine(line string, width int) string {

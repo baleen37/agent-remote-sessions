@@ -33,8 +33,8 @@ func newViewStyles(dark bool) viewStyles {
 			lipgloss.Color("#A15C00"),
 			lipgloss.Color("#FACC15"),
 		)),
-		saved:  lipgloss.NewStyle().Faint(true),
-		muted:  lipgloss.NewStyle().Faint(true),
+		saved: lipgloss.NewStyle().Faint(true),
+		muted: lipgloss.NewStyle().Faint(true),
 		failure: lipgloss.NewStyle().Foreground(choose(
 			lipgloss.Color("#B42318"),
 			lipgloss.Color("#F97066"),

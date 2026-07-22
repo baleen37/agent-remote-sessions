@@ -234,6 +234,56 @@ func TestRunRejectsInvalidDependencies(t *testing.T) {
 	}
 }
 
+func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
+	value := readyModel()
+	value.width, value.height = 120, 24
+	plain := trimmedLines(ansi.Strip(value.View().Content))
+	for _, want := range []string{
+		"ars  1 active · 1 recent · 0 hosts\n\n Active\n",
+		"attached(1)  1d\n\n Recent\n",
+		"\n\n ↑↓/jk move",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing rhythm %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	content := value.View().Content
+	if ansi.Strip(content) != content {
+		t.Fatalf("NO_COLOR emitted ANSI: %q", content)
+	}
+	for _, want := range []string{"> ✻", "attached(1)", "Recent", "∙"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("NO_COLOR missing %q: %q", want, content)
+		}
+	}
+}
+
+func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	lines := strings.Split(value.View().Content, "\n")
+	header, help := lines[0], lines[len(lines)-1]
+	if ansi.Strip(header) == header {
+		t.Fatal("header title and statistics are not styled")
+	}
+	if ansi.Strip(help) == help {
+		t.Fatal("help is not muted")
+	}
+}
+
+func trimmedLines(content string) string {
+	lines := strings.Split(content, "\n")
+	for index, line := range lines {
+		lines[index] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
 func activeRow(content string) string {
 	lines := strings.Split(ansi.Strip(content), "\n")
 	for _, line := range lines {
