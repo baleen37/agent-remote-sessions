@@ -35,7 +35,13 @@ func ConfigPath() (string, error) {
 func Load(path string) ([]Host, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return []Host{}, nil
+		_, lstatErr := os.Lstat(path)
+		if errors.Is(lstatErr, os.ErrNotExist) {
+			return []Host{}, nil
+		}
+		if lstatErr != nil {
+			return nil, fmt.Errorf("inspect host inventory: %w", lstatErr)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open host inventory: %w", err)

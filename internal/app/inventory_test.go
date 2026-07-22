@@ -63,6 +63,21 @@ func TestLoadTopologyAllowsMissingRemoteInventory(t *testing.T) {
 	}
 }
 
+func TestLoadTopologyRejectsDanglingRemoteInventorySymlink(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	if err := os.Symlink("missing-hosts", path); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	got, err := LoadTopology(path)
+	if err == nil || !strings.Contains(err.Error(), "open host inventory") {
+		t.Fatalf("LoadTopology() error = %v, want open host inventory error", err)
+	}
+	if got != nil {
+		t.Fatalf("LoadTopology() hosts = %#v, want nil", got)
+	}
+}
+
 func TestRemoteInventoryRejectsReservedLocalhost(t *testing.T) {
 	path := writeInventory(t, "devbox\nlocalhost\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "localhost is reserved") {

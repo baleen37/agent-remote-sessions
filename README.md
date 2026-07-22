@@ -64,8 +64,13 @@ agent-mac
 ```
 
 `ars localhost` opens only current-computer sessions. `localhost` is reserved
-and cannot be added with `ars remote add`. Existing `local-host` files are
-ignored and are not deleted.
+and cannot be added with `ars remote add`.
+
+When upgrading an existing installation, read the exact value from its
+`${XDG_CONFIG_HOME}/ars/local-host` file, or `~/.config/ars/local-host` when
+`XDG_CONFIG_HOME` is unset. Remove that exact entry and any literal `localhost`
+entry from `hosts`, leaving only SSH peers. ARS does not read or delete the
+legacy `local-host` file.
 
 Blank lines and comments in `hosts` are ignored. Targets may use names and
 aliases from the user's SSH config. Duplicates, whitespace, control characters,
@@ -293,16 +298,18 @@ itself and its configured SSH target to its peer. Verify:
 1. Compare the two computers' visible session sets by `(provider, native ID)`,
    not by host label or canonical session key.
 2. On host A, start a local Claude session, press `Ctrl+Q`, and confirm its PID
-   remains alive. On host B, select that same provider and native ID under host
-   A's configured SSH target, attach the same runtime and PID, and confirm A
-   returns to its TUI.
-3. Verify the reverse direction: start locally on B, then attach from A under
-   B's configured SSH target with the same provider, native ID, runtime, and
-   PID.
-4. Repeat both directions for Codex.
-5. Network loss returns to the TUI without killing the provider, and an
+   remains alive after A returns to its TUI.
+3. From A's TUI, attach to that local Claude runtime so A is actually attached.
+   While A is attached, select the same provider and native ID on B under A's
+   configured SSH target. Confirm A is forced back to its TUI and B attaches to
+   the same runtime and PID.
+4. While B remains attached, select that same local runtime on A again. Confirm
+   B is forced back to its TUI and A attaches to the same PID.
+5. Repeat steps 2–4 for a B-hosted Claude runtime, with A and B reversed.
+6. Repeat steps 2–5 for Codex.
+7. Network loss returns to the TUI without killing the provider, and an
    unreachable peer remains visible beside healthy sessions.
-6. The user's default tmux server, configuration, keys, and sessions are
+8. The user's default tmux server, configuration, keys, and sessions are
    unchanged.
 
 If inventory, SSH, DNS, tmux, or provider readiness is missing, record this
