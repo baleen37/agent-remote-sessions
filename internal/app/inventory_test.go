@@ -1,8 +1,6 @@
 package app
 
 import (
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -38,134 +36,90 @@ func TestConfigPathFallsBackToHome(t *testing.T) {
 	}
 }
 
-func TestLocalConfigPathUsesInventoryDirectory(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/ars-xdg")
-
-	got, err := LocalConfigPath()
-	if err != nil {
-		t.Fatalf("LocalConfigPath() error = %v", err)
-	}
-	want := filepath.Join("/tmp/ars-xdg", "ars", "local-host")
-	if got != want {
-		t.Fatalf("LocalConfigPath() = %q, want %q", got, want)
-	}
-}
-
-func TestLoadTopologyMarksExactlyOneConfiguredLocalHost(t *testing.T) {
-	hostsPath := writeInventory(t, "macbook\nserver\n")
-	localPath := filepath.Join(t.TempDir(), "local-host")
-	if err := os.WriteFile(localPath, []byte("server\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := LoadTopology(hostsPath, localPath)
+func TestLoadTopologyPrependsImplicitLocalhost(t *testing.T) {
+	path := writeInventory(t, "devbox\nserver\n")
+	got, err := LoadTopology(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Host{{Target: "macbook"}, {Target: "server", Local: true}}
+	want := []Host{
+		{Target: LocalhostTarget, Local: true},
+		{Target: "devbox"},
+		{Target: "server"},
+	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %#v, want %#v", got, want)
+		t.Fatalf("LoadTopology() = %#v, want %#v", got, want)
 	}
 }
 
-func TestLoadTopologyRejectsInvalidLocalHost(t *testing.T) {
-	hostsPath := writeInventory(t, "macbook\nserver\n")
-	for _, test := range []struct{ name, contents, want string }{
-		{"missing", "", "read local host"},
-		{"multiple", "macbook\nserver\n", "exactly one"},
-		{"unknown", "other\n", "not configured"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			localPath := filepath.Join(t.TempDir(), "local-host")
-			if test.contents != "" {
-				if err := os.WriteFile(localPath, []byte(test.contents), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err := LoadTopology(hostsPath, localPath)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v", err)
-			}
-		})
-	}
-}
-
-func TestSetLocalWritesOnlyExactConfiguredTarget(t *testing.T) {
-	hostsPath := writeInventory(t, "macbook\nserver\n")
-	localPath := filepath.Join(t.TempDir(), "ars", "local-host")
-	if err := SetLocal(hostsPath, localPath, "macbook"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := os.ReadFile(localPath)
-	if string(got) != "macbook\n" {
-		t.Fatalf("local-host = %q", got)
-	}
-	if err := SetLocal(hostsPath, localPath, "other"); err == nil {
-		t.Fatal("unknown accepted")
-	}
-	got, _ = os.ReadFile(localPath)
-	if string(got) != "macbook\n" {
-		t.Fatalf("failed write changed file: %q", got)
-	}
-}
-
-func TestSetLocalAtomicallyReplacesExistingFile(t *testing.T) {
-	hostsPath := writeInventory(t, "macbook\nserver\n")
-	localPath := filepath.Join(t.TempDir(), "local-host")
-	if err := os.WriteFile(localPath, []byte("server\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	previous, err := os.Open(localPath)
+func TestLoadTopologyAllowsMissingRemoteInventory(t *testing.T) {
+	got, err := LoadTopology(filepath.Join(t.TempDir(), "missing", "hosts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer previous.Close()
-
-	if err := SetLocal(hostsPath, localPath, "macbook"); err != nil {
-		t.Fatal(err)
-	}
-	pathValue, err := os.ReadFile(localPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptorValue, err := io.ReadAll(previous)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := string(pathValue), "macbook\n"; got != want {
-		t.Fatalf("replacement path = %q, want %q", got, want)
-	}
-	if got, want := string(descriptorValue), "server\n"; got != want {
-		t.Fatalf("previous descriptor = %q, want %q", got, want)
+	want := []Host{{Target: LocalhostTarget, Local: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LoadTopology() = %#v, want %#v", got, want)
 	}
 }
 
-func TestSetLocalPreservesExistingFileWhenRenameFails(t *testing.T) {
-	hostsPath := writeInventory(t, "macbook\nserver\n")
+func TestLoadTopologyRejectsDanglingRemoteInventorySymlink(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	if err := os.Symlink("missing-hosts", path); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	got, err := LoadTopology(path)
+	if err == nil || !strings.Contains(err.Error(), "open host inventory") {
+		t.Fatalf("LoadTopology() error = %v, want open host inventory error", err)
+	}
+	if got != nil {
+		t.Fatalf("LoadTopology() hosts = %#v, want nil", got)
+	}
+}
+
+func TestLoadTopologyRejectsDanglingRemoteInventoryParentSymlink(t *testing.T) {
 	dir := t.TempDir()
-	localPath := filepath.Join(dir, "local-host")
-	if err := os.WriteFile(localPath, []byte("server\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if err := os.Symlink("missing-ars", filepath.Join(dir, "ars")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
 	}
 
-	err := setLocal(hostsPath, localPath, "macbook", func(string, string) error {
-		return errors.New("forced rename failure")
-	})
-	if err == nil || !strings.Contains(err.Error(), "replace local host file") {
-		t.Fatalf("SetLocal() error = %v, want replace failure", err)
+	got, err := LoadTopology(filepath.Join(dir, "ars", "hosts"))
+	if err == nil || !strings.Contains(err.Error(), "open host inventory") {
+		t.Fatalf("LoadTopology() error = %v, want open host inventory error", err)
 	}
-	got, err := os.ReadFile(localPath)
+	if got != nil {
+		t.Fatalf("LoadTopology() hosts = %#v, want nil", got)
+	}
+}
+
+func TestLoadTopologyAllowsMissingRemoteInventoryUnderExistingParentSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "existing-ars"), 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.Symlink("existing-ars", filepath.Join(dir, "ars")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	got, err := LoadTopology(filepath.Join(dir, "ars", "hosts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "server\n"; string(got) != want {
-		t.Fatalf("local-host = %q, want preserved %q", got, want)
+	want := []Host{{Target: LocalhostTarget, Local: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LoadTopology() = %#v, want %#v", got, want)
 	}
-	temps, err := filepath.Glob(filepath.Join(dir, ".local-host-*"))
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestRemoteInventoryRejectsReservedLocalhost(t *testing.T) {
+	path := writeInventory(t, "devbox\nlocalhost\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "localhost is reserved") {
+		t.Fatalf("Load() error = %v", err)
 	}
-	if len(temps) != 0 {
-		t.Fatalf("temporary files remain: %v", temps)
+	if err := Add(filepath.Join(t.TempDir(), "hosts"), LocalhostTarget); err == nil ||
+		!strings.Contains(err.Error(), "localhost is reserved") {
+		t.Fatalf("Add() error = %v", err)
 	}
 }
 

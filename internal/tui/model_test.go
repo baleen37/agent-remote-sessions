@@ -16,7 +16,7 @@ import (
 func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	items := twoSessions()
 	result := Result{
-		Hosts:    []output.HostResult{{Target: "macbook", Status: output.HostOK}},
+		Hosts:    []output.HostResult{{Target: "localhost", Status: output.HostOK}},
 		Sessions: items,
 	}
 	var attached session.Session
@@ -26,7 +26,7 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 			attached = item
 			return &fakeExecCommand{}, nil
 		},
-		LocalTarget: "macbook",
+		LocalTarget: "localhost",
 		Now:         func() time.Time { return time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC) },
 	}
 	model := newModel(context.Background(), deps)
@@ -173,7 +173,7 @@ func readyModel() model {
 	deps := Dependencies{
 		Collect:     func(context.Context) Result { return result },
 		Attach:      func(context.Context, session.Session) (ExecCommand, error) { return &fakeExecCommand{}, nil },
-		LocalTarget: "macbook",
+		LocalTarget: "localhost",
 		Now:         func() time.Time { return time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC) },
 		NoColor:     true,
 	}
@@ -187,7 +187,7 @@ func readyModel() model {
 func twoSessions() []session.Session {
 	return []session.Session{
 		{
-			Host: "macbook",
+			Host: "localhost",
 			Candidate: session.Candidate{
 				Provider:  session.Claude,
 				NativeID:  "123e4567-e89b-42d3-a456-426614174000",

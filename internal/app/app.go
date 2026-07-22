@@ -19,7 +19,6 @@ const topLevelHelp = `Usage:
   ars [host]
   ars list --json
   ars remote add <host>
-  ars local set <host>
 
 Run "ars remote --help" for remote command help.
 `
@@ -31,9 +30,8 @@ Add one SSH target to the ARS host inventory.
 `
 
 type Dependencies struct {
-	LoadTopology   func(string, string) ([]Host, error)
+	LoadTopology   func(string) ([]Host, error)
 	AddHost        func(string, string) error
-	SetLocal       func(string, string, string) error
 	Collect        func(context.Context, []Host) Result
 	RunInteractive func(context.Context, []Host) error
 	Stdout         io.Writer
@@ -74,26 +72,9 @@ func Run(ctx context.Context, args []string, dependencies Dependencies) int {
 		}
 		return exitSuccess
 	}
-	if len(args) == 3 && args[0] == "local" && args[1] == "set" {
-		if dependencies.SetLocal == nil {
-			fmt.Fprintln(stderr, "ars: invalid application dependencies")
-			return exitFailure
-		}
-		hostsPath, localPath, err := configPaths()
-		if err != nil {
-			fmt.Fprintln(stderr, "ars:", err)
-			return exitFailure
-		}
-		if err := dependencies.SetLocal(hostsPath, localPath, args[2]); err != nil {
-			fmt.Fprintln(stderr, "ars:", err)
-			return exitFailure
-		}
-		return exitSuccess
-	}
-
 	target, jsonMode, valid := parseArguments(args)
 	if !valid {
-		fmt.Fprintln(stderr, "usage: ars [host] | ars list --json | ars remote add <host> | ars local set <host>")
+		fmt.Fprintln(stderr, "usage: ars [host] | ars list --json | ars remote add <host>")
 		return exitUsage
 	}
 	if dependencies.LoadTopology == nil ||
@@ -103,12 +84,12 @@ func Run(ctx context.Context, args []string, dependencies Dependencies) int {
 		return exitFailure
 	}
 
-	hostsPath, localPath, err := configPaths()
+	hostsPath, err := ConfigPath()
 	if err != nil {
 		fmt.Fprintln(stderr, "ars:", err)
 		return exitFailure
 	}
-	hosts, err := dependencies.LoadTopology(hostsPath, localPath)
+	hosts, err := dependencies.LoadTopology(hostsPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "ars:", err)
 		return exitFailure
@@ -137,18 +118,6 @@ func Run(ctx context.Context, args []string, dependencies Dependencies) int {
 		return exitFailure
 	}
 	return exitSuccess
-}
-
-func configPaths() (string, string, error) {
-	hostsPath, err := ConfigPath()
-	if err != nil {
-		return "", "", err
-	}
-	localPath, err := LocalConfigPath()
-	if err != nil {
-		return "", "", err
-	}
-	return hostsPath, localPath, nil
 }
 
 func parseArguments(args []string) (target string, jsonMode, valid bool) {

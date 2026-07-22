@@ -19,6 +19,8 @@ type Host struct {
 	Local  bool
 }
 
+const LocalhostTarget = "localhost"
+
 func ConfigPath() (string, error) {
 	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
 		return filepath.Join(configHome, "ars", "hosts"), nil
@@ -30,16 +32,17 @@ func ConfigPath() (string, error) {
 	return filepath.Join(home, ".config", "ars", "hosts"), nil
 }
 
-func LocalConfigPath() (string, error) {
-	hosts, err := ConfigPath()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(filepath.Dir(hosts), "local-host"), nil
-}
-
 func Load(path string) ([]Host, error) {
 	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		missing, inspectErr := isMissingInventoryPath(path)
+		if inspectErr != nil {
+			return nil, inspectErr
+		}
+		if missing {
+			return []Host{}, nil
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open host inventory: %w", err)
 	}
@@ -54,7 +57,7 @@ func Load(path string) ([]Host, error) {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if err := validateTarget(target); err != nil {
+		if err := validateRemoteTarget(target); err != nil {
 			return nil, fmt.Errorf("invalid host inventory line %d: %w", lineNumber, err)
 		}
 		if _, exists := seen[target]; exists {
@@ -69,30 +72,43 @@ func Load(path string) ([]Host, error) {
 	return hosts, nil
 }
 
-func LoadTopology(hostsPath, localPath string) ([]Host, error) {
+func isMissingInventoryPath(path string) (bool, error) {
+	for {
+		info, err := os.Lstat(path)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink == 0 {
+				return info.IsDir(), nil
+			}
+			if _, err := os.Stat(path); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return false, nil
+				}
+				return false, fmt.Errorf("inspect host inventory: %w", err)
+			}
+			return true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect host inventory: %w", err)
+		}
+
+		parent := filepath.Dir(path)
+		if parent == path {
+			return false, nil
+		}
+		path = parent
+	}
+}
+
+func LoadTopology(hostsPath string) ([]Host, error) {
 	hosts, err := Load(hostsPath)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(localPath)
-	if err != nil {
-		return nil, fmt.Errorf("read local host: %w", err)
-	}
-	value := strings.TrimSuffix(string(data), "\n")
-	if value == "" || strings.ContainsAny(value, "\r\n") {
-		return nil, fmt.Errorf("local host must contain exactly one configured target")
-	}
-	for i := range hosts {
-		if hosts[i].Target == value {
-			hosts[i].Local = true
-			return hosts, nil
-		}
-	}
-	return nil, fmt.Errorf("local host target is not configured")
+	return append([]Host{{Target: LocalhostTarget, Local: true}}, hosts...), nil
 }
 
 func Add(path string, target string) error {
-	if err := validateTarget(target); err != nil {
+	if err := validateRemoteTarget(target); err != nil {
 		return err
 	}
 
@@ -134,52 +150,6 @@ func Add(path string, target string) error {
 	return nil
 }
 
-func SetLocal(hostsPath, localPath, target string) error {
-	return setLocal(hostsPath, localPath, target, os.Rename)
-}
-
-func setLocal(hostsPath, localPath, target string, renameFile func(string, string) error) error {
-	hosts, err := Load(hostsPath)
-	if err != nil {
-		return err
-	}
-	found := false
-	for _, host := range hosts {
-		found = found || host.Target == target
-	}
-	if !found {
-		return fmt.Errorf("local host target is not configured")
-	}
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(localPath), ".local-host-*")
-	if err != nil {
-		return fmt.Errorf("create local host file: %w", err)
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := io.WriteString(tmp, target+"\n"); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := renameFile(name, localPath); err != nil {
-		return fmt.Errorf("replace local host file: %w", err)
-	}
-	return nil
-}
-
 func validateTarget(target string) error {
 	if !utf8.ValidString(target) {
 		return fmt.Errorf("host must be valid UTF-8")
@@ -203,6 +173,16 @@ func validateTarget(target string) error {
 		if unicode.IsSpace(r) {
 			return fmt.Errorf("host must not contain whitespace")
 		}
+	}
+	return nil
+}
+
+func validateRemoteTarget(target string) error {
+	if err := validateTarget(target); err != nil {
+		return err
+	}
+	if target == LocalhostTarget {
+		return fmt.Errorf("localhost is reserved for the current computer")
 	}
 	return nil
 }

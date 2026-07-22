@@ -83,7 +83,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	content := model.View().Content
 	plain := ansi.Strip(content)
 	for _, want := range []string{
-		"ars", "1 active", "1 recent", "Active", "Recent", "claude", "local",
+		"ars", "1 active", "1 recent", "Active", "Recent", "claude", "server",
 		"attached(1)", "↑↓/jk move",
 	} {
 		if !strings.Contains(plain, want) {
@@ -103,13 +103,13 @@ func TestViewShowsSelectedCanonicalDetailsAndBoundedDiagnostics(t *testing.T) {
 	model.width = 120
 	model.height = 24
 	model.result.Errors = append(model.result.Errors, hostError("server", "ssh_failed", strings.Repeat("failed ", 100)))
-	model.result.Warnings = append(model.result.Warnings, hostError("macbook", "corrupt", "Claude discovery partial"))
+	model.result.Warnings = append(model.result.Warnings, hostError("localhost", "corrupt", "Claude discovery partial"))
 	model.status = strings.Repeat("status ", 100)
 
 	content := ansi.Strip(model.View().Content)
 	for _, want := range []string{
 		"/work/ars", "123e4567-e89b-42d3-a456-426614174000", "2026-07-19T12:00:00Z",
-		"server: failed", "macbook: Claude discovery partial", "status",
+		"server: failed", "Claude discovery partial (corrupt)", "status",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("missing %q: %q", want, content)
@@ -131,7 +131,7 @@ func TestNarrowNoColorViewKeepsRequiredFields(t *testing.T) {
 	if ansi.Strip(content) != content {
 		t.Fatalf("NO_COLOR emitted ANSI: %q", content)
 	}
-	for _, want := range []string{"local", "attached", "1d"} {
+	for _, want := range []string{"connection check", "attached", "1d"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("missing %q: %q", want, content)
 		}
@@ -140,6 +140,28 @@ func TestNarrowNoColorViewKeepsRequiredFields(t *testing.T) {
 		if ansi.StringWidth(line) > model.width {
 			t.Fatalf("line width = %d, want <= %d: %q", ansi.StringWidth(line), model.width, line)
 		}
+	}
+}
+
+func TestViewHidesLocalhostPresentation(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model.height = 24
+	model.result.Hosts = []output.HostResult{
+		{Target: "localhost", Status: output.HostOK},
+		{Target: "server", Status: output.HostOK},
+	}
+	model.result.Warnings = []output.HostError{{Host: "localhost", Code: "corrupt", Message: "Claude discovery partial"}}
+	content := ansi.Strip(model.View().Content)
+	row := selectedRow(content)
+	if strings.Contains(row, "localhost") || strings.Contains(row, "  local  ") {
+		t.Fatalf("local row exposes local target: %q", row)
+	}
+	if !strings.Contains(content, "1 hosts") || strings.Contains(content, "localhost: Claude") {
+		t.Fatalf("local presentation leaked: %q", content)
+	}
+	if !strings.Contains(content, "Claude discovery partial (corrupt)") {
+		t.Fatalf("local diagnostic missing: %q", content)
 	}
 }
 
@@ -215,7 +237,7 @@ func TestRunRejectsInvalidDependencies(t *testing.T) {
 func activeRow(content string) string {
 	lines := strings.Split(ansi.Strip(content), "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "local") && strings.Contains(line, "attached") {
+		if strings.Contains(line, "connection check") && strings.Contains(line, "attached") {
 			return line
 		}
 	}

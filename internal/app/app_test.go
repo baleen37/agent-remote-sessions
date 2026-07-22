@@ -13,7 +13,15 @@ import (
 )
 
 func TestRunRoutesInteractiveAndJSONSeparately(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/ars-test-config")
 	deps, stdout, stderr := appDependencies()
+	deps.LoadTopology = func(path string) ([]Host, error) {
+		want := filepath.Join("/tmp/ars-test-config", "ars", "hosts")
+		if path != want {
+			t.Fatalf("LoadTopology(%q), want %q", path, want)
+		}
+		return []Host{{Target: LocalhostTarget, Local: true}, {Target: "server"}}, nil
+	}
 	calls := 0
 	deps.RunInteractive = func(_ context.Context, hosts []Host) error {
 		calls++
@@ -33,38 +41,21 @@ func TestRunRoutesInteractiveAndJSONSeparately(t *testing.T) {
 	}
 }
 
-func TestRunSetsLocalWithoutCollectingOrStartingTUI(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/ars-test-config")
-	deps, _, stderr := appDependencies()
-	var gotHostsPath, gotLocalPath, gotTarget string
-	deps.SetLocal = func(hostsPath, localPath, target string) error {
-		gotHostsPath, gotLocalPath, gotTarget = hostsPath, localPath, target
-		return nil
+func TestRunDoesNotExposeLocalConfigurationCommand(t *testing.T) {
+	deps, stdout, stderr := appDependencies()
+	if code := Run(context.Background(), []string{"--help"}, deps); code != 0 {
+		t.Fatalf("help code = %d", code)
 	}
-	deps.LoadTopology = func(string, string) ([]Host, error) {
-		t.Fatal("LoadTopology called")
-		return nil, nil
+	if strings.Contains(stdout.String(), "local set") {
+		t.Fatalf("help still exposes local command: %q", stdout.String())
 	}
-	deps.Collect = func(context.Context, []Host) Result {
-		t.Fatal("Collect called")
-		return Result{}
-	}
-	deps.RunInteractive = func(context.Context, []Host) error {
-		t.Fatal("TUI called")
-		return nil
-	}
-	if code := Run(context.Background(), []string{"local", "set", "macbook"}, deps); code != 0 {
-		t.Fatalf("Run() = %d, want 0: %s", code, stderr)
-	}
-	directory := filepath.Join("/tmp/ars-test-config", "ars")
-	if gotHostsPath != filepath.Join(directory, "hosts") ||
-		gotLocalPath != filepath.Join(directory, "local-host") || gotTarget != "macbook" {
-		t.Fatalf("SetLocal(%q, %q, %q)", gotHostsPath, gotLocalPath, gotTarget)
+	if code := Run(context.Background(), []string{"local", "set", "devbox"}, deps); code != 2 {
+		t.Fatalf("removed command code = %d, want 2; stderr = %q", code, stderr.String())
 	}
 }
 
 func TestRunSupportsOnlyTheInteractiveAndJSONCommandShapes(t *testing.T) {
-	allHosts := []Host{{Target: "devbox", Local: true}, {Target: "agent-mac"}, {Target: "remote"}}
+	allHosts := []Host{{Target: LocalhostTarget, Local: true}, {Target: "server"}}
 	tests := []struct {
 		name         string
 		args         []string
@@ -72,8 +63,8 @@ func TestRunSupportsOnlyTheInteractiveAndJSONCommandShapes(t *testing.T) {
 		wantJSON     bool
 	}{
 		{name: "all hosts interactive", args: nil, wantSelected: allHosts},
-		{name: "one host interactive", args: []string{"devbox"}, wantSelected: []Host{{Target: "devbox", Local: true}}},
-		{name: "host named remote interactive", args: []string{"remote"}, wantSelected: []Host{{Target: "remote"}}},
+		{name: "local only", args: []string{LocalhostTarget}, wantSelected: []Host{{Target: LocalhostTarget, Local: true}}},
+		{name: "one host interactive", args: []string{"server"}, wantSelected: []Host{{Target: "server"}}},
 		{name: "all hosts JSON", args: []string{"list", "--json"}, wantSelected: allHosts, wantJSON: true},
 	}
 
@@ -81,7 +72,7 @@ func TestRunSupportsOnlyTheInteractiveAndJSONCommandShapes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var selected []Host
 			deps, stdout, stderr := appDependencies()
-			deps.LoadTopology = func(string, string) ([]Host, error) { return allHosts, nil }
+			deps.LoadTopology = func(string) ([]Host, error) { return allHosts, nil }
 			deps.Collect = func(ctx context.Context, hosts []Host) Result {
 				selected = append([]Host(nil), hosts...)
 				return healthyAppCollection(ctx, hosts)
@@ -110,7 +101,7 @@ func TestRunPrintsHelpWithoutApplicationDependencies(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"top level", []string{"--help"}, "ars local set <host>"},
+		{"top level", []string{"--help"}, "ars [host]"},
 		{"remote", []string{"remote", "--help"}, "Usage:\n  ars remote add <host>"},
 	}
 	for _, test := range tests {
@@ -138,7 +129,7 @@ func TestRunAddsRemoteWithoutLoadingOrCollecting(t *testing.T) {
 		gotPath, gotTarget = path, target
 		return nil
 	}
-	deps.LoadTopology = func(string, string) ([]Host, error) {
+	deps.LoadTopology = func(string) ([]Host, error) {
 		t.Fatal("LoadTopology called for remote add")
 		return nil, nil
 	}
@@ -164,29 +155,13 @@ func TestRunAddsRemoteWithoutLoadingOrCollecting(t *testing.T) {
 }
 
 func TestRunReportsConfigurationWriteFailures(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-		set  func(*Dependencies)
-	}{
-		{name: "remote add", args: []string{"remote", "add", "devbox"}, set: func(deps *Dependencies) {
-			deps.AddHost = func(string, string) error { return errors.New("inventory unavailable") }
-		}},
-		{name: "local set", args: []string{"local", "set", "devbox"}, set: func(deps *Dependencies) {
-			deps.SetLocal = func(string, string, string) error { return errors.New("local selection unavailable") }
-		}},
+	deps, _, stderr := appDependencies()
+	deps.AddHost = func(string, string) error { return errors.New("inventory unavailable") }
+	if code := Run(context.Background(), []string{"remote", "add", "devbox"}, deps); code != 1 {
+		t.Fatalf("Run() = %d, want 1", code)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			deps, _, stderr := appDependencies()
-			test.set(&deps)
-			if code := Run(context.Background(), test.args, deps); code != 1 {
-				t.Fatalf("Run() = %d, want 1", code)
-			}
-			if !strings.Contains(stderr.String(), "unavailable") {
-				t.Fatalf("stderr = %q, want write error", stderr.String())
-			}
-		})
+	if !strings.Contains(stderr.String(), "unavailable") {
+		t.Fatalf("stderr = %q, want write error", stderr.String())
 	}
 }
 
@@ -203,7 +178,7 @@ func TestRunRejectsInvalidUsageBeforeLoadingTopology(t *testing.T) {
 	}
 	for _, args := range tests {
 		deps, _, stderr := appDependencies()
-		deps.LoadTopology = func(string, string) ([]Host, error) {
+		deps.LoadTopology = func(string) ([]Host, error) {
 			t.Fatal("LoadTopology called for invalid usage")
 			return nil, nil
 		}
@@ -222,14 +197,14 @@ func TestRunInvalidUsageIncludesConfigurationSyntax(t *testing.T) {
 		t.Fatalf("Run() = %d, want 2", code)
 	}
 	if !strings.Contains(stderr.String(), "ars remote add <host>") ||
-		!strings.Contains(stderr.String(), "ars local set <host>") {
-		t.Fatalf("stderr = %q, want remote add and local set syntax", stderr.String())
+		strings.Contains(stderr.String(), "ars local set <host>") {
+		t.Fatalf("stderr = %q, want only remote add configuration syntax", stderr.String())
 	}
 }
 
 func TestRunReportsUnknownHostAsInvalidArgument(t *testing.T) {
 	deps, _, stderr := appDependencies()
-	deps.LoadTopology = func(string, string) ([]Host, error) { return []Host{{Target: "devbox", Local: true}}, nil }
+	deps.LoadTopology = func(string) ([]Host, error) { return []Host{{Target: LocalhostTarget, Local: true}}, nil }
 	deps.Collect = func(context.Context, []Host) Result {
 		t.Fatal("Collect called for unknown host")
 		return Result{}
@@ -311,7 +286,7 @@ func TestRunReportsInteractiveFailure(t *testing.T) {
 func TestRunMapsTopologyAndJSONWriteFailuresToGenericExit(t *testing.T) {
 	t.Run("topology", func(t *testing.T) {
 		deps, _, stderr := appDependencies()
-		deps.LoadTopology = func(string, string) ([]Host, error) { return nil, errors.New("topology unavailable") }
+		deps.LoadTopology = func(string) ([]Host, error) { return nil, errors.New("topology unavailable") }
 		if code := Run(context.Background(), nil, deps); code != 1 {
 			t.Fatalf("Run() = %d, want 1", code)
 		}
@@ -336,12 +311,11 @@ func appDependencies() (Dependencies, *bytes.Buffer, *bytes.Buffer) {
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
 	return Dependencies{
-		LoadTopology: func(string, string) ([]Host, error) {
-			return []Host{{Target: "macbook", Local: true}, {Target: "server"}}, nil
+		LoadTopology: func(string) ([]Host, error) {
+			return []Host{{Target: LocalhostTarget, Local: true}, {Target: "server"}}, nil
 		},
-		AddHost:  func(string, string) error { return nil },
-		SetLocal: func(string, string, string) error { return nil },
-		Collect:  healthyAppCollection,
+		AddHost: func(string, string) error { return nil },
+		Collect: healthyAppCollection,
 		RunInteractive: func(context.Context, []Host) error {
 			return nil
 		},

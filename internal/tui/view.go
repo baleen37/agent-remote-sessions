@@ -112,7 +112,13 @@ func (value model) header() string {
 			active++
 		}
 	}
-	header := fmt.Sprintf("ars  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, len(value.result.Hosts))
+	hosts := 0
+	for _, host := range value.result.Hosts {
+		if host.Target != value.deps.LocalTarget {
+			hosts++
+		}
+	}
+	header := fmt.Sprintf("ars  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
 	if value.collecting {
 		header += " · refreshing"
 	}
@@ -295,10 +301,10 @@ func boundedDetailLines(item session.Session, width, height int) []string {
 func (value model) diagnostics(width int) []string {
 	lines := make([]string, 0, len(value.result.Errors)+len(value.result.Warnings)+1)
 	for _, diagnostic := range value.result.Errors {
-		lines = append(lines, value.errorText(diagnosticLine(diagnostic), width))
+		lines = append(lines, value.errorText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	for _, diagnostic := range value.result.Warnings {
-		lines = append(lines, fitLine(diagnosticLine(diagnostic), width))
+		lines = append(lines, fitLine(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	if value.status != "" {
 		status := fitLine(value.status, width)
@@ -310,7 +316,10 @@ func (value model) diagnostics(width int) []string {
 	return lines
 }
 
-func diagnosticLine(value output.HostError) string {
+func diagnosticLine(value output.HostError, localTarget string) string {
+	if value.Host == localTarget {
+		return fmt.Sprintf("%s (%s)", value.Message, value.Code)
+	}
 	return fmt.Sprintf("%s: %s (%s)", value.Host, value.Message, value.Code)
 }
 

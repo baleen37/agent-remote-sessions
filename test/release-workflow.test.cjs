@@ -37,10 +37,9 @@ test("release pins third-party actions by full commit SHA", () => {
   assert.doesNotMatch(releaseJob, /uses: actions\/[^@]+@v[0-9]/);
 });
 
-test("release smoke configures the same local target in hosts and local-host", () => {
-  assert.match(
-    releaseJob,
-    /printf '%s\\n' localhost \| tee "\$RUNNER_TEMP\/config\/ars\/hosts" "\$RUNNER_TEMP\/config\/ars\/local-host"/,
-  );
-  assert.doesNotMatch(releaseJob, /: > "\$RUNNER_TEMP\/config\/ars\/hosts"/);
+test("release smoke runs with implicit localhost and no inventory", () => {
+  assert.match(releaseJob, /mkdir -p "\$RUNNER_TEMP\/config\/ars"/);
+  assert.doesNotMatch(releaseJob, /config\/ars\/hosts/);
+  assert.doesNotMatch(releaseJob, /config\/ars\/local-host/);
+  assert.match(releaseJob, /ars" list --json \| grep -F '"schema_version":1'/);
 });
