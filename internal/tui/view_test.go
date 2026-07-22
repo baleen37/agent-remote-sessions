@@ -246,7 +246,7 @@ func activeRow(content string) string {
 
 func selectedRow(content string) string {
 	for _, line := range strings.Split(ansi.Strip(content), "\n") {
-		if strings.HasPrefix(line, "> ") {
+		if strings.HasPrefix(strings.TrimLeft(line, " "), "> ") {
 			return line
 		}
 	}
@@ -280,7 +280,7 @@ func TestViewMarksStaleHostRowsAsCached(t *testing.T) {
 	for _, line := range strings.Split(rawContent, "\n") {
 		switch {
 		case strings.Contains(line, "API repair"):
-			if !strings.HasSuffix(line, faintCached) {
+			if !strings.HasSuffix(strings.TrimRight(line, " "), faintCached) {
 				t.Fatalf("stale row cached marker not faint-styled: %q", line)
 			}
 		case strings.Contains(line, "connection check"):
