@@ -35,12 +35,12 @@ func ConfigPath() (string, error) {
 func Load(path string) ([]Host, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		_, lstatErr := os.Lstat(path)
-		if errors.Is(lstatErr, os.ErrNotExist) {
-			return []Host{}, nil
+		missing, inspectErr := isMissingInventoryPath(path)
+		if inspectErr != nil {
+			return nil, inspectErr
 		}
-		if lstatErr != nil {
-			return nil, fmt.Errorf("inspect host inventory: %w", lstatErr)
+		if missing {
+			return []Host{}, nil
 		}
 	}
 	if err != nil {
@@ -70,6 +70,33 @@ func Load(path string) ([]Host, error) {
 		return nil, fmt.Errorf("read host inventory: %w", err)
 	}
 	return hosts, nil
+}
+
+func isMissingInventoryPath(path string) (bool, error) {
+	for {
+		info, err := os.Lstat(path)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink == 0 {
+				return info.IsDir(), nil
+			}
+			if _, err := os.Stat(path); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return false, nil
+				}
+				return false, fmt.Errorf("inspect host inventory: %w", err)
+			}
+			return true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect host inventory: %w", err)
+		}
+
+		parent := filepath.Dir(path)
+		if parent == path {
+			return false, nil
+		}
+		path = parent
+	}
 }
 
 func LoadTopology(hostsPath string) ([]Host, error) {

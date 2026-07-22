@@ -78,6 +78,40 @@ func TestLoadTopologyRejectsDanglingRemoteInventorySymlink(t *testing.T) {
 	}
 }
 
+func TestLoadTopologyRejectsDanglingRemoteInventoryParentSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink("missing-ars", filepath.Join(dir, "ars")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	got, err := LoadTopology(filepath.Join(dir, "ars", "hosts"))
+	if err == nil || !strings.Contains(err.Error(), "open host inventory") {
+		t.Fatalf("LoadTopology() error = %v, want open host inventory error", err)
+	}
+	if got != nil {
+		t.Fatalf("LoadTopology() hosts = %#v, want nil", got)
+	}
+}
+
+func TestLoadTopologyAllowsMissingRemoteInventoryUnderExistingParentSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "existing-ars"), 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.Symlink("existing-ars", filepath.Join(dir, "ars")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	got, err := LoadTopology(filepath.Join(dir, "ars", "hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Host{{Target: LocalhostTarget, Local: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LoadTopology() = %#v, want %#v", got, want)
+	}
+}
+
 func TestRemoteInventoryRejectsReservedLocalhost(t *testing.T) {
 	path := writeInventory(t, "devbox\nlocalhost\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "localhost is reserved") {
