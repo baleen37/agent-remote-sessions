@@ -21,7 +21,7 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	}
 	var attached session.Session
 	deps := Dependencies{
-		Collect: func(context.Context) Result { return result },
+		Collect: staticCollect(result),
 		Attach: func(_ context.Context, item session.Session) (ExecCommand, error) {
 			attached = item
 			return &fakeExecCommand{}, nil
@@ -34,8 +34,8 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || !model.collecting || model.generation != 1 {
 		t.Fatalf("Init() collecting=%t generation=%d command=%v", model.collecting, model.generation, command)
 	}
-	message, ok := command().(collectDoneMsg)
-	if !ok || message.generation != 1 || len(message.result.Sessions) != 2 {
+	message, ok := command().(collectUpdateMsg)
+	if !ok || message.generation != 1 || !message.update.Done || len(message.update.Result.Sessions) != 2 {
 		t.Fatalf("Init command message = %#v", message)
 	}
 
@@ -92,12 +92,12 @@ func TestModelRefreshCoalescesAndRejectsStaleGenerations(t *testing.T) {
 	}
 
 	stale := Result{Sessions: []session.Session{twoSessions()[1]}}
-	model, command := updateModel(model, collectDoneMsg{generation: 1, result: stale})
+	model, command := updateModel(model, collectUpdateMsg{generation: 1, update: Update{Result: stale, Done: true}})
 	if command != nil || !model.collecting || len(model.result.Sessions) != 2 {
 		t.Fatalf("stale collection changed model: %#v", model)
 	}
 	fresh := Result{Sessions: []session.Session{twoSessions()[0]}}
-	model, _ = updateModel(model, collectDoneMsg{generation: 2, result: fresh})
+	model, _ = updateModel(model, collectUpdateMsg{generation: 2, update: Update{Result: fresh, Done: true}})
 	if model.collecting || len(model.result.Sessions) != 1 || keyOf(model.result.Sessions[0]) != keyOf(fresh.Sessions[0]) {
 		t.Fatalf("fresh collection not applied: %#v", model)
 	}
@@ -115,7 +115,7 @@ func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 	result := Result{Sessions: []session.Session{changed, twoSessions()[0]}}
 	model.collecting = true
 	model.generation = 2
-	model, _ = updateModel(model, collectDoneMsg{generation: 2, result: result})
+	model, _ = updateModel(model, collectUpdateMsg{generation: 2, update: Update{Result: result, Done: true}})
 	if model.selectedKey != keyOf(selected) || keyOf(model.visible[model.selected]) != keyOf(selected) {
 		t.Fatalf("selection key=%#v index=%d", model.selectedKey, model.selected)
 	}
@@ -124,9 +124,12 @@ func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 func TestModelAttachCompletionStoresBoundedStatusAndCollectsExactlyOnce(t *testing.T) {
 	collects := 0
 	model := readyModel()
-	model.deps.Collect = func(context.Context) Result {
+	model.deps.Collect = func(context.Context) <-chan Update {
 		collects++
-		return Result{}
+		channel := make(chan Update, 1)
+		channel <- Update{Done: true}
+		close(channel)
+		return channel
 	}
 	want := errors.New(strings.Repeat("attach failed ", 100))
 	model, command := updateModel(model, attachDoneMsg{err: want})
@@ -136,7 +139,7 @@ func TestModelAttachCompletionStoresBoundedStatusAndCollectsExactlyOnce(t *testi
 	if model.status == "" || len(model.status) > maxStatusBytes {
 		t.Fatalf("bounded status length=%d status=%q", len(model.status), model.status)
 	}
-	message, ok := command().(collectDoneMsg)
+	message, ok := command().(collectUpdateMsg)
 	if !ok || message.generation != 2 || collects != 1 {
 		t.Fatalf("refresh message=%#v collects=%d", message, collects)
 	}
@@ -150,10 +153,61 @@ func TestModelAttachCompletionSupersedesCollectionInFlight(t *testing.T) {
 	if command == nil || !model.collecting || model.generation != 3 {
 		t.Fatalf("attach completion command=%v collecting=%t generation=%d", command, model.collecting, model.generation)
 	}
-	message, ok := command().(collectDoneMsg)
+	message, ok := command().(collectUpdateMsg)
 	if !ok || message.generation != 3 {
 		t.Fatalf("refresh message = %#v", message)
 	}
+}
+
+func TestModelAppliesIncrementalUpdatesAndStaleHostsUntilDone(t *testing.T) {
+	items := twoSessions()
+	model := readyModel()
+	model.collecting = true
+	model.generation = 2
+
+	channel := make(chan Update, 2)
+	partial := Update{Result: Result{Sessions: items}, Stale: []string{"server"}}
+	model, command := updateModel(model, collectUpdateMsg{generation: 2, update: partial, channel: channel})
+	if command == nil || !model.collecting {
+		t.Fatalf("partial update command=%v collecting=%t", command, model.collecting)
+	}
+	if _, ok := model.stale["server"]; !ok || len(model.stale) != 1 {
+		t.Fatalf("stale set = %#v", model.stale)
+	}
+
+	final := Update{Result: Result{Sessions: items[:1]}, Done: true}
+	model, _ = updateModel(model, collectUpdateMsg{generation: 2, update: final, channel: channel})
+	if model.collecting || len(model.stale) != 0 || len(model.result.Sessions) != 1 {
+		t.Fatalf("final update not applied: collecting=%t stale=%#v", model.collecting, model.stale)
+	}
+}
+
+func TestModelRestartCancelsPreviousCollectionContext(t *testing.T) {
+	model := readyModel()
+	var firstCtx context.Context
+	model.deps.Collect = func(ctx context.Context) <-chan Update {
+		if firstCtx == nil {
+			firstCtx = ctx
+		}
+		channel := make(chan Update)
+		go func() {
+			<-ctx.Done()
+			close(channel)
+		}()
+		return channel
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
+	if firstCtx == nil {
+		t.Fatal("refresh did not start a collection")
+	}
+	model.collecting = false
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
+	select {
+	case <-firstCtx.Done():
+	default:
+		t.Fatal("second refresh did not cancel the first collection context")
+	}
+	_ = model
 }
 
 func TestModelResizeAndQuit(t *testing.T) {
@@ -168,19 +222,30 @@ func TestModelResizeAndQuit(t *testing.T) {
 	}
 }
 
+func staticCollect(result Result) func(context.Context) <-chan Update {
+	return func(context.Context) <-chan Update {
+		channel := make(chan Update, 1)
+		channel <- Update{Result: result, Done: true}
+		close(channel)
+		return channel
+	}
+}
+
 func readyModel() model {
 	result := Result{Sessions: twoSessions()}
 	deps := Dependencies{
-		Collect:     func(context.Context) Result { return result },
+		Collect:     staticCollect(result),
 		Attach:      func(context.Context, session.Session) (ExecCommand, error) { return &fakeExecCommand{}, nil },
 		LocalTarget: "localhost",
 		Now:         func() time.Time { return time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC) },
 		NoColor:     true,
 	}
 	value := newModel(context.Background(), deps)
-	value.generation = 1
-	value.collecting = true
-	value, _ = updateModel(value, collectDoneMsg{generation: 1, result: result})
+	message, ok := value.Init()().(collectUpdateMsg)
+	if !ok {
+		panic("readyModel: Init did not produce collectUpdateMsg")
+	}
+	value, _ = updateModel(value, message)
 	return value
 }
 

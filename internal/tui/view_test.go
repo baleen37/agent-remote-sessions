@@ -221,7 +221,7 @@ func TestNarrowViewRemovesOptionalColumnsInOrder(t *testing.T) {
 
 func TestNewModelHonorsNoColorEnvironment(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	model := newModel(context.Background(), Dependencies{})
+	model := newModel(context.Background(), Dependencies{Collect: staticCollect(Result{})})
 	if !model.noColor {
 		t.Fatal("NO_COLOR environment was ignored")
 	}

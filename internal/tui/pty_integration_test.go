@@ -151,18 +151,24 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	dependencies := Dependencies{
-		Collect: func(ctx context.Context) Result {
-			runtimes, report := arsruntime.Inspect(ctx, runner, []session.Candidate{candidate})
-			state := runtimes[arsruntime.Key(string(candidate.Provider), candidate.NativeID)]
-			item, bindErr := session.BindDiscovered("localhost", session.Discovered{Candidate: candidate, Runtime: state})
-			if bindErr != nil {
-				return Result{Errors: []output.HostError{{Host: "localhost", Code: "protocol_error", Message: bindErr.Error()}}}
+		Collect: func(ctx context.Context) <-chan Update {
+			collect := func() Result {
+				runtimes, report := arsruntime.Inspect(ctx, runner, []session.Candidate{candidate})
+				state := runtimes[arsruntime.Key(string(candidate.Provider), candidate.NativeID)]
+				item, bindErr := session.BindDiscovered("localhost", session.Discovered{Candidate: candidate, Runtime: state})
+				if bindErr != nil {
+					return Result{Errors: []output.HostError{{Host: "localhost", Code: "protocol_error", Message: bindErr.Error()}}}
+				}
+				result := Result{Hosts: []output.HostResult{{Target: "localhost", Status: output.HostOK}}, Sessions: []session.Session{item}}
+				if report.Status == arsruntime.StatusUnavailable {
+					result.Warnings = []output.HostError{{Host: "localhost", Code: report.ErrorCode, Message: "Runtime inspection unavailable"}}
+				}
+				return result
 			}
-			result := Result{Hosts: []output.HostResult{{Target: "localhost", Status: output.HostOK}}, Sessions: []session.Session{item}}
-			if report.Status == arsruntime.StatusUnavailable {
-				result.Warnings = []output.HostError{{Host: "localhost", Code: report.ErrorCode, Message: "Runtime inspection unavailable"}}
-			}
-			return result
+			channel := make(chan Update, 1)
+			channel <- Update{Result: collect(), Done: true}
+			close(channel)
+			return channel
 		},
 		Attach: func(ctx context.Context, item session.Session) (ExecCommand, error) {
 			return arsruntime.NewAttachCommand(ctx, runner, item, provider.ResumeSpec{
