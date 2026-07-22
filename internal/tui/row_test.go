@@ -85,6 +85,7 @@ func TestSelectedHeaderKeepsBackgroundAcrossWidth(t *testing.T) {
 
 func TestCachedColumnAlignsAcrossGroupsAndKeepsSelectedBackground(t *testing.T) {
 	value := readyModel()
+	value = openAllGroups(value)
 	value.width, value.height, value.noColor = 120, 24, true
 	value.stale = map[string]struct{}{"localhost": {}}
 
