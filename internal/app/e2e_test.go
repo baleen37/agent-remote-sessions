@@ -27,9 +27,10 @@ import (
 )
 
 const (
-	e2eLocalClaudeID = "11111111-1111-1111-1111-111111111111"
-	e2eRemoteCodexID = "22222222-2222-2222-2222-222222222222"
-	e2eSecret        = "RAW_TRANSCRIPT_MUST_NOT_CROSS_BOUNDARY"
+	e2eLocalClaudeID  = "11111111-1111-1111-1111-111111111111"
+	e2eLocalRunningID = "33333333-3333-3333-3333-333333333333"
+	e2eRemoteCodexID  = "22222222-2222-2222-2222-222222222222"
+	e2eSecret         = "RAW_TRANSCRIPT_MUST_NOT_CROSS_BOUNDARY"
 )
 
 func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T) {
@@ -56,18 +57,18 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 			tuiResult := tui.Result{
 				Hosts: result.Hosts, Sessions: result.Sessions, Errors: result.Errors, Warnings: result.Warnings,
 			}
-			if len(tuiResult.Sessions) != 2 || tuiResult.Sessions[0].Host != "healthy" || tuiResult.Sessions[1].Host != "macbook" {
+			if len(tuiResult.Sessions) != 3 || len(tuiResult.Warnings) != 1 || tuiResult.Warnings[0].Host != "healthy" {
 				t.Fatalf("TUI sessions = %#v", tuiResult.Sessions)
 			}
 
-			remoteCommand, err := harness.attach(ctx, hosts, tuiResult.Sessions[0])
+			remoteCommand, err := harness.attach(ctx, hosts, findE2ESession(t, tuiResult.Sessions, e2eRemoteCodexID))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, ok := remoteCommand.(*arsSSH.AttachCommand); !ok {
 				t.Fatalf("remote command = %T", remoteCommand)
 			}
-			localCommand, err := harness.attach(ctx, hosts, tuiResult.Sessions[1])
+			localCommand, err := harness.attach(ctx, hosts, findE2ESession(t, tuiResult.Sessions, e2eLocalClaudeID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,14 +121,17 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 		if document.SchemaVersion != 1 || harness.collections != 1 || harness.sshRunner.uploadCount() != 1 {
 			t.Fatalf("schema/collections/uploads = %d/%d/%d", document.SchemaVersion, harness.collections, harness.sshRunner.uploadCount())
 		}
+		assertJSONV1Shape(t, stdout.Bytes())
 		wantSessions := []e2eSession{
 			{Host: "healthy", Provider: "codex", NativeID: e2eRemoteCodexID, UpdatedAt: "2026-07-19T02:00:00Z", CWD: "/work/remote"},
+			{Host: "macbook", Provider: "claude", NativeID: e2eLocalRunningID, UpdatedAt: "2026-07-19T01:30:00Z", CWD: "/work/running", Title: "Running task"},
 			{Host: "macbook", Provider: "claude", NativeID: e2eLocalClaudeID, UpdatedAt: "2026-07-19T01:00:00Z", CWD: "/work/local", Title: "Local task"},
 		}
 		if !slices.Equal(document.Sessions, wantSessions) {
 			t.Fatalf("sessions = %#v, want %#v", document.Sessions, wantSessions)
 		}
-		if strings.Contains(stdout.String(), e2eSecret) || strings.Contains(stdout.String(), localHome) || strings.Contains(stdout.String(), remoteHome) {
+		if strings.Contains(stdout.String(), e2eSecret) || strings.Contains(stdout.String(), localHome) || strings.Contains(stdout.String(), remoteHome) ||
+			strings.Contains(stdout.String(), "runtime_state") || strings.Contains(stdout.String(), "tmux_unavailable") {
 			t.Fatalf("public JSON leaked raw content or provider source path: %q", stdout.String())
 		}
 		if harness.sshRunner.sawUnexpectedCommand() {
@@ -222,13 +226,59 @@ func assertCanonicalResult(t *testing.T, result app.Result) {
 		result.Hosts[2].Target != "down" || result.Hosts[2].Status != "error" {
 		t.Fatalf("hosts = %#v", result.Hosts)
 	}
-	if len(result.Sessions) != 2 || result.Sessions[0].Host != "healthy" || result.Sessions[0].NativeID != e2eRemoteCodexID ||
-		result.Sessions[1].Host != "macbook" || result.Sessions[1].NativeID != e2eLocalClaudeID || result.Sessions[1].Runtime.State != session.RuntimeAttached {
+	if len(result.Sessions) != 3 ||
+		findE2ESession(t, result.Sessions, e2eRemoteCodexID).Runtime.State != session.RuntimeSaved ||
+		findE2ESession(t, result.Sessions, e2eLocalRunningID).Runtime.State != session.RuntimeRunning ||
+		findE2ESession(t, result.Sessions, e2eLocalClaudeID).Runtime.State != session.RuntimeAttached {
 		t.Fatalf("sessions = %#v", result.Sessions)
 	}
 	if len(result.Errors) != 1 || result.Errors[0].Host != "down" || result.Errors[0].Code != "ssh_failed" {
 		t.Fatalf("errors = %#v", result.Errors)
 	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Host != "healthy" || result.Warnings[0].Code != "tmux_unavailable" {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
+func findE2ESession(t *testing.T, sessions []session.Session, nativeID string) session.Session {
+	t.Helper()
+	for _, item := range sessions {
+		if item.NativeID == nativeID {
+			return item
+		}
+	}
+	t.Fatalf("session %s not found in %#v", nativeID, sessions)
+	return session.Session{}
+}
+
+func assertJSONV1Shape(t *testing.T, data []byte) {
+	t.Helper()
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	if got := sortedJSONKeys(document); !slices.Equal(got, []string{"errors", "hosts", "schema_version", "sessions"}) {
+		t.Fatalf("public JSON keys = %v", got)
+	}
+	var sessions []map[string]json.RawMessage
+	if err := json.Unmarshal(document["sessions"], &sessions); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cwd", "host", "native_id", "provider", "title", "updated_at"}
+	for _, item := range sessions {
+		if got := sortedJSONKeys(item); !slices.Equal(got, want) {
+			t.Fatalf("public JSON session keys = %v, want %v", got, want)
+		}
+	}
+}
+
+func sortedJSONKeys(values map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func writeTopology(t *testing.T, configHome string) {
@@ -253,6 +303,11 @@ func writeSyntheticClaudeHome(t *testing.T) string {
 		`{"type":"user","sessionId":"` + e2eLocalClaudeID + `","cwd":"/work/local","message":{"content":"` + e2eSecret + `"}}`,
 		`{"type":"ai-title","sessionId":"` + e2eLocalClaudeID + `","title":"Local task"}`,
 	}, "\n")+"\n", time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC))
+	runningPath := filepath.Join(home, ".claude", "projects", "synthetic", "running.jsonl")
+	writeHistory(t, runningPath, strings.Join([]string{
+		`{"type":"user","sessionId":"` + e2eLocalRunningID + `","cwd":"/work/running","message":{"content":"` + e2eSecret + `"}}`,
+		`{"type":"ai-title","sessionId":"` + e2eLocalRunningID + `","title":"Running task"}`,
+	}, "\n")+"\n", time.Date(2026, 7, 19, 1, 30, 0, 0, time.UTC))
 	return home
 }
 
@@ -356,10 +411,19 @@ func (runner *e2eRunner) Run(ctx context.Context, name string, args []string, st
 	for index, candidate := range candidates {
 		discovered[index] = session.Discovered{Candidate: candidate, Runtime: session.Runtime{State: session.RuntimeSaved}}
 	}
-	if _, err := fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonce); err != nil {
+	var encoded bytes.Buffer
+	if _, err := fmt.Fprintf(&encoded, "/tmp/ars-%s\n", nonce); err != nil {
 		return err
 	}
-	if err := protocol.Encode(stdout, nonce, discovered, results, runtime.Report{Status: runtime.StatusOK}); err != nil {
+	if err := protocol.Encode(&encoded, nonce, discovered, results, runtime.Report{
+		Status: runtime.StatusUnavailable, ErrorCode: "tmux_unavailable",
+	}); err != nil {
+		return err
+	}
+	if strings.Contains(encoded.String(), e2eSecret) || strings.Contains(encoded.String(), runner.remoteHome) {
+		return errors.New("private collector protocol leaked transcript content or provider source path")
+	}
+	if _, err := stdout.Write(encoded.Bytes()); err != nil {
 		return err
 	}
 	runner.mu.Lock()
@@ -404,8 +468,9 @@ type e2eRuntimeRunner struct {
 }
 
 func (*e2eRuntimeRunner) Output(context.Context, runtime.Command) ([]byte, error) {
-	key := runtime.Key(string(session.Claude), e2eLocalClaudeID)
-	return []byte(key + "\t1\t1752790800\n"), nil
+	attached := runtime.Key(string(session.Claude), e2eLocalClaudeID)
+	running := runtime.Key(string(session.Claude), e2eLocalRunningID)
+	return []byte(attached + "\t1\t1752790800\n" + running + "\t0\t1752790800\n"), nil
 }
 
 func (runner *e2eRuntimeRunner) Run(_ context.Context, command runtime.Command, _ io.Reader, _, _ io.Writer) error {

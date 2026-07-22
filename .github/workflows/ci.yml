@@ -28,8 +28,13 @@ jobs:
         run: npm ci
       - name: Test release toolchain
         run: npm test
-      - name: Build embedded collector assets
+      - name: Build embedded ARS/2 collector assets
         run: go run ./cmd/ars-build --assets-only
+      - name: Test disposable tmux and PTY flow
+        run: |
+          tmux -V
+          go test ./internal/runtime -run TestDisposableTmux -count=1 -v
+          go test ./internal/tui -run TestPTYAttachDetachRestoresTUI -count=1 -v
       - name: Test
         run: go test ./...
       - name: Race test

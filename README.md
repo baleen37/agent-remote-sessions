@@ -1,9 +1,14 @@
 # ars
 
-`ars` lists Claude Code and Codex sessions from configured SSH hosts, combines
-them in one searchable picker, and resumes the selected native session. It is a
-single local Go binary: remote hosts do not need an `ars` install, daemon,
-cache, or background process.
+`ars` is a full-screen Claude Code and Codex session navigator for the current
+computer and explicitly configured SSH peers. Selecting a row creates or
+attaches to a provider process in an ARS-owned tmux server. `Ctrl+Q` detaches
+the terminal client, keeps that provider process alive on its original host,
+and returns to the same refreshed TUI.
+
+ARS is one local Go binary. Peers need no `ars` install, daemon, database,
+cache, index, or background helper. Collection uses a private, one-shot,
+version-matched ARS/2 helper over the user's existing OpenSSH configuration.
 
 ## Install
 
@@ -22,11 +27,13 @@ Prerequisites:
 
 - Go as declared by `go.mod`, for building from source
 - OpenSSH `ssh` locally and an OpenSSH-compatible server on each remote host
-- `fzf` locally for interactive selection; `ars list --json` does not use it
+- `tmux` on every managed computer, including the current one
 - a POSIX `/bin/sh` plus `uname`, `mkdir`, `cat`, `chmod`, `rm`, and `rmdir` on
   each remote host
-- `claude` and/or `codex` on the remote `PATH`, with their native session
-  metadata under the remote user's home directory
+- `claude` and/or `codex` on each node's `PATH`, with native session metadata
+  under that user's home directory
+
+`fzf` is not used or required.
 
 Build the three collector assets and the local executable:
 
@@ -40,7 +47,7 @@ local `ars` build: `darwin/arm64`, `linux/amd64`, and `linux/arm64`. Generated
 collector blobs and the root `ars` build artifact are local build outputs and
 must not be committed.
 
-## Inventory
+## Common roster and local identity
 
 The default inventory is `${XDG_CONFIG_HOME}/ars/hosts` when
 `XDG_CONFIG_HOME` is set, otherwise `~/.config/ars/hosts`. Put one OpenSSH
@@ -53,10 +60,22 @@ deploy@example.internal
 agent-mac
 ```
 
-Blank lines and comments are ignored. Targets may use names and aliases from
-the user's SSH config. Duplicates, whitespace, control characters, a leading
-dash, and targets over 255 bytes make the entire inventory invalid. `ars` does
-not infer `localhost` or discover hosts.
+Every managed computer uses the same `hosts` roster. On each computer, select
+that computer's exact roster entry once:
+
+```sh
+ars local set devbox
+```
+
+This writes `${XDG_CONFIG_HOME}/ars/local-host`, or
+`~/.config/ars/local-host` when `XDG_CONFIG_HOME` is unset. ARS never infers
+local identity from OS hostnames, DNS, SSH aliases, VPNs, users, or interfaces.
+The current computer is rendered as `local`, but its configured target remains
+the canonical identity used by JSON and routing.
+
+Blank lines and comments in `hosts` are ignored. Targets may use names and
+aliases from the user's SSH config. Duplicates, whitespace, control characters,
+a leading dash, and targets over 255 bytes make the entire inventory invalid.
 
 `ars remote add <host>` creates the inventory and its parent directory when
 missing, preserves existing comments, entries, and order, and rejects invalid
@@ -72,16 +91,40 @@ ars                    # search sessions from every configured host
 ars devbox             # search one configured host
 ars list --json        # return all hosts, sessions, and errors as JSON
 ars remote add devbox  # add an SSH target to the ARS inventory
+ars local set devbox   # mark this computer's exact roster entry
 ars --help             # show all command forms
 ars remote --help      # show remote command help
 ```
 
-Interactive rows contain a private numeric index followed by display-only
-metadata. `fzf` returns only that opaque index; titles, paths, and host names
-are never parsed back into identity. Enter resumes the selected session.
-Canceling `fzf` exits zero without starting the resume SSH connection. A
-healthy result with no sessions prints `No sessions found.` and does not open
-`fzf`.
+`ars` and `ars <host>` require a TTY. Use `ars list --json` for a headless,
+one-shot result.
+
+## TUI
+
+The screen has one line per session:
+
+```text
+state | title | provider | local/host | project | runtime | activity age
+```
+
+`Active` contains ARS-owned runtimes: `attached(n)` has one or more terminal
+clients and `running` has none. `Recent` contains saved provider histories with
+no ARS runtime. The footer shows the selected row's full CWD, native ID, and
+exact update time. Search is a Unicode-aware, case-insensitive substring match;
+there is no fuzzy ranker.
+
+Keys:
+
+- `Up`, `Down`, `j`, `k`: move
+- `/`: search
+- `Enter`: start or attach
+- `r`: refresh
+- `q`, `Ctrl+C`: quit ARS
+- `Ctrl+Q`: detach only while inside an attached ARS tmux client
+
+The screen collects at startup, on `r`, and after attach returns. It does not
+poll, watch, or cache in the background. Canonical host/provider/native-ID data,
+never rendered row text, determines the attach command.
 
 ## Session inclusion
 
@@ -101,6 +144,26 @@ Both adapters require their provider executable on the remote `PATH`, use the
 metadata file modification time as `updated_at`, validate canonical UUIDs, and
 deduplicate by host, provider, and native ID. A missing executable or metadata
 tree is a healthy absent-provider result, not a host failure.
+
+## Persistent provider runtime
+
+ARS uses a dedicated versioned, per-user tmux server (`ars-v1`) with
+`-f /dev/null`. It does not use, configure, rename, attach, or bind keys in the
+user's default tmux server. It creates exactly one hashed runtime for the
+selected `(provider, native ID)` and rechecks after a concurrent create instead
+of starting a duplicate provider process.
+
+On first selection, ARS starts the adapter's fixed native resume command in the
+saved CWD. Later selections attach that same runtime. `Ctrl+Q` is a prefix-free
+binding in the ARS server and runs `detach-client`; it is not delivered to
+Claude or Codex. When another computer attaches with `ssh -tt`, tmux detaches
+the previous client back to its TUI and hands the same provider process to the
+new client.
+
+If the provider exits, its tmux session ends and the native history remains in
+`Recent`. A host reboot or loss of the ARS tmux server ends the live process but
+does not remove native history. ARS does not discover or adopt providers that
+were started outside its own tmux server.
 
 ## JSON schema version 1
 
@@ -135,9 +198,9 @@ an empty `sessions` array distinguishes a healthy empty host from an
 unreachable host. Stable error codes are `ssh_timeout`, `ssh_failed`,
 `unsupported_target`, `protocol_error`, and `resource_limit`.
 
-## SSH and failure behavior
+## SSH and partial-failure behavior
 
-Collection and resume deliberately use separate SSH modes:
+Collection and attach deliberately use separate SSH modes:
 
 - Collection is non-interactive (`BatchMode=yes`, no agent/X11/port
   forwarding), uses separate probe and upload invocations that each make one
@@ -145,23 +208,25 @@ Collection and resume deliberately use separate SSH modes:
   `StrictHostKeyChecking=yes`, uses a 5-second connect timeout, and gives the
   full probe/upload/protocol flow 60 seconds per host. Unknown hosts fail; ars
   never accepts or rewrites `known_hosts` entries.
-- Resume runs `ssh -tt` with the user's normal SSH configuration,
-  authentication, and forwarding behavior. It executes only
-  `cd <saved-cwd> && exec claude --resume <uuid>` or
-  `cd <saved-cwd> && exec codex resume <uuid>`. Resume preserves the SSH exit
-  code when available.
+- Attach runs `ssh -tt` with the user's normal OpenSSH configuration,
+  authentication, and host-key verification. The bounded fixed remote script
+  checks or creates the exact ARS tmux runtime, reapplies `Ctrl+Q`, and attaches
+  with previous-client detachment. ARS does not weaken host-key checking or
+  write SSH configuration.
 
 Hosts are collected with at most four workers. One failed host produces a
-structured error while healthy peer sessions remain usable. If every selected
-host fails, `ars` exits non-zero and never opens `fzf`. A healthy empty host is
-success. Provider-level corrupt records can yield a partial provider result
-without discarding its valid sessions.
+bounded visible error while healthy local and peer sessions remain searchable
+and attachable. A provider or runtime warning is shown beside otherwise healthy
+sessions. If every selected host fails, the TUI still permits refresh and quit;
+JSON mode writes the structured result and exits non-zero. A healthy empty host
+is success. Provider-level corrupt records can yield a warning without
+discarding valid sessions.
 
 ## Bounds and cleanup
 
 Collection is bounded and fail-closed:
 
-- 64 KiB startup noise and 64 KiB per ARS/1 protocol line
+- 64 KiB startup noise and 64 KiB per ARS/2 protocol line
 - 16 MiB total collector stdout and 64 KiB diagnostic stderr
 - 10,000 sessions total; provider traversal also caps discovered sessions at
   10,000
@@ -178,13 +243,16 @@ that exact leftover.
 
 ## Privacy
 
-The collector returns validated metadata only: provider, native UUID,
-modification time, saved CWD, and native title. Prompts, responses, tool input
-or output, credentials, raw transcript lines, provider source paths, and
-filenames never cross the ARS/1 boundary. Host diagnostics are bounded and
-sanitized before public output. The saved CWD and native title are still
-potentially sensitive metadata, so treat JSON output and terminal history
-accordingly.
+The private ARS/2 collector returns validated metadata only: provider, native
+UUID, modification time, saved CWD, native title, runtime state, attached-client
+count, and runtime start time. Prompts, responses, tool input or output,
+credentials, raw transcript lines, provider source paths, filenames, pane
+content, and attached terminal output never cross the collection boundary.
+Host diagnostics are bounded and sanitized before display.
+
+Public JSON schema v1 deliberately omits all runtime fields and remains the
+provider-history view. Saved CWD and native title are still potentially
+sensitive metadata, so protect JSON output and terminal history accordingly.
 
 ## Verification
 
@@ -196,20 +264,40 @@ go test ./...
 go test -race ./...
 go vet ./...
 go run ./cmd/ars-build
+go test ./internal/runtime -run TestDisposableTmux -count=1 -v
+go test ./internal/tui -run TestPTYAttachDetachRestoresTUI -count=1 -v
+npm test
+git diff --check
 ```
 
 The ephemeral loopback sshd integration is disposable and opt-in:
 
 ```sh
-ARS_RUN_SSHD_INTEGRATION=1 go test ./internal/ssh -run TestEphemeralSSHDCollectsAndResumes -v
+ARS_RUN_SSHD_INTEGRATION=1 go test ./internal/ssh -run TestEphemeralSSHDCollectsAndAttaches -count=1 -v
 ```
 
 It generates temporary host/client keys, `authorized_keys`, `known_hosts`, and
-configs, and does not modify a system sshd or persistent SSH configuration.
-Before release, also use two explicitly configured real hosts to verify one
-Claude and one Codex resume, an unreachable peer beside a healthy host, a
-healthy empty host, fzf cancellation, and nonce-specific cleanup after an
-interrupt.
+configs, logs, provider fixture, and isolated tmux socket. It verifies strict
+host-key checking, remote create/detach with the same provider PID, and
+second-client handoff without modifying system sshd, persistent SSH state, or
+the default tmux server.
+
+Automated evidence is separate from real-host acceptance. Before release, use
+two genuinely ready hosts with the same ARS build and roster and verify:
+
+1. Each host renders its own configured target as `local`, while canonical JSON
+   session sets match.
+2. Host A starts Claude, `Ctrl+Q` returns to its TUI, and the provider PID stays
+   alive; host B then attaches the same PID and A returns to its TUI.
+3. Repeat the same flow for Codex.
+4. Network loss returns to the TUI without killing the provider, and an
+   unreachable peer remains visible beside healthy sessions.
+5. The user's default tmux server, configuration, keys, and sessions are
+   unchanged.
+
+If inventory, SSH, DNS, tmux, or provider readiness is missing, record this
+manual gate as incomplete. Disposable or simulated results are never a real
+two-host pass.
 
 ## Release
 
