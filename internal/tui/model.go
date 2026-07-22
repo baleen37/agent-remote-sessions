@@ -61,6 +61,7 @@ type model struct {
 	width       int
 	height      int
 	noColor     bool
+	styles      viewStyles
 }
 
 func newModel(ctx context.Context, deps Dependencies) model {
@@ -74,11 +75,15 @@ func newModel(ctx context.Context, deps Dependencies) model {
 		collecting: true,
 		generation: 1,
 		noColor:    deps.NoColor || noColor,
+		styles:     newViewStyles(true),
 	}
 }
 
 func (value model) Init() tea.Cmd {
-	return value.collectCommand(value.generation)
+	return tea.Batch(
+		value.collectCommand(value.generation),
+		tea.RequestBackgroundColor,
+	)
 }
 
 func (value model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -103,6 +108,9 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 			value.status = "attach finished"
 		}
 		return value.restartCollection()
+	case tea.BackgroundColorMsg:
+		value.styles = newViewStyles(message.IsDark())
+		return value, nil
 	case tea.WindowSizeMsg:
 		value.width = message.Width
 		value.height = message.Height

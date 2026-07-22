@@ -34,8 +34,8 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || !model.collecting || model.generation != 1 {
 		t.Fatalf("Init() collecting=%t generation=%d command=%v", model.collecting, model.generation, command)
 	}
-	message, ok := command().(collectDoneMsg)
-	if !ok || message.generation != 1 || len(message.result.Sessions) != 2 {
+	message := collectionMessage(t, command)
+	if message.generation != 1 || len(message.result.Sessions) != 2 {
 		t.Fatalf("Init command message = %#v", message)
 	}
 
@@ -62,6 +62,22 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || keyOf(attached) != keyOf(items[1]) {
 		t.Fatalf("attach command=%v session=%#v", command, attached)
 	}
+}
+
+func collectionMessage(t *testing.T, command tea.Cmd) collectDoneMsg {
+	t.Helper()
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("Init command result = %T, want tea.BatchMsg", message)
+	}
+	for _, child := range batch {
+		if collected, ok := child().(collectDoneMsg); ok {
+			return collected
+		}
+	}
+	t.Fatal("Init batch did not contain collection")
+	return collectDoneMsg{}
 }
 
 func TestModelSearchBackspaceRemovesOneRuneAndEscapeRetainsQuery(t *testing.T) {
