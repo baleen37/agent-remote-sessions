@@ -171,6 +171,14 @@ func TestModelPageKeysMoveByViewportWithoutWrapping(t *testing.T) {
 	if model.selected != 0 {
 		t.Fatalf("Ctrl+U at top selected = %d, want 0", model.selected)
 	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnd}))
+	if model.selected != len(model.rows)-1 {
+		t.Fatalf("End selected = %d, want %d", model.selected, len(model.rows)-1)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyHome}))
+	if model.selected != 0 {
+		t.Fatalf("Home selected = %d, want 0", model.selected)
+	}
 }
 
 func TestModelSearchFallbackSelectsFirstMatchingSession(t *testing.T) {

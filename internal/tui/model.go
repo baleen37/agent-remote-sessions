@@ -179,11 +179,11 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		value.move(-1)
 	case tea.KeyDown, 'j':
 		value.move(1)
-	case 'g', 'G':
+	case 'g', 'G', tea.KeyHome, tea.KeyEnd:
 		if len(value.rows) == 0 {
 			return value, nil
 		}
-		if key.Text == "G" {
+		if key.Text == "G" || key.Code == tea.KeyEnd {
 			value.selectRow(len(value.rows) - 1)
 		} else {
 			value.selectRow(0)
