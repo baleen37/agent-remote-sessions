@@ -137,6 +137,9 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	key := message.Key()
 	if key.Code == 'c' && key.Mod&tea.ModCtrl != 0 {
+		if value.cancelCollect != nil {
+			value.cancelCollect()
+		}
 		return value, tea.Quit
 	}
 	if value.searching {
@@ -182,6 +185,9 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			return attachDoneMsg{err: err}
 		})
 	case 'q':
+		if value.cancelCollect != nil {
+			value.cancelCollect()
+		}
 		return value, tea.Quit
 	}
 	return value, nil

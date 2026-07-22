@@ -130,6 +130,33 @@ func TestHostCacheMissOnAbsentCorruptOrForeignData(t *testing.T) {
 	}
 }
 
+func TestHostCacheGoldenFormatV1(t *testing.T) {
+	dir := t.TempDir()
+	target := "server"
+	golden := `{"schema_version":1,"collected_at":"2026-07-21T10:00:00Z","sessions":[{"Host":"server","Provider":"claude","NativeID":"123e4567-e89b-42d3-a456-426614174000","UpdatedAt":"2026-07-21T10:00:00Z","CWD":"/work/ars","Title":"golden","Runtime":{"State":"saved","AttachedClients":0,"StartedAt":"0001-01-01T00:00:00Z"}}]}`
+	path := filepath.Join(dir, url.PathEscape(target)+".json")
+	if err := os.WriteFile(path, []byte(golden), 0o600); err != nil {
+		t.Fatalf("write golden fixture: %v", err)
+	}
+
+	want := session.Session{
+		Host: target,
+		Candidate: session.Candidate{
+			Provider:  session.Claude,
+			NativeID:  "123e4567-e89b-42d3-a456-426614174000",
+			UpdatedAt: time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC),
+			CWD:       "/work/ars",
+			Title:     "golden",
+		},
+		Runtime: session.Runtime{State: session.RuntimeSaved},
+	}
+
+	got, ok := LoadHostCache(dir, target)
+	if !ok || len(got) != 1 || got[0] != want {
+		t.Fatalf("LoadHostCache() = %#v, %t, want [%#v], true", got, ok, want)
+	}
+}
+
 func TestHostCacheMissOnInvalidSessionPayload(t *testing.T) {
 	dir := t.TempDir()
 	target := "server"

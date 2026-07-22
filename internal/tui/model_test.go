@@ -222,6 +222,33 @@ func TestModelResizeAndQuit(t *testing.T) {
 	}
 }
 
+func TestModelQuitCancelsCollectionContext(t *testing.T) {
+	model := readyModel()
+	var capturedCtx context.Context
+	model.deps.Collect = func(ctx context.Context) <-chan Update {
+		capturedCtx = ctx
+		channel := make(chan Update)
+		go func() {
+			<-ctx.Done()
+			close(channel)
+		}()
+		return channel
+	}
+	model, _ = model.restartCollection()
+	if capturedCtx == nil {
+		t.Fatal("restartCollection did not start a collection")
+	}
+	_, command := updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	if command == nil {
+		t.Fatal("q did not quit")
+	}
+	select {
+	case <-capturedCtx.Done():
+	default:
+		t.Fatal("quitting with 'q' did not cancel the in-flight collection context")
+	}
+}
+
 func staticCollect(result Result) func(context.Context) <-chan Update {
 	return func(context.Context) <-chan Update {
 		channel := make(chan Update, 1)
