@@ -8,7 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/app"
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
@@ -71,7 +70,7 @@ func main() {
 						Warnings: result.Warnings,
 					}
 				},
-				Attach: func(ctx context.Context, item session.Session) (tea.ExecCommand, error) {
+				Attach: func(ctx context.Context, item session.Session) (tui.ExecCommand, error) {
 					host, ok := hostsByTarget[item.Host]
 					if !ok {
 						return nil, fmt.Errorf("session host is not selected")

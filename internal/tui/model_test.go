@@ -22,7 +22,7 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	var attached session.Session
 	deps := Dependencies{
 		Collect: func(context.Context) Result { return result },
-		Attach: func(_ context.Context, item session.Session) (tea.ExecCommand, error) {
+		Attach: func(_ context.Context, item session.Session) (ExecCommand, error) {
 			attached = item
 			return &fakeExecCommand{}, nil
 		},
@@ -172,7 +172,7 @@ func readyModel() model {
 	result := Result{Sessions: twoSessions()}
 	deps := Dependencies{
 		Collect:     func(context.Context) Result { return result },
-		Attach:      func(context.Context, session.Session) (tea.ExecCommand, error) { return &fakeExecCommand{}, nil },
+		Attach:      func(context.Context, session.Session) (ExecCommand, error) { return &fakeExecCommand{}, nil },
 		LocalTarget: "macbook",
 		Now:         func() time.Time { return time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC) },
 		NoColor:     true,

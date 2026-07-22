@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"io"
 	"os"
 	"time"
 	"unicode"
@@ -21,9 +22,16 @@ type Result struct {
 	Warnings []output.HostError
 }
 
+type ExecCommand interface {
+	Run() error
+	SetStdin(io.Reader)
+	SetStdout(io.Writer)
+	SetStderr(io.Writer)
+}
+
 type Dependencies struct {
 	Collect     func(context.Context) Result
-	Attach      func(context.Context, session.Session) (tea.ExecCommand, error)
+	Attach      func(context.Context, session.Session) (ExecCommand, error)
 	LocalTarget string
 	Now         func() time.Time
 	NoColor     bool

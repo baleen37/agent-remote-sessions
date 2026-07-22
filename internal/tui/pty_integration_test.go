@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
 	arsruntime "github.com/baleen37/agent-remote-sessions/internal/runtime"
@@ -165,7 +164,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 			}
 			return result
 		},
-		Attach: func(ctx context.Context, item session.Session) (tea.ExecCommand, error) {
+		Attach: func(ctx context.Context, item session.Session) (ExecCommand, error) {
 			return arsruntime.NewAttachCommand(ctx, runner, item, provider.ResumeSpec{
 				Executable: "claude",
 				Args:       []string{"--resume", item.NativeID},

@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/app"
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
@@ -143,7 +142,7 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 type e2eHarness struct {
 	dependencies  app.Dependencies
 	collect       func(context.Context, []app.Host) app.Result
-	attach        func(context.Context, []app.Host, session.Session) (tea.ExecCommand, error)
+	attach        func(context.Context, []app.Host, session.Session) (tui.ExecCommand, error)
 	sshRunner     *e2eRunner
 	runtimeRunner *e2eRuntimeRunner
 	collections   int
@@ -174,7 +173,7 @@ func newE2EHarness(localHome, remoteHome string) *e2eHarness {
 		harness.collections++
 		return app.CollectHosts(ctx, hosts, 4, collector)
 	}
-	harness.attach = func(ctx context.Context, hosts []app.Host, item session.Session) (tea.ExecCommand, error) {
+	harness.attach = func(ctx context.Context, hosts []app.Host, item session.Session) (tui.ExecCommand, error) {
 		host, ok := findHost(hosts, item.Host)
 		if !ok {
 			return nil, fmt.Errorf("session host is not selected")
