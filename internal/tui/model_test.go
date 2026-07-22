@@ -181,6 +181,35 @@ func TestModelPageKeysMoveByViewportWithoutWrapping(t *testing.T) {
 	}
 }
 
+func TestModelCtrlUClearsQueryWhileSearching(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'u', Mod: tea.ModCtrl}))
+	if !model.searching || model.query != "" || len(model.rows) != 4 {
+		t.Fatalf("Ctrl+U searching=%t query=%q rows=%d", model.searching, model.query, len(model.rows))
+	}
+}
+
+func TestModelPageStepMatchesVisibleBodyHeight(t *testing.T) {
+	model := readyModel()
+	items := manySessions(40)
+	for index := range items {
+		items[index].CWD = fmt.Sprintf("/work/project-%02d", index/5)
+	}
+	model.result.Sessions = items
+	model.refreshVisible()
+	model, _ = updateModel(model, tea.WindowSizeMsg{Width: 120, Height: 20})
+	start := model.selected
+
+	// height 20 minus header(2) + list gap(1) + one detail line + no
+	// search line + help block(2) leaves a 14-row session body.
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	if want := start + 14; model.selected != want {
+		t.Fatalf("PgDn selected = %d, want %d", model.selected, want)
+	}
+}
+
 func TestModelSearchFallbackSelectsFirstMatchingSession(t *testing.T) {
 	model := readyModel()
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))

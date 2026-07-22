@@ -39,8 +39,7 @@ func (value model) View() tea.View {
 		}
 		count := ""
 		if value.query != "" {
-			matched := len(filterSessions(value.result.Sessions, value.query, value.deps.LocalTarget))
-			count = fmt.Sprintf("   %d/%d", matched, len(value.result.Sessions))
+			count = fmt.Sprintf("   %d/%d", value.matched, len(value.result.Sessions))
 			if !value.noColor {
 				count = value.styles.muted.Render(count)
 			}
@@ -49,15 +48,9 @@ func (value model) View() tea.View {
 	}
 
 	if value.height > 0 {
-		detailHeight := value.height - (2 + 1 + 1 + len(search) + 2)
-		if len(details) > detailHeight {
-			details = boundedDetailLines(selected, width, detailHeight)
-		}
+		var bodyHeight int
+		details, bodyHeight = value.boundedLayout(details, selected, len(search), width)
 		fixedHeight := 2 + 1 + len(details) + len(search) + 2
-		bodyHeight := value.height - fixedHeight
-		if bodyHeight < 1 {
-			bodyHeight = 1
-		}
 		body = visibleLines(body, selectedLine, bodyHeight)
 		diagnosticHeight := value.height - (fixedHeight + len(body))
 		if diagnosticHeight < len(diagnostics) {
@@ -85,6 +78,20 @@ func (value model) View() tea.View {
 		}
 	}
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
+}
+
+// boundedLayout bounds the detail lines to the terminal height and returns
+// them with the height left for the session list. movePage derives its page
+// step from the same computation so paging matches one visible screen.
+func (value model) boundedLayout(details []string, selected session.Session, searchLines, width int) ([]string, int) {
+	if value.height <= 0 {
+		return details, len(value.rows)
+	}
+	detailHeight := value.height - (2 + 1 + 1 + searchLines + 2)
+	if len(details) > detailHeight {
+		details = boundedDetailLines(selected, width, detailHeight)
+	}
+	return details, max(1, value.height-(2+1+len(details)+searchLines+2))
 }
 
 func (value model) sessionLines(width int) ([]string, int) {

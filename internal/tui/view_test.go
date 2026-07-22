@@ -152,6 +152,7 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 	value.status = "attach finished"
 	value.searching = true
 	value.query = "API"
+	value.refreshVisible()
 
 	lines := strings.Split(value.View().Content, "\n")
 	plain := strippedLines(lines)

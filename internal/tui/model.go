@@ -62,6 +62,7 @@ type model struct {
 	selectedRef    rowRef
 	collapsed      map[string]bool
 	query          string
+	matched        int
 	searching      bool
 	collecting     bool
 	generation     uint64
@@ -152,6 +153,11 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		return value, tea.Quit
 	}
 	if value.searching {
+		if key.Code == 'u' && key.Mod&tea.ModCtrl != 0 {
+			value.query = ""
+			value.refreshVisible()
+			return value, nil
+		}
 		switch key.Code {
 		case tea.KeyEnter:
 			value.searching = false
@@ -265,6 +271,7 @@ func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 
 func (value *model) refreshVisible() {
 	filtered := filterSessions(value.result.Sessions, value.query, value.deps.LocalTarget)
+	value.matched = len(filtered)
 	value.rows = buildRows(filtered, value.collapsed, value.query != "")
 	value.restoreSelection()
 }
@@ -356,10 +363,24 @@ func (value *model) movePage(direction int) {
 	if len(value.rows) == 0 {
 		return
 	}
-	step := max(1, value.height-8)
-	index := value.selected + direction*step
+	index := value.selected + direction*value.pageStep()
 	index = max(0, min(index, len(value.rows)-1))
 	value.selectRow(index)
+}
+
+func (value model) pageStep() int {
+	_, width := contentFrame(value.contentWidth())
+	var details []string
+	selected, hasSelection := value.selectedSession()
+	if hasSelection {
+		details = detailLines(selected, width)
+	}
+	searchLines := 0
+	if value.query != "" || value.searching {
+		searchLines = 1
+	}
+	_, bodyHeight := value.boundedLayout(details, selected, searchLines, width)
+	return max(1, bodyHeight)
 }
 
 func printable(text string) bool {
