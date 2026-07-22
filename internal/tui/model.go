@@ -57,9 +57,10 @@ type model struct {
 	ctx            context.Context
 	deps           Dependencies
 	result         Result
-	visible        []session.Session
+	rows           []listRow
 	selected       int
-	selectedKey    sessionKey
+	selectedRef    rowRef
+	collapsed      map[string]bool
 	query          string
 	searching      bool
 	collecting     bool
@@ -182,16 +183,26 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 		return value.restartCollection()
 	case tea.KeyEnter:
-		if len(value.visible) == 0 {
+		row, ok := value.selectedRow()
+		if !ok {
 			return value, nil
 		}
-		command, err := value.deps.Attach(value.ctx, value.visible[value.selected])
+		if row.kind == rowHeader {
+			value.toggle(row.project)
+			return value, nil
+		}
+		command, err := value.deps.Attach(value.ctx, row.session)
 		if err != nil {
 			return updateModel(value, attachDoneMsg{err: err})
 		}
 		return value, tea.Exec(command, func(err error) tea.Msg {
 			return attachDoneMsg{err: err}
 		})
+	case tea.KeySpace:
+		if row, ok := value.selectedRow(); ok && row.kind == rowHeader {
+			value.toggle(row.project)
+		}
+		return value, nil
 	case 'q':
 		if value.cancelCollect != nil {
 			value.cancelCollect()
@@ -223,28 +234,88 @@ func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 }
 
 func (value *model) refreshVisible() {
-	value.visible = filterSessions(displayOrder(value.result.Sessions), value.query, value.deps.LocalTarget)
-	if len(value.visible) == 0 {
+	filtered := filterSessions(value.result.Sessions, value.query, value.deps.LocalTarget)
+	value.rows = buildRows(filtered, value.collapsed, value.query != "")
+	value.restoreSelection()
+}
+
+func (value *model) restoreSelection() {
+	if len(value.rows) == 0 {
 		value.selected = 0
-		value.selectedKey = sessionKey{}
+		value.selectedRef = rowRef{}
 		return
 	}
-	for index, item := range value.visible {
-		if keyOf(item) == value.selectedKey {
-			value.selected = index
+	if value.selectedRef == (rowRef{}) {
+		value.selectRow(firstSessionRow(value.rows))
+		return
+	}
+	for index, row := range value.rows {
+		ref := refOf(row)
+		if ref.kind != value.selectedRef.kind {
+			continue
+		}
+		if ref.kind == rowHeader && ref.project == value.selectedRef.project {
+			value.selectRow(index)
+			return
+		}
+		if ref.kind == rowSession && ref.key == value.selectedRef.key {
+			value.selectRow(index)
 			return
 		}
 	}
-	value.selected = 0
-	value.selectedKey = keyOf(value.visible[0])
+	if value.selectedRef.kind == rowSession {
+		for index, row := range value.rows {
+			if row.kind == rowHeader && row.project == value.selectedRef.project {
+				value.selectRow(index)
+				return
+			}
+		}
+	}
+	index := value.selected
+	if index >= len(value.rows) {
+		index = len(value.rows) - 1
+	}
+	if index < 0 {
+		index = 0
+	}
+	value.selectRow(index)
+}
+
+func (value *model) selectRow(index int) {
+	value.selected = index
+	value.selectedRef = refOf(value.rows[index])
+}
+
+func firstSessionRow(rows []listRow) int {
+	for index, row := range rows {
+		if row.kind == rowSession {
+			return index
+		}
+	}
+	return 0
+}
+
+func (value model) selectedRow() (listRow, bool) {
+	if value.selected < 0 || value.selected >= len(value.rows) {
+		return listRow{}, false
+	}
+	return value.rows[value.selected], true
+}
+
+func (value *model) toggle(project string) {
+	if value.collapsed == nil {
+		value.collapsed = make(map[string]bool)
+	}
+	value.collapsed[project] = !value.collapsed[project]
+	value.selectedRef = rowRef{kind: rowHeader, project: project}
+	value.refreshVisible()
 }
 
 func (value *model) move(delta int) {
-	if len(value.visible) == 0 {
+	if len(value.rows) == 0 {
 		return
 	}
-	value.selected = (value.selected + delta + len(value.visible)) % len(value.visible)
-	value.selectedKey = keyOf(value.visible[value.selected])
+	value.selectRow((value.selected + delta + len(value.rows)) % len(value.rows))
 }
 
 func printable(text string) bool {

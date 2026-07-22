@@ -14,7 +14,6 @@ import (
 
 const (
 	defaultWidth        = 80
-	projectColumnWidth  = 90
 	providerColumnWidth = 70
 	clientColumnWidth   = 55
 )
@@ -83,21 +82,57 @@ func (value model) View() tea.View {
 }
 
 func (value model) sessionLines(width int) ([]string, int) {
-	active, recent := splitSessions(value.visible)
-	layout := newRowLayout(value.visible, width, value.deps.Now(), value.deps.LocalTarget)
-	lines := []string{value.stateText("Active", session.RuntimeAttached)}
-	lines = append(lines, value.renderGroup(active, layout)...)
-	lines = append(lines, "", value.stateText("Recent", session.RuntimeSaved))
-	lines = append(lines, value.renderGroup(recent, layout)...)
+	if len(value.rows) == 0 {
+		return []string{"  none"}, 0
+	}
+	layout := newRowLayout(rowSessions(value.rows), width, value.deps.Now(), value.deps.LocalTarget)
+	lines := make([]string, 0, len(value.rows))
+	for index, row := range value.rows {
+		selected := index == value.selected
+		if row.kind == rowHeader {
+			lines = append(lines, value.renderHeader(row, selected, width))
+			continue
+		}
+		lines = append(lines, value.renderRow(row, selected, layout))
+	}
+	return lines, value.selected
+}
 
-	selectedLine := 0
-	for index, line := range lines {
-		if strings.HasPrefix(strings.TrimLeft(ansi.Strip(line), " "), "> ") {
-			selectedLine = index
-			break
+func rowSessions(rows []listRow) []session.Session {
+	items := make([]session.Session, 0, len(rows))
+	for _, row := range rows {
+		if row.kind == rowSession {
+			items = append(items, row.session)
 		}
 	}
-	return lines, selectedLine
+	return items
+}
+
+func (value model) renderHeader(row listRow, selected bool, width int) string {
+	cursor := "  "
+	if selected {
+		cursor = "> "
+		if !value.noColor {
+			cursor = value.styles.selectedCursor.Render(cursor)
+		}
+	}
+	symbol := "▾"
+	if row.collapsed {
+		symbol = "▸"
+	}
+	text := fmt.Sprintf("%s %s (%d)", symbol, row.project, row.count)
+	if row.collapsed && row.state != session.RuntimeSaved {
+		text += " " + value.stateText("✻", row.state)
+	}
+	padding := rowPadding(width)
+	line := fitLine(cursor+text, width-2*padding)
+	line = strings.Repeat(" ", padding) + line
+	line += strings.Repeat(" ", max(0, width-padding-lipgloss.Width(line)))
+	line += strings.Repeat(" ", padding)
+	if selected && !value.noColor {
+		line = value.styles.selected.Render(line)
+	}
+	return line
 }
 
 func visibleLines(lines []string, selected, height int) []string {
@@ -144,33 +179,11 @@ func (value model) header() string {
 	return value.styles.title.Render("ars") + "  " + value.styles.muted.Render(stats)
 }
 
-func splitSessions(items []session.Session) (active, recent []session.Session) {
-	for _, item := range items {
-		if item.Runtime.State == session.RuntimeSaved {
-			recent = append(recent, item)
-		} else {
-			active = append(active, item)
-		}
-	}
-	return active, recent
-}
-
-func (value model) renderGroup(items []session.Session, layout rowLayout) []string {
-	if len(items) == 0 {
-		return []string{"  none"}
-	}
-	rows := make([]string, 0, len(items))
-	for _, item := range items {
-		rows = append(rows, value.renderRow(item, layout))
-	}
-	return rows
-}
-
 func sessionTitle(item session.Session) string {
 	if item.Title != "" {
 		return item.Title
 	}
-	return session.Project(item.CWD) + " · " + item.NativeID[:8]
+	return item.NativeID[:8]
 }
 
 func activityAge(now, updatedAt time.Time) string {
@@ -188,10 +201,11 @@ func activityAge(now, updatedAt time.Time) string {
 }
 
 func (value model) selectedSession() (session.Session, bool) {
-	if len(value.visible) == 0 || value.selected < 0 || value.selected >= len(value.visible) {
+	row, ok := value.selectedRow()
+	if !ok || row.kind != rowSession {
 		return session.Session{}, false
 	}
-	return value.visible[value.selected], true
+	return row.session, true
 }
 
 func detailLines(item session.Session, width int) []string {
