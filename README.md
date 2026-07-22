@@ -47,11 +47,14 @@ local `ars` build: `darwin/arm64`, `linux/amd64`, and `linux/arm64`. Generated
 collector blobs and the root `ars` build artifact are local build outputs and
 must not be committed.
 
-## Common roster and local identity
+## Localhost and remote inventory
 
 The default inventory is `${XDG_CONFIG_HOME}/ars/hosts` when
-`XDG_CONFIG_HOME` is set, otherwise `~/.config/ars/hosts`. Put one OpenSSH
-target on each line, in the order it should be reported:
+`XDG_CONFIG_HOME` is set, otherwise `~/.config/ars/hosts`. The current computer
+is always included as `localhost`; it requires no configuration. The hosts file
+contains only OpenSSH peers. A missing hosts file is a valid local-only
+configuration. Put one peer target on each line, in the order it should be
+reported:
 
 ```text
 # ~/.config/ars/hosts
@@ -60,18 +63,9 @@ deploy@example.internal
 agent-mac
 ```
 
-Every managed computer uses the same `hosts` roster. On each computer, select
-that computer's exact roster entry once:
-
-```sh
-ars local set devbox
-```
-
-This writes `${XDG_CONFIG_HOME}/ars/local-host`, or
-`~/.config/ars/local-host` when `XDG_CONFIG_HOME` is unset. ARS never infers
-local identity from OS hostnames, DNS, SSH aliases, VPNs, users, or interfaces.
-The current computer is rendered as `local`, but its configured target remains
-the canonical identity used by JSON and routing.
+`ars localhost` opens only current-computer sessions. `localhost` is reserved
+and cannot be added with `ars remote add`. Existing `local-host` files are
+ignored and are not deleted.
 
 Blank lines and comments in `hosts` are ignored. Targets may use names and
 aliases from the user's SSH config. Duplicates, whitespace, control characters,
@@ -79,19 +73,20 @@ a leading dash, and targets over 255 bytes make the entire inventory invalid.
 
 `ars remote add <host>` creates the inventory and its parent directory when
 missing, preserves existing comments, entries, and order, and rejects invalid
-or duplicate targets. A target beginning with `#` is rejected because inventory
-loading would interpret it as a comment. The command does not edit `~/.ssh/config`.
+or duplicate targets. It also rejects the reserved `localhost` target. A target
+beginning with `#` is rejected because inventory loading would interpret it as
+a comment. The command does not edit `~/.ssh/config`.
 
 ## Commands
 
 The supported command forms are:
 
 ```sh
-ars                    # search sessions from every configured host
-ars devbox             # search one configured host
+ars                    # search localhost and every configured SSH peer
+ars localhost          # search only current-computer sessions
+ars devbox             # search one configured SSH peer
 ars list --json        # return all hosts, sessions, and errors as JSON
 ars remote add devbox  # add an SSH target to the ARS inventory
-ars local set devbox   # mark this computer's exact roster entry
 ars --help             # show all command forms
 ars remote --help      # show remote command help
 ```
@@ -104,8 +99,11 @@ one-shot result.
 The screen has one line per session:
 
 ```text
-state | title | provider | local/host | project | runtime | activity age
+state | title | provider | location | project | runtime | activity age
 ```
+
+The location column is blank for current-computer sessions and shows the
+configured SSH target for peers.
 
 `Active` contains ARS-owned runtimes: `attached(n)` has one or more terminal
 clients and `running` has none. `Recent` contains saved provider histories with
@@ -173,12 +171,12 @@ Public JSON uses dedicated DTOs and always ends with a newline:
 {
   "schema_version": 1,
   "hosts": [
-    {"target": "devbox", "status": "ok"},
+    {"target": "localhost", "status": "ok"},
     {"target": "down", "status": "error"}
   ],
   "sessions": [
     {
-      "host": "devbox",
+      "host": "localhost",
       "provider": "claude",
       "native_id": "123e4567-e89b-42d3-a456-426614174000",
       "updated_at": "2026-07-19T01:02:03Z",
@@ -193,7 +191,7 @@ Public JSON uses dedicated DTOs and always ends with a newline:
 ```
 
 `schema_version` is `1`. Timestamps are UTC-capable RFC3339Nano strings.
-`hosts` records every selected inventory target exactly once. `status=ok` with
+`hosts` records every selected target exactly once. `status=ok` with
 an empty `sessions` array distinguishes a healthy empty host from an
 unreachable host. Stable error codes are `ssh_timeout`, `ssh_failed`,
 `unsupported_target`, `protocol_error`, and `resource_limit`.
@@ -283,10 +281,11 @@ second-client handoff without modifying system sshd, persistent SSH state, or
 the default tmux server.
 
 Automated evidence is separate from real-host acceptance. Before release, use
-two genuinely ready hosts with the same ARS build and roster and verify:
+two genuinely ready hosts with the same ARS build and remote inventory and
+verify:
 
-1. Each host renders its own configured target as `local`, while canonical JSON
-   session sets match.
+1. Each computer renders its own sessions with a blank location and reports
+   them under `localhost` in JSON, while canonical session sets match.
 2. Host A starts Claude, `Ctrl+Q` returns to its TUI, and the provider PID stays
    alive; host B then attaches the same PID and A returns to its TUI.
 3. Repeat the same flow for Codex.

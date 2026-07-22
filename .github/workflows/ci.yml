@@ -80,7 +80,6 @@ jobs:
           npm pack ./dist/npm --pack-destination "$RUNNER_TEMP"
           npm install --global --prefix "$RUNNER_TEMP/ars-prefix" "$RUNNER_TEMP/baleen37-ars-0.0.0.tgz"
           mkdir -p "$RUNNER_TEMP/config/ars"
-          printf '%s\n' localhost | tee "$RUNNER_TEMP/config/ars/hosts" "$RUNNER_TEMP/config/ars/local-host" >/dev/null
           XDG_CONFIG_HOME="$RUNNER_TEMP/config" "$RUNNER_TEMP/ars-prefix/bin/ars" list --json | grep -F '"schema_version":1'
       - name: Preview release
         run: npm run release -- --dry-run
