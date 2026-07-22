@@ -76,7 +76,7 @@ func runtimeOrder(state session.RuntimeState) int {
 
 func location(item session.Session, localTarget string) string {
 	if item.Host == localTarget {
-		return "local"
+		return ""
 	}
 	return item.Host
 }

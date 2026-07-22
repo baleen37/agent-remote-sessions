@@ -154,13 +154,13 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 		Collect: func(ctx context.Context) Result {
 			runtimes, report := arsruntime.Inspect(ctx, runner, []session.Candidate{candidate})
 			state := runtimes[arsruntime.Key(string(candidate.Provider), candidate.NativeID)]
-			item, bindErr := session.BindDiscovered("local-node", session.Discovered{Candidate: candidate, Runtime: state})
+			item, bindErr := session.BindDiscovered("localhost", session.Discovered{Candidate: candidate, Runtime: state})
 			if bindErr != nil {
-				return Result{Errors: []output.HostError{{Host: "local-node", Code: "protocol_error", Message: bindErr.Error()}}}
+				return Result{Errors: []output.HostError{{Host: "localhost", Code: "protocol_error", Message: bindErr.Error()}}}
 			}
-			result := Result{Hosts: []output.HostResult{{Target: "local-node", Status: output.HostOK}}, Sessions: []session.Session{item}}
+			result := Result{Hosts: []output.HostResult{{Target: "localhost", Status: output.HostOK}}, Sessions: []session.Session{item}}
 			if report.Status == arsruntime.StatusUnavailable {
-				result.Warnings = []output.HostError{{Host: "local-node", Code: report.ErrorCode, Message: "Runtime inspection unavailable"}}
+				result.Warnings = []output.HostError{{Host: "localhost", Code: report.ErrorCode, Message: "Runtime inspection unavailable"}}
 			}
 			return result
 		},
@@ -170,7 +170,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 				Args:       []string{"--resume", item.NativeID},
 			})
 		},
-		LocalTarget: "local-node",
+		LocalTarget: "localhost",
 		Now:         func() time.Time { return time.Date(2026, 7, 20, 2, 2, 3, 0, time.UTC) },
 		NoColor:     true,
 	}
