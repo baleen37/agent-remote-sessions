@@ -178,6 +178,11 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 	if mixedIDs {
 		return session.Candidate{}, false, "incompatible"
 	}
+	if id != "" && cwd == "" && errorCode == "" {
+		// Title-only sidecar files carry a session ID and native titles
+		// but no transcript records; they are metadata, not a session.
+		return session.Candidate{}, false, ""
+	}
 	if id == "" || cwd == "" {
 		if errorCode == "" {
 			errorCode = "incompatible"

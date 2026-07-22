@@ -160,8 +160,9 @@ rendered row text, determines the attach command.
 - Claude reads direct regular files at
   `~/.claude/projects/<project>/*.jsonl`. It includes canonical root session
   IDs with an absolute CWD, uses only native custom/AI/agent titles, and
-  excludes internal, sidechain, and agent histories. It never derives a title
-  from prompt text.
+  excludes internal, sidechain, and agent histories. Title-only metadata
+  sidecar files are skipped without a warning. It never derives a title from
+  prompt text.
 - Codex recursively reads regular `.jsonl` files below `~/.codex/sessions`.
   It includes only one valid `session_meta` with `thread_source=user` and
   `source=cli` or `source=vscode`. Exec, subagent, and unknown sources are
