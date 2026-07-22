@@ -12,6 +12,15 @@ type rowKind int
 const (
 	rowHeader rowKind = iota
 	rowSession
+	rowMore
+)
+
+type groupMode int
+
+const (
+	groupModeAuto groupMode = iota
+	groupModeOpen
+	groupModeClosed
 )
 
 type listRow struct {
@@ -31,10 +40,10 @@ type rowRef struct {
 }
 
 func refOf(row listRow) rowRef {
-	if row.kind == rowHeader {
-		return rowRef{kind: rowHeader, project: row.project}
+	if row.kind == rowSession {
+		return rowRef{kind: rowSession, project: row.project, key: keyOf(row.session)}
 	}
-	return rowRef{kind: rowSession, project: row.project, key: keyOf(row.session)}
+	return rowRef{kind: row.kind, project: row.project}
 }
 
 type sessionGroup struct {
@@ -42,30 +51,57 @@ type sessionGroup struct {
 	sessions []session.Session
 }
 
-func buildRows(items []session.Session, collapsed map[string]bool, searchActive bool) []listRow {
+func buildRows(items []session.Session, modes map[string]groupMode, searchActive bool) []listRow {
 	var rows []listRow
 	for _, group := range groupSessions(items) {
-		folded := collapsed[group.project] && !searchActive
+		mode := modes[group.project]
+		if searchActive {
+			mode = groupModeOpen
+		}
+		visible := group.sessions
+		hidden := 0
+		if mode == groupModeAuto {
+			active := activeSessions(group.sessions)
+			if len(active) == 0 {
+				mode = groupModeClosed
+			} else {
+				visible = active
+				hidden = len(group.sessions) - len(active)
+			}
+		}
 		rows = append(rows, listRow{
 			kind:      rowHeader,
 			project:   group.project,
 			count:     len(group.sessions),
 			state:     groupState(group.sessions),
-			collapsed: folded,
+			collapsed: mode == groupModeClosed,
 		})
-		if folded {
+		if mode == groupModeClosed {
 			continue
 		}
-		for position, item := range group.sessions {
+		for position, item := range visible {
 			rows = append(rows, listRow{
 				kind:    rowSession,
 				project: group.project,
 				session: item,
-				last:    position == len(group.sessions)-1,
+				last:    position == len(visible)-1 && hidden == 0,
 			})
+		}
+		if hidden > 0 {
+			rows = append(rows, listRow{kind: rowMore, project: group.project, count: hidden, last: true})
 		}
 	}
 	return rows
+}
+
+func activeSessions(items []session.Session) []session.Session {
+	var active []session.Session
+	for _, item := range items {
+		if item.Runtime.State != session.RuntimeSaved {
+			active = append(active, item)
+		}
+	}
+	return active
 }
 
 func groupSessions(items []session.Session) []sessionGroup {

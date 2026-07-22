@@ -28,7 +28,8 @@ func TestBuildRowsGroupsAndOrdersByStateThenActivity(t *testing.T) {
 		treeSession("ars", "ars-saved", session.RuntimeSaved, base),
 		treeSession("ars", "ars-live", session.RuntimeRunning, base.Add(-2*time.Hour)),
 	}
-	rows := buildRows(items, nil, false)
+	modes := map[string]groupMode{"ars": groupModeOpen, "blog": groupModeOpen}
+	rows := buildRows(items, modes, false)
 	want := []struct {
 		kind    rowKind
 		project string
@@ -61,31 +62,84 @@ func TestBuildRowsGroupsAndOrdersByStateThenActivity(t *testing.T) {
 	}
 }
 
-func TestBuildRowsCollapseHidesSessionsUnlessSearching(t *testing.T) {
+func TestBuildRowsClosedHidesSessionsUnlessSearching(t *testing.T) {
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	items := []session.Session{
 		treeSession("ars", "ars-live", session.RuntimeRunning, base),
 	}
-	collapsed := map[string]bool{"ars": true}
-	rows := buildRows(items, collapsed, false)
+	modes := map[string]groupMode{"ars": groupModeClosed}
+	rows := buildRows(items, modes, false)
 	if len(rows) != 1 || !rows[0].collapsed {
-		t.Fatalf("collapsed rows = %+v", rows)
+		t.Fatalf("closed rows = %+v", rows)
 	}
-	rows = buildRows(items, collapsed, true)
+	rows = buildRows(items, modes, true)
 	if len(rows) != 2 || rows[0].collapsed {
 		t.Fatalf("search rows = %+v", rows)
 	}
 }
 
-func TestRefOfDistinguishesHeadersAndSessions(t *testing.T) {
+func TestBuildRowsAutoShowsOnlyActiveWithMoreRow(t *testing.T) {
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSession("ars", "ars-live", session.RuntimeRunning, base),
+		treeSession("ars", "ars-saved", session.RuntimeSaved, base.Add(-time.Hour)),
+		treeSession("ars", "ars-older", session.RuntimeSaved, base.Add(-2*time.Hour)),
+	}
+	rows := buildRows(items, nil, false)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v, want header, active session, more", rows)
+	}
+	if rows[0].kind != rowHeader || rows[0].collapsed || rows[0].count != 3 {
+		t.Fatalf("header = %+v", rows[0])
+	}
+	if rows[1].kind != rowSession || rows[1].session.NativeID != "ars-live" || rows[1].last {
+		t.Fatalf("active row = %+v", rows[1])
+	}
+	if rows[2].kind != rowMore || rows[2].project != "ars" || rows[2].count != 2 || !rows[2].last {
+		t.Fatalf("more row = %+v", rows[2])
+	}
+}
+
+func TestBuildRowsAutoCollapsesGroupsWithoutActiveSessions(t *testing.T) {
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSession("blog", "blog-old", session.RuntimeSaved, base),
+	}
+	rows := buildRows(items, nil, false)
+	if len(rows) != 1 || rows[0].kind != rowHeader || !rows[0].collapsed {
+		t.Fatalf("rows = %+v, want a single collapsed header", rows)
+	}
+	rows = buildRows(items, nil, true)
+	if len(rows) != 2 || rows[0].collapsed || rows[1].kind != rowSession {
+		t.Fatalf("search rows = %+v, want expanded group", rows)
+	}
+}
+
+func TestBuildRowsAutoAllActiveHasNoMoreRow(t *testing.T) {
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSession("ars", "ars-live", session.RuntimeRunning, base),
+		treeSession("ars", "ars-live2", session.RuntimeAttached, base.Add(-time.Hour)),
+	}
+	rows := buildRows(items, nil, false)
+	if len(rows) != 3 || rows[2].kind != rowSession || !rows[2].last {
+		t.Fatalf("rows = %+v, want all active sessions and no more row", rows)
+	}
+}
+
+func TestRefOfDistinguishesHeadersSessionsAndMoreRows(t *testing.T) {
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	item := treeSession("ars", "ars-live", session.RuntimeRunning, base)
-	rows := buildRows([]session.Session{item}, nil, false)
-	header, leaf := refOf(rows[0]), refOf(rows[1])
+	saved := treeSession("ars", "ars-saved", session.RuntimeSaved, base.Add(-time.Hour))
+	rows := buildRows([]session.Session{item, saved}, nil, false)
+	header, leaf, more := refOf(rows[0]), refOf(rows[1]), refOf(rows[2])
 	if header.kind != rowHeader || header.project != "ars" || header.key != (sessionKey{}) {
 		t.Fatalf("header ref = %+v", header)
 	}
 	if leaf.kind != rowSession || leaf.key != keyOf(item) {
 		t.Fatalf("session ref = %+v", leaf)
+	}
+	if more.kind != rowMore || more.project != "ars" || more.key != (sessionKey{}) {
+		t.Fatalf("more ref = %+v", more)
 	}
 }

@@ -45,9 +45,13 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 		t.Fatalf("initial selection = %+v", row)
 	}
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if row, _ := model.selectedRow(); row.kind != rowHeader || row.project != "api" || !row.collapsed {
+		t.Fatalf("saved-only group not collapsed by default: %+v", row)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
 	if row, _ := model.selectedRow(); row.kind != rowSession || keyOf(row.session) != keyOf(items[1]) {
-		t.Fatal("selection did not move down across the second header")
+		t.Fatal("selection did not reach the manually opened recent session")
 	}
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
 	if row, _ := model.selectedRow(); row.kind != rowHeader {
@@ -139,6 +143,7 @@ func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 	changed.Title = "renamed row"
 	changed.CWD = "/renamed/project"
 	result := Result{Sessions: []session.Session{changed, twoSessions()[0]}}
+	model.groupMode = map[string]groupMode{"project": groupModeOpen}
 	model.collecting = true
 	model.generation = 2
 	model, _ = updateModel(model, collectUpdateMsg{generation: 2, update: Update{Result: result, Done: true}})
@@ -154,7 +159,7 @@ func TestModelCursorCoversHeadersAndSessions(t *testing.T) {
 	for _, row := range value.rows {
 		kinds = append(kinds, row.kind)
 	}
-	want := []rowKind{rowHeader, rowSession, rowHeader, rowSession}
+	want := []rowKind{rowHeader, rowSession, rowHeader}
 	if len(kinds) != len(want) {
 		t.Fatalf("rows = %+v", value.rows)
 	}
@@ -184,14 +189,14 @@ func TestModelEnterOnHeaderTogglesWithoutAttaching(t *testing.T) {
 	if command != nil || attached != 0 {
 		t.Fatal("enter on header attached")
 	}
-	if len(value.rows) != 3 || !value.rows[0].collapsed {
+	if len(value.rows) != 2 || !value.rows[0].collapsed {
 		t.Fatalf("group did not collapse: %+v", value.rows)
 	}
 	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
 		t.Fatalf("selection left the toggled header: %+v", row)
 	}
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
-	if len(value.rows) != 4 {
+	if len(value.rows) != 3 {
 		t.Fatalf("space did not expand: %+v", value.rows)
 	}
 }
@@ -202,7 +207,7 @@ func TestModelCollapseSurvivesRefreshAndSearchOverridesIt(t *testing.T) {
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	value, command := updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
 	value, _ = updateModel(value, command().(collectUpdateMsg))
-	if len(value.rows) != 3 || !value.rows[0].collapsed {
+	if len(value.rows) != 2 || !value.rows[0].collapsed {
 		t.Fatalf("collapse lost on refresh: %+v", value.rows)
 	}
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '/'}))
@@ -214,7 +219,7 @@ func TestModelCollapseSurvivesRefreshAndSearchOverridesIt(t *testing.T) {
 		value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
 	}
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if len(value.rows) != 3 || !value.rows[0].collapsed {
+	if len(value.rows) != 2 || !value.rows[0].collapsed {
 		t.Fatalf("collapse not restored after search: %+v", value.rows)
 	}
 }
@@ -227,6 +232,66 @@ func TestModelSelectionFallsBackToHeaderWhenRowVanishes(t *testing.T) {
 	value.toggle("ars")
 	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
 		t.Fatalf("selection did not fall back to header: %+v", row)
+	}
+}
+
+func mixedProjectSessions() []session.Session {
+	items := twoSessions()
+	items[1].CWD = items[0].CWD
+	return items
+}
+
+func TestModelEnterOnMoreRowRevealsRecentSessionsWithoutAttaching(t *testing.T) {
+	value := readyModel()
+	attached := 0
+	value.deps.Attach = func(context.Context, session.Session) (ExecCommand, error) {
+		attached++
+		return &fakeExecCommand{}, nil
+	}
+	value.result.Sessions = mixedProjectSessions()
+	value.refreshVisible()
+	if len(value.rows) != 3 || value.rows[2].kind != rowMore || value.rows[2].count != 1 {
+		t.Fatalf("auto rows = %+v, want header, active, more", value.rows)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if row, _ := value.selectedRow(); row.kind != rowMore {
+		t.Fatalf("selection did not reach more row: %+v", row)
+	}
+	value, command := updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if command != nil || attached != 0 {
+		t.Fatal("enter on more row attached")
+	}
+	if len(value.rows) != 3 || value.rows[2].kind != rowSession {
+		t.Fatalf("more row did not open group: %+v", value.rows)
+	}
+	if row, _ := value.selectedRow(); row.kind != rowSession || keyOf(row.session) != keyOf(mixedProjectSessions()[1]) {
+		t.Fatalf("selection did not land on first revealed session: %+v", row)
+	}
+}
+
+func TestModelSpaceOnMoreRowOpensGroup(t *testing.T) {
+	value := readyModel()
+	value.result.Sessions = mixedProjectSessions()
+	value.refreshVisible()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	if len(value.rows) != 3 || value.rows[2].kind != rowSession {
+		t.Fatalf("space on more row did not open group: %+v", value.rows)
+	}
+}
+
+func TestModelHeaderToggleClosesAutoPartialThenOpensFull(t *testing.T) {
+	value := readyModel()
+	value.result.Sessions = mixedProjectSessions()
+	value.refreshVisible()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if len(value.rows) != 1 || !value.rows[0].collapsed {
+		t.Fatalf("auto-partial header did not close: %+v", value.rows)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if len(value.rows) != 3 || value.rows[1].kind != rowSession || value.rows[2].kind != rowSession {
+		t.Fatalf("closed header did not open fully: %+v", value.rows)
 	}
 }
 

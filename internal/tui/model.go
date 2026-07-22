@@ -60,7 +60,7 @@ type model struct {
 	rows           []listRow
 	selected       int
 	selectedRef    rowRef
-	collapsed      map[string]bool
+	groupMode      map[string]groupMode
 	query          string
 	searching      bool
 	collecting     bool
@@ -187,8 +187,12 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		if !ok {
 			return value, nil
 		}
-		if row.kind == rowHeader {
+		switch row.kind {
+		case rowHeader:
 			value.toggle(row.project)
+			return value, nil
+		case rowMore:
+			value.openGroup(row.project)
 			return value, nil
 		}
 		command, err := value.deps.Attach(value.ctx, row.session)
@@ -199,8 +203,13 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			return attachDoneMsg{err: err}
 		})
 	case tea.KeySpace:
-		if row, ok := value.selectedRow(); ok && row.kind == rowHeader {
-			value.toggle(row.project)
+		if row, ok := value.selectedRow(); ok {
+			switch row.kind {
+			case rowHeader:
+				value.toggle(row.project)
+			case rowMore:
+				value.openGroup(row.project)
+			}
 		}
 		return value, nil
 	case 'q':
@@ -235,7 +244,7 @@ func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 
 func (value *model) refreshVisible() {
 	filtered := filterSessions(value.result.Sessions, value.query, value.deps.LocalTarget)
-	value.rows = buildRows(filtered, value.collapsed, value.query != "")
+	value.rows = buildRows(filtered, value.groupMode, value.query != "")
 	value.restoreSelection()
 }
 
@@ -254,16 +263,16 @@ func (value *model) restoreSelection() {
 		if ref.kind != value.selectedRef.kind {
 			continue
 		}
-		if ref.kind == rowHeader && ref.project == value.selectedRef.project {
-			value.selectRow(index)
-			return
-		}
 		if ref.kind == rowSession && ref.key == value.selectedRef.key {
 			value.selectRow(index)
 			return
 		}
+		if ref.kind != rowSession && ref.project == value.selectedRef.project {
+			value.selectRow(index)
+			return
+		}
 	}
-	if value.selectedRef.kind == rowSession {
+	if value.selectedRef.kind != rowHeader {
 		for index, row := range value.rows {
 			if row.kind == rowHeader && row.project == value.selectedRef.project {
 				value.selectRow(index)
@@ -303,12 +312,37 @@ func (value model) selectedRow() (listRow, bool) {
 }
 
 func (value *model) toggle(project string) {
-	if value.collapsed == nil {
-		value.collapsed = make(map[string]bool)
+	if value.groupMode == nil {
+		value.groupMode = make(map[string]groupMode)
 	}
-	value.collapsed[project] = !value.collapsed[project]
+	if value.projectExpanded(project) {
+		value.groupMode[project] = groupModeClosed
+	} else {
+		value.groupMode[project] = groupModeOpen
+	}
 	value.selectedRef = rowRef{kind: rowHeader, project: project}
 	value.refreshVisible()
+}
+
+func (value model) projectExpanded(project string) bool {
+	for _, row := range value.rows {
+		if row.kind == rowHeader && row.project == project {
+			return !row.collapsed
+		}
+	}
+	return false
+}
+
+func (value *model) openGroup(project string) {
+	if value.groupMode == nil {
+		value.groupMode = make(map[string]groupMode)
+	}
+	value.groupMode[project] = groupModeOpen
+	index := value.selected
+	value.refreshVisible()
+	if index < len(value.rows) {
+		value.selectRow(index)
+	}
 }
 
 func (value *model) move(delta int) {

@@ -87,11 +87,14 @@ func (value model) sessionLines(width int) ([]string, int) {
 	lines := make([]string, 0, len(value.rows))
 	for index, row := range value.rows {
 		selected := index == value.selected
-		if row.kind == rowHeader {
+		switch row.kind {
+		case rowHeader:
 			lines = append(lines, value.renderHeader(row, selected, width))
-			continue
+		case rowMore:
+			lines = append(lines, value.renderMore(row, selected, width))
+		default:
+			lines = append(lines, value.renderRow(row, selected, layout))
 		}
-		lines = append(lines, value.renderRow(row, selected, layout))
 	}
 	return lines, value.selected
 }
@@ -124,6 +127,29 @@ func (value model) renderHeader(row listRow, selected bool, width int) string {
 	}
 	padding := rowPadding(width)
 	line := fitLine(cursor+text, width-2*padding)
+	line = strings.Repeat(" ", padding) + line
+	line += strings.Repeat(" ", max(0, width-padding-lipgloss.Width(line)))
+	line += strings.Repeat(" ", padding)
+	if selected && !value.noColor {
+		line = value.selectedBackground(line)
+	}
+	return line
+}
+
+func (value model) renderMore(row listRow, selected bool, width int) string {
+	cursor := "  "
+	if selected {
+		cursor = "> "
+		if !value.noColor {
+			cursor = value.styles.selectedCursor.Render(cursor)
+		}
+	}
+	text := fmt.Sprintf("… %d more", row.count)
+	if !value.noColor {
+		text = value.styles.muted.Render(text)
+	}
+	padding := rowPadding(width)
+	line := fitLine(cursor+"└─ "+text, width-2*padding)
 	line = strings.Repeat(" ", padding) + line
 	line += strings.Repeat(" ", max(0, width-padding-lipgloss.Width(line)))
 	line += strings.Repeat(" ", padding)
