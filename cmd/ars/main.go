@@ -51,16 +51,11 @@ func main() {
 	dependencies := app.Dependencies{
 		LoadTopology: app.LoadTopology,
 		AddHost:      app.Add,
-		SetLocal:     app.SetLocal,
 		Collect:      collectHosts,
 		RunInteractive: func(ctx context.Context, hosts []app.Host) error {
 			hostsByTarget := make(map[string]app.Host, len(hosts))
-			localTarget := ""
 			for _, host := range hosts {
 				hostsByTarget[host.Target] = host
-				if host.Local {
-					localTarget = host.Target
-				}
 			}
 			return runTUI(ctx, tui.Dependencies{
 				Collect: func(ctx context.Context) tui.Result {
@@ -90,7 +85,7 @@ func main() {
 					}
 					return ssh.NewAttachCommand(ctx, host.Target, item, spec)
 				},
-				LocalTarget: localTarget,
+				LocalTarget: app.LocalhostTarget,
 			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},
 		Stdout: os.Stdout,
