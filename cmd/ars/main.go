@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	goruntime "runtime"
 	"syscall"
 	"time"
 
@@ -16,6 +19,7 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/baleen37/agent-remote-sessions/internal/ssh"
 	"github.com/baleen37/agent-remote-sessions/internal/tui"
+	"github.com/baleen37/agent-remote-sessions/internal/update"
 	"golang.org/x/term"
 )
 
@@ -103,7 +107,42 @@ func runTUI(ctx context.Context, deps tui.Dependencies, stdin, stdout *os.File, 
 	if !isTerminal(int(stdin.Fd())) || !isTerminal(int(stdout.Fd())) {
 		return errors.New("interactive mode requires a TTY; use ars list --json")
 	}
+	if err := maybeUpdate(ctx, stdin, stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "ars: update:", err)
+	}
 	return tui.Run(ctx, deps, stdin, stdout)
+}
+
+func maybeUpdate(ctx context.Context, stdin, stdout *os.File) error {
+	return update.Maybe(ctx, update.Dependencies{
+		CurrentVersion: version,
+		Client:         http.DefaultClient,
+		ReleaseAPI:     update.DefaultReleaseAPI,
+		DownloadBase:   update.DefaultDownloadBase,
+		GOOS:           goruntime.GOOS,
+		GOARCH:         goruntime.GOARCH,
+		Executable:     os.Executable,
+		RunCommand: func(ctx context.Context, name string, args ...string) error {
+			command := exec.CommandContext(ctx, name, args...)
+			command.Stdin = stdin
+			command.Stdout = stdout
+			command.Stderr = os.Stderr
+			return command.Run()
+		},
+		Exec: syscall.Exec,
+		MakeRaw: func() (func(), error) {
+			state, err := term.MakeRaw(int(stdin.Fd()))
+			if err != nil {
+				return nil, err
+			}
+			return func() { term.Restore(int(stdin.Fd()), state) }, nil
+		},
+		Input:        stdin,
+		Output:       stdout,
+		Args:         os.Args,
+		Environ:      os.Environ(),
+		CheckTimeout: 1500 * time.Millisecond,
+	})
 }
 
 func combineRuntime(candidates []session.Candidate, states map[string]session.Runtime) []session.Discovered {
