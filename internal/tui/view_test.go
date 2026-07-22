@@ -28,7 +28,7 @@ func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 		hostError("one", "failed", "first diagnostic"),
 		hostError("two", "failed", "second diagnostic"),
 	}
-	model.refreshVisible()
+	model = openAllGroups(model)
 	for range len(model.rows) - 2 {
 		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
 	}
@@ -81,7 +81,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	model.width = 120
 	model.height = 24
 	model.result.Sessions[0].Host = "server"
-	model.refreshVisible()
+	model = openAllGroups(model)
 	model.move(-1)
 	content := model.View().Content
 	plain := ansi.Strip(content)
@@ -117,6 +117,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 
 func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	value := readyModel()
+	value = openAllGroups(value)
 	value.width, value.height = 120, 24
 	lines := strings.Split(ansi.Strip(value.View().Content), "\n")
 
@@ -319,6 +320,7 @@ func TestRunRejectsInvalidDependencies(t *testing.T) {
 
 func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
 	value := readyModel()
+	value = openAllGroups(value)
 	value.width, value.height, value.noColor = 120, 24, true
 	content := value.View().Content
 	if ansi.Strip(content) != content {
@@ -333,6 +335,7 @@ func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
 
 func TestViewGroupsSessionsUnderProjectHeaders(t *testing.T) {
 	value := readyModel()
+	value = openAllGroups(value)
 	value.width, value.height, value.noColor = 120, 24, true
 	plain := ansi.Strip(value.View().Content)
 	arsAt := strings.Index(plain, "▾ ars (1)")
@@ -367,11 +370,32 @@ func TestViewTreeGuidesMarkLastSession(t *testing.T) {
 	items[1].CWD = items[0].CWD
 	value.result.Sessions = items
 	value.width, value.height, value.noColor = 120, 24, true
-	value.refreshVisible()
+	value = openAllGroups(value)
 	plain := ansi.Strip(value.View().Content)
 	if !strings.Contains(plain, "├─ ✻  connection check") ||
 		!strings.Contains(plain, "└─ ∙  API repair") {
 		t.Fatalf("guides wrong:\n%s", plain)
+	}
+}
+
+func TestViewRendersMoreRowForAutoPartialGroups(t *testing.T) {
+	value := readyModel()
+	value.result.Sessions = mixedProjectSessions()
+	value.width, value.height, value.noColor = 120, 24, true
+	value.refreshVisible()
+	plain := ansi.Strip(value.View().Content)
+	if !strings.Contains(plain, "▾ ars (2)") ||
+		!strings.Contains(plain, "├─ ✻  connection check") ||
+		!strings.Contains(plain, "└─ … 1 more") {
+		t.Fatalf("auto partial group rows wrong:\n%s", plain)
+	}
+	if strings.Contains(plain, "API repair") {
+		t.Fatalf("recent session leaked into partial group:\n%s", plain)
+	}
+
+	value.noColor = false
+	if raw := value.View().Content; !strings.Contains(raw, value.styles.muted.Render("… 1 more")) {
+		t.Fatalf("more row is not muted: %q", raw)
 	}
 }
 
@@ -401,6 +425,17 @@ func TestViewUntitledFallbackUsesShortID(t *testing.T) {
 	}
 }
 
+func openAllGroups(value model) model {
+	if value.groupMode == nil {
+		value.groupMode = make(map[string]groupMode)
+	}
+	for _, item := range value.result.Sessions {
+		value.groupMode[session.Project(item.CWD)] = groupModeOpen
+	}
+	value.refreshVisible()
+	return value
+}
+
 func activeRow(content string) string {
 	lines := strings.Split(ansi.Strip(content), "\n")
 	for _, line := range lines {
@@ -427,7 +462,7 @@ func TestStaleCachedColumnKeepsActivityVisible(t *testing.T) {
 	items[1].Title = "a very long stale session title " + strings.Repeat("x", 80)
 	model.result.Sessions = items
 	model.stale = map[string]struct{}{"server": {}}
-	model.refreshVisible()
+	model = openAllGroups(model)
 
 	content := ansi.Strip(model.View().Content)
 	for _, line := range strings.Split(content, "\n") {
@@ -588,15 +623,15 @@ func TestFilteredRowsKeepStableColumnLayout(t *testing.T) {
 	model.width = 120
 	providerStart := func(content string) int {
 		for _, line := range strings.Split(content, "\n") {
-			if strings.Contains(line, "API repair") {
-				return strings.Index(line, "codex")
+			if strings.Contains(line, "connection check") {
+				return strings.Index(line, "claude")
 			}
 		}
 		return -1
 	}
 	unfiltered := providerStart(ansi.Strip(model.View().Content))
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
-	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "connection"}))
 	filtered := providerStart(ansi.Strip(model.View().Content))
 	if unfiltered < 0 || unfiltered != filtered {
 		t.Fatalf("provider column moved while filtering: %d -> %d", unfiltered, filtered)
@@ -622,11 +657,30 @@ func TestHeaderCountsPeersWithGrammar(t *testing.T) {
 	}
 }
 
+func TestHelpOffersExpandOnMoreRow(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	active := twoSessions()[0]
+	saved := twoSessions()[0]
+	saved.NativeID = "223e4567-e89b-42d3-a456-426614174000"
+	saved.Runtime = session.Runtime{State: session.RuntimeSaved}
+	model.result.Sessions = []session.Session{active, saved}
+	model.refreshVisible()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if row, ok := model.selectedRow(); !ok || row.kind != rowMore {
+		t.Fatalf("selection is not the more row: %+v", row)
+	}
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "enter expand") || strings.Contains(content, "enter attach") {
+		t.Fatalf("more-row help missing expand: %q", content)
+	}
+}
+
 func TestViewMarksStaleHostRowsAsCached(t *testing.T) {
 	model := readyModel()
 	model.width = 120
 	model.stale = map[string]struct{}{"server": {}}
-	model.refreshVisible()
+	model = openAllGroups(model)
 
 	content := ansi.Strip(model.View().Content)
 	lines := strings.Split(content, "\n")

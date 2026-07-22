@@ -184,10 +184,22 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 	go func() { runDone <- Run(ctx, dependencies, terminal, terminal) }()
 
 	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
-		return strings.Contains(value, "ars  0 active") && strings.Contains(value, "PTY fixture provider")
-	}, "initial ARS TUI")
+		return strings.Contains(value, "ars  0 active") && strings.Contains(value, "▸")
+	}, "initial ARS TUI with collapsed saved group")
 	if _, err := master.Write([]byte{'\r'}); err != nil {
-		t.Fatalf("write Enter: %v", err)
+		t.Fatalf("write Enter to expand group: %v", err)
+	}
+	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
+		return strings.Contains(value, "PTY fixture provider")
+	}, "expanded saved group")
+	if _, err := master.Write([]byte{'j'}); err != nil {
+		t.Fatalf("write j: %v", err)
+	}
+	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
+		return strings.Contains(value, "PTY fixture provider") && strings.Contains(value, "\b\b> ")
+	}, "selected fixture session")
+	if _, err := master.Write([]byte{'\r'}); err != nil {
+		t.Fatalf("write Enter to attach: %v", err)
 	}
 	beforePID := waitForPTYPID(t, pidPath, runDone, &capture)
 	providerPID = beforePID

@@ -136,6 +136,7 @@ Keys:
   the query while typing, and `Esc` outside search clears a kept filter
 - `Enter`: start or attach, or toggle the project group under the cursor
 - `Space`: toggle the project group under the cursor
+- `Enter` or `Space` on a `… N more` row: reveal the group's saved sessions
 - `r`: refresh
 - `q`, `Ctrl+C`: quit ARS
 - `Ctrl+Q`: detach only while inside an attached ARS tmux client
