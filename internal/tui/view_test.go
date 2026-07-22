@@ -618,6 +618,15 @@ func TestHelpAdaptsToSelectionSearchAndQuery(t *testing.T) {
 	}
 }
 
+func TestHelpShowsFoldHintOnWideTerminals(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "h/l fold") {
+		t.Fatalf("wide help missing fold hint: %q", content)
+	}
+}
+
 func TestFilteredRowsKeepStableColumnLayout(t *testing.T) {
 	model := readyModel()
 	model.width = 120
