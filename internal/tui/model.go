@@ -198,6 +198,10 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		value.movePage(1)
 	case tea.KeyPgUp:
 		value.movePage(-1)
+	case tea.KeyLeft, 'h':
+		value.foldLeft()
+	case tea.KeyRight, 'l':
+		value.foldRight()
 	case 'd':
 		if key.Mod&tea.ModCtrl != 0 {
 			value.movePage(1)
@@ -383,6 +387,52 @@ func (value *model) openGroup(project string) {
 	value.refreshVisible()
 	if index < len(value.rows) {
 		value.selectRow(index)
+	}
+}
+
+// foldLeft mirrors vim tree navigation: children jump to their group header,
+// an expanded header collapses, and a collapsed header stays put.
+func (value *model) foldLeft() {
+	row, ok := value.selectedRow()
+	if !ok {
+		return
+	}
+	if row.kind != rowHeader {
+		value.selectHeader(row.project)
+		return
+	}
+	if !row.collapsed {
+		value.toggle(row.project)
+	}
+}
+
+// foldRight expands a collapsed header, steps into the first child of an
+// expanded header, and reveals hidden sessions on a more row.
+func (value *model) foldRight() {
+	row, ok := value.selectedRow()
+	if !ok {
+		return
+	}
+	switch row.kind {
+	case rowMore:
+		value.openGroup(row.project)
+	case rowHeader:
+		if row.collapsed {
+			value.toggle(row.project)
+			return
+		}
+		if next := value.selected + 1; next < len(value.rows) && value.rows[next].project == row.project {
+			value.selectRow(next)
+		}
+	}
+}
+
+func (value *model) selectHeader(project string) {
+	for index, row := range value.rows {
+		if row.kind == rowHeader && row.project == project {
+			value.selectRow(index)
+			return
+		}
 	}
 }
 

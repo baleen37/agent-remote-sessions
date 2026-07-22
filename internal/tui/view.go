@@ -381,7 +381,7 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "g/G top/end")
+		items = append(items, "h/l fold", "g/G top/end")
 	}
 	items = append(items, "/ search")
 	if value.query != "" {

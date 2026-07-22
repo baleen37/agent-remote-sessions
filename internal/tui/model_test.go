@@ -403,6 +403,91 @@ func TestModelEnterOnMoreRowRevealsRecentSessionsWithoutAttaching(t *testing.T) 
 	}
 }
 
+func TestModelHJumpsToParentThenCollapses(t *testing.T) {
+	value := readyModel()
+	if row, _ := value.selectedRow(); row.kind != rowSession {
+		t.Fatalf("initial selection is not a session: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" || row.collapsed {
+		t.Fatalf("h on session did not jump to parent header: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" || !row.collapsed {
+		t.Fatalf("h on expanded header did not collapse: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" || !row.collapsed {
+		t.Fatalf("h on collapsed header changed selection or state: %+v", row)
+	}
+}
+
+func TestModelLExpandsHeaderThenEntersFirstChild(t *testing.T) {
+	value := readyModel()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "api" || !row.collapsed {
+		t.Fatalf("selection is not the collapsed api header: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'l', Text: "l"}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "api" || row.collapsed {
+		t.Fatalf("l on collapsed header did not expand: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'l', Text: "l"}))
+	if row, _ := value.selectedRow(); row.kind != rowSession || row.project != "api" {
+		t.Fatalf("l on expanded header did not enter first child: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'l', Text: "l"}))
+	if row, _ := value.selectedRow(); row.kind != rowSession || row.project != "api" {
+		t.Fatalf("l on session moved selection: %+v", row)
+	}
+}
+
+func TestModelArrowLeftRightMirrorHL(t *testing.T) {
+	value := readyModel()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
+		t.Fatalf("left arrow on session did not jump to parent header: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft}))
+	if row, _ := value.selectedRow(); !row.collapsed {
+		t.Fatalf("left arrow on expanded header did not collapse: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.collapsed {
+		t.Fatalf("right arrow on collapsed header did not expand: %+v", row)
+	}
+}
+
+func TestModelHLOnMoreRowNavigateAndOpen(t *testing.T) {
+	value := readyModel()
+	value.result.Sessions = mixedProjectSessions()
+	value.refreshVisible()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if row, _ := value.selectedRow(); row.kind != rowMore {
+		t.Fatalf("selection did not reach more row: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
+		t.Fatalf("h on more row did not jump to header: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'l', Text: "l"}))
+	if len(value.rows) != 3 || value.rows[2].kind != rowSession {
+		t.Fatalf("l on more row did not open group: %+v", value.rows)
+	}
+}
+
+func TestModelHLWhileSearchingTypeIntoQuery(t *testing.T) {
+	value := readyModel()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'l', Text: "l"}))
+	if value.query != "hl" {
+		t.Fatalf("search query = %q, want %q", value.query, "hl")
+	}
+}
+
 func TestModelSpaceOnMoreRowOpensGroup(t *testing.T) {
 	value := readyModel()
 	value.result.Sessions = mixedProjectSessions()
