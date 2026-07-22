@@ -55,8 +55,8 @@ func TestSelectedRowKeepsBackgroundAcrossNestedANSIStyles(t *testing.T) {
 	value := readyModel()
 	value.width, value.height, value.noColor = 120, 24, false
 	_, usable := contentFrame(value.width)
-	layout := newRowLayout(value.visible, value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
-	line := value.renderRow(value.visible[0], layout)
+	layout := newRowLayout(rowSessions(value.rows), value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
+	line := value.renderRow(value.rows[1], true, layout)
 
 	if missing := cellsWithoutBackground(line); len(missing) > 0 {
 		t.Fatalf("selected background missing from cells %v: %q", missing, line)
@@ -66,6 +66,20 @@ func TestSelectedRowKeepsBackgroundAcrossNestedANSIStyles(t *testing.T) {
 	}
 	if stateStyle := value.stateText("attached(1)", session.RuntimeAttached); !strings.Contains(line, stateStyle[:strings.Index(stateStyle, "attached(1)")]) {
 		t.Fatalf("runtime foreground missing: %q", line)
+	}
+}
+
+func TestSelectedHeaderKeepsBackgroundAcrossWidth(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	_, usable := contentFrame(value.width)
+	line := value.renderHeader(value.rows[0], true, usable)
+
+	if missing := cellsWithoutBackground(line); len(missing) > 0 {
+		t.Fatalf("selected header background missing from cells %v: %q", missing, line)
+	}
+	if ansi.StringWidth(line) != usable {
+		t.Fatalf("selected header width = %d, want %d", ansi.StringWidth(line), usable)
 	}
 }
 
@@ -97,8 +111,8 @@ func TestCachedColumnAlignsAcrossGroupsAndKeepsSelectedBackground(t *testing.T) 
 
 	value.noColor = false
 	_, usable := contentFrame(value.width)
-	layout := newRowLayout(value.visible, value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
-	selected := value.renderRow(value.visible[0], layout)
+	layout := newRowLayout(rowSessions(value.rows), value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
+	selected := value.renderRow(value.rows[1], true, layout)
 	if !strings.Contains(selected, value.styles.saved.Render("cached")[:strings.Index(value.styles.saved.Render("cached"), "cached")]) {
 		t.Fatalf("cached marker is not faint-styled: %q", selected)
 	}

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"sort"
 	"strings"
 	"unicode"
 
@@ -53,14 +52,6 @@ func foldCase(value string) string {
 		}
 		return folded
 	}, value)
-}
-
-func displayOrder(items []session.Session) []session.Session {
-	ordered := append([]session.Session(nil), items...)
-	sort.SliceStable(ordered, func(left, right int) bool {
-		return runtimeOrder(ordered[left].Runtime.State) < runtimeOrder(ordered[right].Runtime.State)
-	})
-	return ordered
 }
 
 func runtimeOrder(state session.RuntimeState) int {

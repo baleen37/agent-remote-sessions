@@ -11,20 +11,20 @@ import (
 )
 
 const (
-	columnGutter  = "  "
-	rowPrefixSize = 2
-	minInsetWidth = 40
+	columnGutter   = "  "
+	rowPrefixSize  = 2
+	treeGuideWidth = 3
+	minInsetWidth  = 40
 )
 
 type rowLayout struct {
-	width                      int
-	showProvider, showProject  bool
-	showClients                bool
-	showCached                 bool
-	title, provider, location  int
-	project, runtime, activity int
-	cached                     int
-	now                        time.Time
+	width                     int
+	showProvider, showClients bool
+	showCached                bool
+	title, provider, location int
+	runtime, activity         int
+	cached                    int
+	now                       time.Time
 }
 
 func contentFrame(width int) (inset int, usable int) {
@@ -85,7 +85,6 @@ func newRowLayout(items []session.Session, stale map[string]struct{}, width int,
 	layout := rowLayout{
 		width:        width,
 		showProvider: width >= providerColumnWidth,
-		showProject:  width >= projectColumnWidth,
 		showClients:  width >= clientColumnWidth,
 		cached:       lipgloss.Width("cached"),
 		now:          now,
@@ -101,19 +100,13 @@ func newRowLayout(items []session.Session, stale map[string]struct{}, width int,
 		if layout.showProvider {
 			layout.provider = max(layout.provider, lipgloss.Width(string(item.Provider)))
 		}
-		if layout.showProject {
-			layout.project = max(layout.project, lipgloss.Width(session.Project(item.CWD)))
-		}
 	}
 
 	fieldCount := 5 // marker, title, location, runtime, activity
-	fixed := 2*rowPadding(width) + rowPrefixSize + 1 + layout.runtime + layout.activity
+	fixed := 2*rowPadding(width) + rowPrefixSize + treeGuideWidth + 1 + layout.runtime + layout.activity
 	if layout.showProvider {
 		fieldCount++
 		fixed += layout.provider
-	}
-	if layout.showProject {
-		fieldCount++
 	}
 	if layout.showCached {
 		fieldCount++
@@ -122,14 +115,8 @@ func newRowLayout(items []session.Session, stale map[string]struct{}, width int,
 	fixed += (fieldCount - 1) * lipgloss.Width(columnGutter)
 
 	flexible := []int{layout.title, layout.location}
-	if layout.showProject {
-		flexible = append(flexible, layout.project)
-	}
 	allocated := allocateWidths(flexible, max(0, width-fixed))
 	layout.title, layout.location = allocated[0], allocated[1]
-	if layout.showProject {
-		layout.project = allocated[2]
-	}
 	return layout
 }
 
@@ -140,14 +127,18 @@ func runtimeLabel(item session.Session, clients bool) string {
 	return string(item.Runtime.State)
 }
 
-func (value model) renderRow(item session.Session, layout rowLayout) string {
-	selected := keyOf(item) == value.selectedKey
+func (value model) renderRow(row listRow, selected bool, layout rowLayout) string {
+	item := row.session
 	cursor := "  "
 	if selected {
 		cursor = "> "
 		if !value.noColor {
 			cursor = value.styles.selectedCursor.Render(cursor)
 		}
+	}
+	guide := "├─ "
+	if row.last {
+		guide = "└─ "
 	}
 	marker := "∙"
 	if item.Runtime.State != session.RuntimeSaved {
@@ -161,9 +152,6 @@ func (value model) renderRow(item session.Session, layout rowLayout) string {
 		fields = append(fields, column(string(item.Provider), layout.provider, false))
 	}
 	fields = append(fields, column(location(item, value.deps.LocalTarget), layout.location, false))
-	if layout.showProject {
-		fields = append(fields, column(session.Project(item.CWD), layout.project, false))
-	}
 	fields = append(fields,
 		column(value.stateText(runtimeLabel(item, layout.showClients), item.Runtime.State), layout.runtime, true),
 		column(activityAge(layout.now, item.UpdatedAt), layout.activity, true),
@@ -178,13 +166,17 @@ func (value model) renderRow(item session.Session, layout rowLayout) string {
 
 	padding := rowPadding(layout.width)
 	innerWidth := layout.width - 2*padding
-	row := fitLine(cursor+strings.Join(fields, columnGutter), innerWidth)
-	row = strings.Repeat(" ", padding) + row
-	row += strings.Repeat(" ", max(0, layout.width-padding-lipgloss.Width(row)))
-	row += strings.Repeat(" ", padding)
+	line := fitLine(cursor+guide+strings.Join(fields, columnGutter), innerWidth)
+	line = strings.Repeat(" ", padding) + line
+	line += strings.Repeat(" ", max(0, layout.width-padding-lipgloss.Width(line)))
+	line += strings.Repeat(" ", padding)
 	if selected && !value.noColor {
-		background := ansi.Style{}.BackgroundColor(value.styles.selected.GetBackground()).String()
-		row = background + strings.ReplaceAll(row, ansi.ResetStyle, ansi.ResetStyle+background) + ansi.ResetStyle
+		line = value.selectedBackground(line)
 	}
-	return row
+	return line
+}
+
+func (value model) selectedBackground(line string) string {
+	background := ansi.Style{}.BackgroundColor(value.styles.selected.GetBackground()).String()
+	return background + strings.ReplaceAll(line, ansi.ResetStyle, ansi.ResetStyle+background) + ansi.ResetStyle
 }

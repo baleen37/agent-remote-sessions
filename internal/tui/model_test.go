@@ -41,19 +41,24 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	}
 
 	model, _ = updateModel(model, message)
+	if row, ok := model.selectedRow(); !ok || row.kind != rowSession || keyOf(row.session) != keyOf(items[0]) {
+		t.Fatalf("initial selection = %+v", row)
+	}
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
-	if model.selectedKey != keyOf(items[1]) {
-		t.Fatal("selection did not move down")
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if row, _ := model.selectedRow(); row.kind != rowSession || keyOf(row.session) != keyOf(items[1]) {
+		t.Fatal("selection did not move down across the second header")
 	}
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
-	if model.selectedKey != keyOf(items[0]) {
-		t.Fatal("selection did not move up")
+	if row, _ := model.selectedRow(); row.kind != rowHeader {
+		t.Fatal("selection did not move up onto a header")
 	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
 
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
-	if len(model.visible) != 1 || keyOf(model.visible[0]) != keyOf(items[1]) {
-		t.Fatalf("visible after search = %#v", model.visible)
+	if sessions := rowSessions(model.rows); len(sessions) != 1 || keyOf(sessions[0]) != keyOf(items[1]) {
+		t.Fatalf("visible after search = %#v", model.rows)
 	}
 	model, command = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	if command != nil || model.searching || model.query != "API" {
@@ -127,8 +132,8 @@ func TestModelRefreshCoalescesAndRejectsStaleGenerations(t *testing.T) {
 func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 	model := readyModel()
 	selected := twoSessions()[1]
-	model.selectedKey = keyOf(selected)
-	model.selected = 1
+	model.selectedRef = rowRef{kind: rowSession, project: session.Project(selected.CWD), key: keyOf(selected)}
+	model.selected = 3
 
 	changed := selected
 	changed.Title = "renamed row"
@@ -137,8 +142,91 @@ func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 	model.collecting = true
 	model.generation = 2
 	model, _ = updateModel(model, collectUpdateMsg{generation: 2, update: Update{Result: result, Done: true}})
-	if model.selectedKey != keyOf(selected) || keyOf(model.visible[model.selected]) != keyOf(selected) {
-		t.Fatalf("selection key=%#v index=%d", model.selectedKey, model.selected)
+	row, ok := model.selectedRow()
+	if !ok || row.kind != rowSession || keyOf(row.session) != keyOf(selected) {
+		t.Fatalf("selection row=%+v index=%d", row, model.selected)
+	}
+}
+
+func TestModelCursorCoversHeadersAndSessions(t *testing.T) {
+	value := readyModel()
+	kinds := make([]rowKind, 0, len(value.rows))
+	for _, row := range value.rows {
+		kinds = append(kinds, row.kind)
+	}
+	want := []rowKind{rowHeader, rowSession, rowHeader, rowSession}
+	if len(kinds) != len(want) {
+		t.Fatalf("rows = %+v", value.rows)
+	}
+	for index := range want {
+		if kinds[index] != want[index] {
+			t.Fatalf("row kinds = %v, want %v", kinds, want)
+		}
+	}
+	if value.selected != 1 {
+		t.Fatalf("initial selection = %d, want first session row", value.selected)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
+		t.Fatalf("k did not land on header: %+v", row)
+	}
+}
+
+func TestModelEnterOnHeaderTogglesWithoutAttaching(t *testing.T) {
+	attached := 0
+	value := readyModel()
+	value.deps.Attach = func(context.Context, session.Session) (ExecCommand, error) {
+		attached++
+		return &fakeExecCommand{}, nil
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
+	value, command := updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if command != nil || attached != 0 {
+		t.Fatal("enter on header attached")
+	}
+	if len(value.rows) != 3 || !value.rows[0].collapsed {
+		t.Fatalf("group did not collapse: %+v", value.rows)
+	}
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
+		t.Fatalf("selection left the toggled header: %+v", row)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeySpace, Text: " "}))
+	if len(value.rows) != 4 {
+		t.Fatalf("space did not expand: %+v", value.rows)
+	}
+}
+
+func TestModelCollapseSurvivesRefreshAndSearchOverridesIt(t *testing.T) {
+	value := readyModel()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	value, command := updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
+	value, _ = updateModel(value, command().(collectUpdateMsg))
+	if len(value.rows) != 3 || !value.rows[0].collapsed {
+		t.Fatalf("collapse lost on refresh: %+v", value.rows)
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "connection"}))
+	if len(value.rows) != 2 || value.rows[1].session.Title != "connection check" {
+		t.Fatalf("search did not override collapse: %+v", value.rows)
+	}
+	for range "connection" {
+		value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if len(value.rows) != 3 || !value.rows[0].collapsed {
+		t.Fatalf("collapse not restored after search: %+v", value.rows)
+	}
+}
+
+func TestModelSelectionFallsBackToHeaderWhenRowVanishes(t *testing.T) {
+	value := readyModel()
+	if header := value.rows[0]; header.project != "ars" {
+		t.Fatalf("unexpected first group: %+v", header)
+	}
+	value.toggle("ars")
+	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
+		t.Fatalf("selection did not fall back to header: %+v", row)
 	}
 }
 

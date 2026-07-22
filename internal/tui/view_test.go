@@ -29,13 +29,13 @@ func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 		hostError("two", "failed", "second diagnostic"),
 	}
 	model.refreshVisible()
-	for range len(model.visible) - 1 {
+	for range len(model.rows) - 2 {
 		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
 	}
 
 	content := ansi.Strip(model.View().Content)
 	for _, want := range []string{
-		"> ∙  session 15",
+		"> └─ ∙  session 15",
 		"0195f5dc-9e3f-7c26-8000-000000000015",
 		"↑↓/jk move",
 	} {
@@ -82,11 +82,11 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	model.height = 24
 	model.result.Sessions[0].Host = "server"
 	model.refreshVisible()
-	model.move(1)
+	model.move(-1)
 	content := model.View().Content
 	plain := ansi.Strip(content)
 	for _, want := range []string{
-		"ars", "1 active", "1 recent", "Active", "Recent", "claude", "server",
+		"ars", "1 active", "1 recent", "▾ ars (1)", "▾ api (1)", "claude", "server",
 		"attached(1)", "↑↓/jk move",
 	} {
 		if !strings.Contains(plain, want) {
@@ -101,7 +101,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	if missing := cellsWithoutBackground(row); len(missing) != ansi.StringWidth(row) {
 		t.Fatalf("unselected row unexpectedly has background: %q", row)
 	}
-	for _, identity := range []string{"connection check", "claude", "server", "ars", "1d"} {
+	for _, identity := range []string{"connection check", "claude", "server", "1d"} {
 		assertSpanForeground(t, row, identity, false)
 	}
 	for _, state := range []string{"✻", "attached(1)"} {
@@ -121,9 +121,9 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	lines := strings.Split(ansi.Strip(value.View().Content), "\n")
 
 	header := lineContaining(t, lines, "ars  1 active · 1 recent · 0 hosts")
-	active := lineContaining(t, lines, "Active")
+	firstHeader := lineContaining(t, lines, "▾ ars (1)")
 	activeRow := lineContaining(t, lines, "attached(1)")
-	recent := lineContaining(t, lines, "Recent")
+	secondHeader := lineContaining(t, lines, "▾ api (1)")
 	recentRow := lineContaining(t, lines, "API repair")
 	details := lineContaining(t, lines, "/work/ars")
 	help := lineContaining(t, lines, "↑↓/jk move")
@@ -132,8 +132,7 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 		before int
 		after  int
 	}{
-		{header, active},
-		{activeRow, recent},
+		{header, firstHeader},
 		{recentRow, details},
 		{details, help},
 	} {
@@ -141,19 +140,8 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 			t.Fatalf("lines %d and %d are not separated by one blank line:\n%s", pair.before, pair.after, strings.Join(lines, "\n"))
 		}
 	}
-}
-
-func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
-	value := readyModel()
-	value.width, value.height, value.noColor = 120, 24, true
-	content := value.View().Content
-	if ansi.Strip(content) != content {
-		t.Fatalf("NO_COLOR emitted ANSI: %q", content)
-	}
-	for _, want := range []string{"> ✻", "attached(1)", "Recent", "∙"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("NO_COLOR missing %q: %q", want, content)
-		}
+	if secondHeader != activeRow+1 {
+		t.Fatalf("groups are separated by a blank line:\n%s", strings.Join(lines, "\n"))
 	}
 }
 
@@ -173,8 +161,12 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 		t.Fatalf("header hierarchy = %q, want %q", header, wantHeader)
 	}
 
+	selected, ok := value.selectedSession()
+	if !ok {
+		t.Fatal("no selected session")
+	}
 	_, width := contentFrame(value.width)
-	details := detailLines(value.visible[value.selected], width)
+	details := detailLines(selected, width)
 	for _, text := range append(details, "metadata partial (partial)", "attach finished", help(width)) {
 		line := lines[lineContaining(t, plain, text)]
 		want := " " + value.styles.muted.Render(text)
@@ -267,9 +259,10 @@ func TestNarrowRowKeepsLongTitleLocationRuntimeAndActivityVisible(t *testing.T) 
 	item.Title = "critical-title-" + strings.Repeat("b", 200)
 	model.result.Sessions = []session.Session{item}
 	model.refreshVisible()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
 
 	row := selectedRow(model.View().Content)
-	for _, want := range []string{"critical-title", "remote-host", "attached(1)", "1d"} {
+	for _, want := range []string{"critical-t", "remote-host", "attached(1)", "1d"} {
 		if !strings.Contains(row, want) {
 			t.Fatalf("row missing %q: %q", want, row)
 		}
@@ -286,16 +279,13 @@ func TestNarrowViewRemovesOptionalColumnsInOrder(t *testing.T) {
 
 	model.width = 100
 	wide := activeRow(model.View().Content)
-	for _, want := range []string{"claude", "ars", "attached(1)"} {
+	for _, want := range []string{"claude", "attached(1)"} {
 		if !strings.Contains(wide, want) {
 			t.Fatalf("wide row missing %q: %q", want, wide)
 		}
 	}
-
-	model.width = 80
-	withoutProject := activeRow(model.View().Content)
-	if strings.Contains(withoutProject, " ars ") || !strings.Contains(withoutProject, "claude") || !strings.Contains(withoutProject, "attached(1)") {
-		t.Fatalf("project was not removed first: %q", withoutProject)
+	if strings.Contains(wide, " ars ") {
+		t.Fatalf("session row still renders a project column: %q", wide)
 	}
 
 	model.width = 60
@@ -326,6 +316,90 @@ func TestRunRejectsInvalidDependencies(t *testing.T) {
 	}
 }
 
+func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	content := value.View().Content
+	if ansi.Strip(content) != content {
+		t.Fatalf("NO_COLOR emitted ANSI: %q", content)
+	}
+	for _, want := range []string{"> └─ ✻", "attached(1)", "▾ api (1)", "∙"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("NO_COLOR missing %q: %q", want, content)
+		}
+	}
+}
+
+func TestViewGroupsSessionsUnderProjectHeaders(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	plain := ansi.Strip(value.View().Content)
+	arsAt := strings.Index(plain, "▾ ars (1)")
+	apiAt := strings.Index(plain, "▾ api (1)")
+	if arsAt == -1 || apiAt == -1 || arsAt > apiAt {
+		t.Fatalf("headers missing or misordered:\n%s", plain)
+	}
+	if !strings.Contains(plain, "└─ ✻  connection check") {
+		t.Fatalf("missing tree guide session row:\n%s", plain)
+	}
+	if strings.Contains(plain, "Active") || strings.Contains(plain, "Recent") {
+		t.Fatalf("legacy headings remain:\n%s", plain)
+	}
+}
+
+func TestViewCollapsedHeaderShowsCountAndActiveMarker(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	value.toggle("ars")
+	plain := ansi.Strip(value.View().Content)
+	if !strings.Contains(plain, "▸ ars (1) ✻") {
+		t.Fatalf("collapsed header missing marker:\n%s", plain)
+	}
+	if strings.Contains(plain, "connection check") {
+		t.Fatalf("collapsed session still rendered:\n%s", plain)
+	}
+}
+
+func TestViewTreeGuidesMarkLastSession(t *testing.T) {
+	value := readyModel()
+	items := twoSessions()
+	items[1].CWD = items[0].CWD
+	value.result.Sessions = items
+	value.width, value.height, value.noColor = 120, 24, true
+	value.refreshVisible()
+	plain := ansi.Strip(value.View().Content)
+	if !strings.Contains(plain, "├─ ✻  connection check") ||
+		!strings.Contains(plain, "└─ ∙  API repair") {
+		t.Fatalf("guides wrong:\n%s", plain)
+	}
+}
+
+func TestViewLinesStayWithinWidthWithTree(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 46, 12, true
+	for _, line := range strings.Split(value.View().Content, "\n") {
+		if ansi.StringWidth(line) > value.width {
+			t.Fatalf("line exceeds width %d: %q", value.width, line)
+		}
+	}
+}
+
+func TestViewUntitledFallbackUsesShortID(t *testing.T) {
+	value := readyModel()
+	items := twoSessions()
+	items[0].Title = ""
+	value.result.Sessions = items
+	value.width, value.height, value.noColor = 120, 24, true
+	value.refreshVisible()
+	row := selectedRow(value.View().Content)
+	if !strings.Contains(row, "123e4567") {
+		t.Fatalf("missing short id fallback: %q", row)
+	}
+	if strings.Contains(row, " · ") {
+		t.Fatalf("fallback still includes project: %q", row)
+	}
+}
+
 func activeRow(content string) string {
 	lines := strings.Split(ansi.Strip(content), "\n")
 	for _, line := range lines {
@@ -343,6 +417,31 @@ func selectedRow(content string) string {
 		}
 	}
 	return ""
+}
+
+func TestStaleCachedColumnKeepsActivityVisible(t *testing.T) {
+	model := readyModel()
+	model.width, model.height, model.noColor = 80, 24, true
+	items := twoSessions()
+	items[1].Title = "a very long stale session title " + strings.Repeat("x", 80)
+	model.result.Sessions = items
+	model.stale = map[string]struct{}{"server": {}}
+	model.refreshVisible()
+
+	content := ansi.Strip(model.View().Content)
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, "a very long stale") {
+			continue
+		}
+		if !strings.HasSuffix(strings.TrimRight(line, " "), "cached") || !strings.Contains(line, "2d") {
+			t.Fatalf("stale row lost activity or cached column: %q", line)
+		}
+		if ansi.StringWidth(line) > model.width {
+			t.Fatalf("stale row exceeds width: %q", line)
+		}
+		return
+	}
+	t.Fatalf("stale row not found:\n%s", content)
 }
 
 func strippedLines(lines []string) []string {
