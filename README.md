@@ -129,11 +129,21 @@ there is no fuzzy ranker.
 Keys:
 
 - `Up`, `Down`, `j`, `k`: move
-- `/`: search
-- `Enter`: start or attach
+- `g`, `G`: jump to the top or bottom
+- `PgUp`, `PgDn`, `Ctrl+U`, `Ctrl+D`: move one page
+- `Home`, `End`: jump to the top or bottom
+- `/`: search; `Enter` keeps the filter, `Esc` cancels it, `Ctrl+U` clears
+  the query while typing, and `Esc` outside search clears a kept filter
+- `Enter`: start or attach, or toggle the project group under the cursor
+- `Space`: toggle the project group under the cursor
+- `Enter` or `Space` on a `… N more` row: reveal the group's saved sessions
 - `r`: refresh
 - `q`, `Ctrl+C`: quit ARS
 - `Ctrl+Q`: detach only while inside an attached ARS tmux client
+
+While a filter is set, the search line shows how many sessions match. The
+footer key help follows the cursor: it offers `enter toggle` on a group
+header and `enter attach` on a session.
 
 The screen collects at startup, on `r`, and after attach returns. Rows appear
 immediately from the last collection, cached per host under
@@ -151,8 +161,9 @@ rendered row text, determines the attach command.
 - Claude reads direct regular files at
   `~/.claude/projects/<project>/*.jsonl`. It includes canonical root session
   IDs with an absolute CWD, uses only native custom/AI/agent titles, and
-  excludes internal, sidechain, and agent histories. It never derives a title
-  from prompt text.
+  excludes internal, sidechain, and agent histories. Title-only metadata
+  sidecar files are skipped without a warning. It never derives a title from
+  prompt text.
 - Codex recursively reads regular `.jsonl` files below `~/.codex/sessions`.
   It includes only one valid `session_meta` with `thread_source=user` and
   `source=cli` or `source=vscode`. Exec, subagent, and unknown sources are

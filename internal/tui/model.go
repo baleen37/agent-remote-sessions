@@ -62,6 +62,7 @@ type model struct {
 	selectedRef    rowRef
 	groupMode      map[string]groupMode
 	query          string
+	matched        int
 	searching      bool
 	collecting     bool
 	generation     uint64
@@ -152,9 +153,18 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		return value, tea.Quit
 	}
 	if value.searching {
+		if key.Code == 'u' && key.Mod&tea.ModCtrl != 0 {
+			value.query = ""
+			value.refreshVisible()
+			return value, nil
+		}
 		switch key.Code {
-		case tea.KeyEscape, tea.KeyEnter:
+		case tea.KeyEnter:
 			value.searching = false
+		case tea.KeyEscape:
+			value.searching = false
+			value.query = ""
+			value.refreshVisible()
 		case tea.KeyBackspace:
 			_, size := utf8.DecodeLastRuneInString(value.query)
 			if size > 0 {
@@ -175,6 +185,32 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		value.move(-1)
 	case tea.KeyDown, 'j':
 		value.move(1)
+	case 'g', 'G', tea.KeyHome, tea.KeyEnd:
+		if len(value.rows) == 0 {
+			return value, nil
+		}
+		if key.Text == "G" || key.Code == tea.KeyEnd {
+			value.selectRow(len(value.rows) - 1)
+		} else {
+			value.selectRow(0)
+		}
+	case tea.KeyPgDown:
+		value.movePage(1)
+	case tea.KeyPgUp:
+		value.movePage(-1)
+	case 'd':
+		if key.Mod&tea.ModCtrl != 0 {
+			value.movePage(1)
+		}
+	case 'u':
+		if key.Mod&tea.ModCtrl != 0 {
+			value.movePage(-1)
+		}
+	case tea.KeyEscape:
+		if value.query != "" {
+			value.query = ""
+			value.refreshVisible()
+		}
 	case '/':
 		value.searching = true
 	case 'r':
@@ -244,6 +280,7 @@ func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 
 func (value *model) refreshVisible() {
 	filtered := filterSessions(value.result.Sessions, value.query, value.deps.LocalTarget)
+	value.matched = len(filtered)
 	value.rows = buildRows(filtered, value.groupMode, value.query != "")
 	value.restoreSelection()
 }
@@ -271,6 +308,10 @@ func (value *model) restoreSelection() {
 			value.selectRow(index)
 			return
 		}
+	}
+	if value.query != "" {
+		value.selectRow(firstSessionRow(value.rows))
+		return
 	}
 	if value.selectedRef.kind != rowHeader {
 		for index, row := range value.rows {
@@ -350,6 +391,30 @@ func (value *model) move(delta int) {
 		return
 	}
 	value.selectRow((value.selected + delta + len(value.rows)) % len(value.rows))
+}
+
+func (value *model) movePage(direction int) {
+	if len(value.rows) == 0 {
+		return
+	}
+	index := value.selected + direction*value.pageStep()
+	index = max(0, min(index, len(value.rows)-1))
+	value.selectRow(index)
+}
+
+func (value model) pageStep() int {
+	_, width := contentFrame(value.contentWidth())
+	var details []string
+	selected, hasSelection := value.selectedSession()
+	if hasSelection {
+		details = detailLines(selected, width)
+	}
+	searchLines := 0
+	if value.query != "" || value.searching {
+		searchLines = 1
+	}
+	_, bodyHeight := value.boundedLayout(details, selected, searchLines, width)
+	return max(1, bodyHeight)
 }
 
 func printable(text string) bool {

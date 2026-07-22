@@ -76,6 +76,22 @@ func TestClaudeDiscoverKeepsLatestValidCWDAndReportsInvalidRecord(t *testing.T) 
 	}
 }
 
+func TestClaudeDiscoverSkipsTitleOnlySidecarWithoutWarning(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	writeFile(t, filepath.Join(home, ".claude", "projects", "project", "sidecar.jsonl"),
+		"{\"type\":\"ai-title\",\"aiTitle\":\"Synthetic sidecar title\",\"sessionId\":\"55555555-5555-4555-8555-555555555555\"}\n"+
+			"{\"type\":\"agent-name\",\"agentName\":\"Synthetic sidecar title\",\"sessionId\":\"55555555-5555-4555-8555-555555555555\"}\n")
+
+	result := (claudeAdapter{}).Discover(context.Background(), home)
+	if result.Status != OK || result.ErrorCode != "" || len(result.Sessions) != 0 {
+		t.Fatalf("Discover() = %#v, want OK with no sessions and no error", result)
+	}
+	if result.Seen != 1 || result.Skipped != 1 {
+		t.Fatalf("Discover() counts = seen %d skipped %d, want 1/1", result.Seen, result.Skipped)
+	}
+}
+
 func TestClaudeDiscoverExcludesMixedSessionIDs(t *testing.T) {
 	home := t.TempDir()
 	installExecutable(t, "claude")

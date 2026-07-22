@@ -37,19 +37,20 @@ func (value model) View() tea.View {
 				prefix = value.styles.selectedCursor.Render(prefix)
 			}
 		}
-		search = append(search, fitLine(prefix+value.query, width))
+		count := ""
+		if value.query != "" {
+			count = fmt.Sprintf("   %d/%d", value.matched, len(value.result.Sessions))
+			if !value.noColor {
+				count = value.styles.muted.Render(count)
+			}
+		}
+		search = append(search, fitLine(prefix+value.query+count, width))
 	}
 
 	if value.height > 0 {
-		detailHeight := value.height - (2 + 1 + 1 + len(search) + 2)
-		if len(details) > detailHeight {
-			details = boundedDetailLines(selected, width, detailHeight)
-		}
+		var bodyHeight int
+		details, bodyHeight = value.boundedLayout(details, selected, len(search), width)
 		fixedHeight := 2 + 1 + len(details) + len(search) + 2
-		bodyHeight := value.height - fixedHeight
-		if bodyHeight < 1 {
-			bodyHeight = 1
-		}
 		body = visibleLines(body, selectedLine, bodyHeight)
 		diagnosticHeight := value.height - (fixedHeight + len(body))
 		if diagnosticHeight < len(diagnostics) {
@@ -69,7 +70,7 @@ func (value model) View() tea.View {
 	lines = append(lines, details...)
 	lines = append(lines, diagnostics...)
 	lines = append(lines, search...)
-	lines = append(lines, "", value.mutedText(help(width), width))
+	lines = append(lines, "", value.mutedText(value.help(width), width))
 	margin := strings.Repeat(" ", inset)
 	for index, line := range lines {
 		if line != "" {
@@ -79,11 +80,28 @@ func (value model) View() tea.View {
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
 }
 
+// boundedLayout bounds the detail lines to the terminal height and returns
+// them with the height left for the session list. movePage derives its page
+// step from the same computation so paging matches one visible screen.
+func (value model) boundedLayout(details []string, selected session.Session, searchLines, width int) ([]string, int) {
+	if value.height <= 0 {
+		return details, len(value.rows)
+	}
+	detailHeight := value.height - (2 + 1 + 1 + searchLines + 2)
+	if len(details) > detailHeight {
+		details = boundedDetailLines(selected, width, detailHeight)
+	}
+	return details, max(1, value.height-(2+1+len(details)+searchLines+2))
+}
+
 func (value model) sessionLines(width int) ([]string, int) {
 	if len(value.rows) == 0 {
-		return []string{"  none"}, 0
+		if value.query != "" {
+			return []string{fitLine(fmt.Sprintf("  no matches for %q · esc to clear", value.query), width)}, 0
+		}
+		return []string{"  no sessions"}, 0
 	}
-	layout := newRowLayout(rowSessions(value.rows), value.stale, width, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(value.result.Sessions, value.stale, width, value.deps.Now(), value.deps.LocalTarget)
 	lines := make([]string, 0, len(value.rows))
 	for index, row := range value.rows {
 		selected := index == value.selected
@@ -187,13 +205,20 @@ func (value model) header() string {
 			active++
 		}
 	}
-	hosts := 0
+	peers := 0
 	for _, host := range value.result.Hosts {
 		if host.Target != value.deps.LocalTarget {
-			hosts++
+			peers++
 		}
 	}
-	stats := fmt.Sprintf("  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
+	stats := fmt.Sprintf("  %d active · %d recent", active, len(value.result.Sessions)-active)
+	switch peers {
+	case 0:
+	case 1:
+		stats += " · 1 peer"
+	default:
+		stats += fmt.Sprintf(" · %d peers", peers)
+	}
 	if value.collecting {
 		stats += " · refreshing"
 	}
@@ -337,9 +362,31 @@ func fitLine(line string, width int) string {
 	return ansi.Truncate(line, width, "…")
 }
 
-func help(width int) string {
+func (value model) help(width int) string {
+	separator := "   "
 	if width < 75 {
-		return "↑↓/jk move  / search  enter attach  r refresh  q quit"
+		separator = "  "
 	}
-	return "↑↓/jk move   / search   enter attach   r refresh   q quit"
+	if value.searching {
+		return strings.Join([]string{"type to filter", "enter apply", "esc cancel"}, separator)
+	}
+	action := "enter attach"
+	if row, ok := value.selectedRow(); ok {
+		switch row.kind {
+		case rowHeader:
+			action = "enter toggle"
+		case rowMore:
+			action = "enter expand"
+		}
+	}
+	items := []string{"↑↓/jk move"}
+	if width >= 75 {
+		items = append(items, "g/G top/end")
+	}
+	items = append(items, "/ search")
+	if value.query != "" {
+		items = append(items, "esc clear")
+	}
+	items = append(items, action, "r refresh", "q quit")
+	return strings.Join(items, separator)
 }

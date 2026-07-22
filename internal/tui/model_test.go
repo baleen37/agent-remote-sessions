@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -94,7 +95,7 @@ func initialCommands(command tea.Cmd) (collected collectUpdateMsg, hasCollection
 	return collected, hasCollection, hasBackgroundQuery
 }
 
-func TestModelSearchBackspaceRemovesOneRuneAndEscapeRetainsQuery(t *testing.T) {
+func TestModelSearchBackspaceRemovesOneRuneAndEscapeClearsQuery(t *testing.T) {
 	model := readyModel()
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "배치"}))
@@ -103,9 +104,142 @@ func TestModelSearchBackspaceRemovesOneRuneAndEscapeRetainsQuery(t *testing.T) {
 		t.Fatalf("query after Backspace = %q", model.query)
 	}
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if model.searching || model.query != "배" {
+	if model.searching || model.query != "" {
 		t.Fatalf("Escape searching=%t query=%q", model.searching, model.query)
 	}
+	if len(model.rows) != 3 {
+		t.Fatalf("rows after Escape = %+v", model.rows)
+	}
+}
+
+func TestModelEscapeInNormalModeClearsCommittedQuery(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if model.searching || model.query != "API" || len(rowSessions(model.rows)) != 1 {
+		t.Fatalf("Enter searching=%t query=%q rows=%+v", model.searching, model.query, model.rows)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if model.query != "" || len(model.rows) != 3 {
+		t.Fatalf("Escape query=%q rows=%+v", model.query, model.rows)
+	}
+}
+
+func TestModelGAndShiftGJumpToFirstAndLastRow(t *testing.T) {
+	for _, bottom := range []tea.Key{
+		{Code: 'g', Text: "G", Mod: tea.ModShift},
+		{Code: 'G', Text: "G"},
+	} {
+		model := readyModel()
+		model, _ = updateModel(model, tea.KeyPressMsg(bottom))
+		if model.selected != len(model.rows)-1 {
+			t.Fatalf("G %+v selected = %d, want %d", bottom, model.selected, len(model.rows)-1)
+		}
+		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
+		if model.selected != 0 {
+			t.Fatalf("g selected = %d, want 0", model.selected)
+		}
+	}
+}
+
+func TestModelPageKeysMoveByViewportWithoutWrapping(t *testing.T) {
+	model := readyModel()
+	model.result.Sessions = manySessions(30)
+	model.refreshVisible()
+	model, _ = updateModel(model, tea.WindowSizeMsg{Width: 120, Height: 14})
+	top := model.selected
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	if model.selected <= top {
+		t.Fatalf("PgDn selected = %d, want > %d", model.selected, top)
+	}
+	first := model.selected
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
+	if model.selected <= first {
+		t.Fatalf("Ctrl+D selected = %d, want > %d", model.selected, first)
+	}
+	for range 10 {
+		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	}
+	if model.selected != len(model.rows)-1 {
+		t.Fatalf("PgDn clamp selected = %d, want %d", model.selected, len(model.rows)-1)
+	}
+	for range 20 {
+		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	}
+	if model.selected != 0 {
+		t.Fatalf("PgUp clamp selected = %d, want 0", model.selected)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'u', Mod: tea.ModCtrl}))
+	if model.selected != 0 {
+		t.Fatalf("Ctrl+U at top selected = %d, want 0", model.selected)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnd}))
+	if model.selected != len(model.rows)-1 {
+		t.Fatalf("End selected = %d, want %d", model.selected, len(model.rows)-1)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyHome}))
+	if model.selected != 0 {
+		t.Fatalf("Home selected = %d, want 0", model.selected)
+	}
+}
+
+func TestModelCtrlUClearsQueryWhileSearching(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'u', Mod: tea.ModCtrl}))
+	if !model.searching || model.query != "" || len(model.rows) != 3 {
+		t.Fatalf("Ctrl+U searching=%t query=%q rows=%d", model.searching, model.query, len(model.rows))
+	}
+}
+
+func TestModelPageStepMatchesVisibleBodyHeight(t *testing.T) {
+	model := readyModel()
+	items := manySessions(40)
+	for index := range items {
+		items[index].CWD = fmt.Sprintf("/work/project-%02d", index/5)
+	}
+	model.result.Sessions = items
+	model.refreshVisible()
+	model, _ = updateModel(model, tea.WindowSizeMsg{Width: 120, Height: 20})
+	start := model.selected
+
+	// height 20 minus header(2) + list gap(1) + one detail line + no
+	// search line + help block(2) leaves a 14-row session body.
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	if want := start + 14; model.selected != want {
+		t.Fatalf("PgDn selected = %d, want %d", model.selected, want)
+	}
+}
+
+func TestModelSearchFallbackSelectsFirstMatchingSession(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	row, ok := model.selectedRow()
+	if !ok || row.kind != rowSession || row.session.Title != "API repair" {
+		t.Fatalf("search fallback selection = %+v", row)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	row, ok = model.selectedRow()
+	if !ok || row.kind != rowSession {
+		t.Fatalf("committed search selection = %+v", row)
+	}
+}
+
+func manySessions(count int) []session.Session {
+	items := make([]session.Session, 0, count)
+	for index := range count {
+		item := twoSessions()[1]
+		item.NativeID = fmt.Sprintf("0195f5dc-9e3f-7c26-8000-%012d", index)
+		item.Title = fmt.Sprintf("session %02d", index)
+		item.Runtime.State = session.RuntimeRunning
+		items = append(items, item)
+	}
+	return items
 }
 
 func TestModelRefreshCoalescesAndRejectsStaleGenerations(t *testing.T) {
