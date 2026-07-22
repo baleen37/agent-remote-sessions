@@ -34,8 +34,8 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || !model.collecting || model.generation != 1 {
 		t.Fatalf("Init() collecting=%t generation=%d command=%v", model.collecting, model.generation, command)
 	}
-	message, ok := command().(collectUpdateMsg)
-	if !ok || message.generation != 1 || !message.update.Done || len(message.update.Result.Sessions) != 2 {
+	message := collectionMessage(t, command)
+	if message.generation != 1 || !message.update.Done || len(message.update.Result.Sessions) != 2 {
 		t.Fatalf("Init command message = %#v", message)
 	}
 
@@ -268,12 +268,44 @@ func readyModel() model {
 		NoColor:     true,
 	}
 	value := newModel(context.Background(), deps)
-	message, ok := value.Init()().(collectUpdateMsg)
-	if !ok {
-		panic("readyModel: Init did not produce collectUpdateMsg")
-	}
-	value, _ = updateModel(value, message)
+	value, _ = updateModel(value, initialCollectMessage(value.Init()))
 	return value
+}
+
+func collectionMessage(t *testing.T, command tea.Cmd) collectUpdateMsg {
+	t.Helper()
+	message := command()
+	if collected, ok := message.(collectUpdateMsg); ok {
+		return collected
+	}
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("Init command result = %T, want tea.BatchMsg", message)
+	}
+	for _, child := range batch {
+		if collected, ok := child().(collectUpdateMsg); ok {
+			return collected
+		}
+	}
+	t.Fatal("Init batch did not contain collection")
+	return collectUpdateMsg{}
+}
+
+func initialCollectMessage(command tea.Cmd) collectUpdateMsg {
+	message := command()
+	if collected, ok := message.(collectUpdateMsg); ok {
+		return collected
+	}
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		panic("initialCollectMessage: Init did not produce a batch")
+	}
+	for _, child := range batch {
+		if collected, ok := child().(collectUpdateMsg); ok {
+			return collected
+		}
+	}
+	panic("initialCollectMessage: Init batch did not contain collection")
 }
 
 func twoSessions() []session.Session {
