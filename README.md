@@ -125,9 +125,13 @@ Keys:
 - `q`, `Ctrl+C`: quit ARS
 - `Ctrl+Q`: detach only while inside an attached ARS tmux client
 
-The screen collects at startup, on `r`, and after attach returns. It does not
-poll, watch, or cache in the background. Canonical host/provider/native-ID data,
-never rendered row text, determines the attach command.
+The screen collects at startup, on `r`, and after attach returns. Rows appear
+immediately from the last collection, cached per host under
+`${XDG_CACHE_HOME:-~/.cache}/ars/hosts/`, marked `cached` until that host's
+live refresh lands; each host updates independently, so one slow peer never
+delays the rest. It does not poll, watch, or collect in the background, and
+peers still store nothing. Canonical host/provider/native-ID data, never
+rendered row text, determines the attach command.
 
 ## Session inclusion
 
