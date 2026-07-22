@@ -246,7 +246,7 @@ func activeRow(content string) string {
 
 func selectedRow(content string) string {
 	for _, line := range strings.Split(ansi.Strip(content), "\n") {
-		if strings.HasPrefix(line, "> ") {
+		if strings.HasPrefix(strings.TrimLeft(line, " "), "> ") {
 			return line
 		}
 	}
