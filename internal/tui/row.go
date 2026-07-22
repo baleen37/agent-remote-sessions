@@ -20,11 +20,14 @@ const (
 type rowLayout struct {
 	width                     int
 	showProvider, showClients bool
+	showCached                bool
 	title, provider, location int
 	runtime, activity         int
+	cached                    int
+	now                       time.Time
 }
 
-func contentFrame(width int) (int, int) {
+func contentFrame(width int) (inset int, usable int) {
 	if width >= minInsetWidth {
 		return 1, width - 2
 	}
@@ -78,20 +81,18 @@ func column(value string, width int, right bool) string {
 	return value + padding
 }
 
-func newRowLayout(items []session.Session, width int, now time.Time, localTarget string, stale map[string]struct{}) rowLayout {
+func newRowLayout(items []session.Session, stale map[string]struct{}, width int, now time.Time, localTarget string) rowLayout {
 	layout := rowLayout{
 		width:        width,
 		showProvider: width >= providerColumnWidth,
 		showClients:  width >= clientColumnWidth,
+		cached:       lipgloss.Width("cached"),
+		now:          now,
 	}
-	cached := 0
 	for _, item := range items {
-		if _, isStale := stale[item.Host]; isStale {
-			cached = lipgloss.Width("cached") + lipgloss.Width(columnGutter)
-			break
+		if _, ok := stale[item.Host]; ok {
+			layout.showCached = true
 		}
-	}
-	for _, item := range items {
 		layout.title = max(layout.title, lipgloss.Width(sessionTitle(item)))
 		layout.location = max(layout.location, lipgloss.Width(location(item, localTarget)))
 		layout.runtime = max(layout.runtime, lipgloss.Width(runtimeLabel(item, layout.showClients)))
@@ -102,10 +103,14 @@ func newRowLayout(items []session.Session, width int, now time.Time, localTarget
 	}
 
 	fieldCount := 5 // marker, title, location, runtime, activity
-	fixed := 2*rowPadding(width) + rowPrefixSize + treeGuideWidth + 1 + layout.runtime + layout.activity + cached
+	fixed := 2*rowPadding(width) + rowPrefixSize + treeGuideWidth + 1 + layout.runtime + layout.activity
 	if layout.showProvider {
 		fieldCount++
 		fixed += layout.provider
+	}
+	if layout.showCached {
+		fieldCount++
+		fixed += layout.cached
 	}
 	fixed += (fieldCount - 1) * lipgloss.Width(columnGutter)
 
@@ -149,10 +154,14 @@ func (value model) renderRow(row listRow, selected bool, layout rowLayout) strin
 	fields = append(fields, column(location(item, value.deps.LocalTarget), layout.location, false))
 	fields = append(fields,
 		column(value.stateText(runtimeLabel(item, layout.showClients), item.Runtime.State), layout.runtime, true),
-		column(activityAge(value.deps.Now(), item.UpdatedAt), layout.activity, true),
+		column(activityAge(layout.now, item.UpdatedAt), layout.activity, true),
 	)
-	if _, isStale := value.stale[item.Host]; isStale {
-		fields = append(fields, value.stateText("cached", session.RuntimeSaved))
+	if layout.showCached {
+		cached := ""
+		if _, ok := value.stale[item.Host]; ok {
+			cached = value.stateText("cached", session.RuntimeSaved)
+		}
+		fields = append(fields, column(cached, layout.cached, false))
 	}
 
 	padding := rowPadding(layout.width)
@@ -162,7 +171,12 @@ func (value model) renderRow(row listRow, selected bool, layout rowLayout) strin
 	line += strings.Repeat(" ", max(0, layout.width-padding-lipgloss.Width(line)))
 	line += strings.Repeat(" ", padding)
 	if selected && !value.noColor {
-		line = value.styles.selected.Render(line)
+		line = value.selectedBackground(line)
 	}
 	return line
+}
+
+func (value model) selectedBackground(line string) string {
+	background := ansi.Style{}.BackgroundColor(value.styles.selected.GetBackground()).String()
+	return background + strings.ReplaceAll(line, ansi.ResetStyle, ansi.ResetStyle+background) + ansi.ResetStyle
 }

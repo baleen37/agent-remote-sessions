@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,8 +35,8 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || !model.collecting || model.generation != 1 {
 		t.Fatalf("Init() collecting=%t generation=%d command=%v", model.collecting, model.generation, command)
 	}
-	message := collectionMessage(t, command)
-	if message.generation != 1 || !message.update.Done || len(message.update.Result.Sessions) != 2 {
+	message, hasCollection, hasBackgroundQuery := initialCommands(command)
+	if !hasCollection || !hasBackgroundQuery || message.generation != 1 || !message.update.Done || len(message.update.Result.Sessions) != 2 {
 		t.Fatalf("Init command message = %#v", message)
 	}
 
@@ -67,6 +68,26 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || keyOf(attached) != keyOf(items[1]) {
 		t.Fatalf("attach command=%v session=%#v", command, attached)
 	}
+}
+
+func initialCommands(command tea.Cmd) (collected collectUpdateMsg, hasCollection, hasBackgroundQuery bool) {
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		return collectUpdateMsg{}, false, false
+	}
+	backgroundQuery := reflect.ValueOf(tea.RequestBackgroundColor).Pointer()
+	for _, child := range batch {
+		if reflect.ValueOf(child).Pointer() == backgroundQuery {
+			hasBackgroundQuery = true
+			continue
+		}
+		if update, ok := child().(collectUpdateMsg); ok {
+			collected = update
+			hasCollection = true
+		}
+	}
+	return collected, hasCollection, hasBackgroundQuery
 }
 
 func TestModelSearchBackspaceRemovesOneRuneAndEscapeRetainsQuery(t *testing.T) {
@@ -356,44 +377,12 @@ func readyModel() model {
 		NoColor:     true,
 	}
 	value := newModel(context.Background(), deps)
-	value, _ = updateModel(value, initialCollectMessage(value.Init()))
+	message, hasCollection, _ := initialCommands(value.Init())
+	if !hasCollection {
+		panic("readyModel: Init did not produce collectUpdateMsg")
+	}
+	value, _ = updateModel(value, message)
 	return value
-}
-
-func collectionMessage(t *testing.T, command tea.Cmd) collectUpdateMsg {
-	t.Helper()
-	message := command()
-	if collected, ok := message.(collectUpdateMsg); ok {
-		return collected
-	}
-	batch, ok := message.(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("Init command result = %T, want tea.BatchMsg", message)
-	}
-	for _, child := range batch {
-		if collected, ok := child().(collectUpdateMsg); ok {
-			return collected
-		}
-	}
-	t.Fatal("Init batch did not contain collection")
-	return collectUpdateMsg{}
-}
-
-func initialCollectMessage(command tea.Cmd) collectUpdateMsg {
-	message := command()
-	if collected, ok := message.(collectUpdateMsg); ok {
-		return collected
-	}
-	batch, ok := message.(tea.BatchMsg)
-	if !ok {
-		panic("initialCollectMessage: Init did not produce a batch")
-	}
-	for _, child := range batch {
-		if collected, ok := child().(collectUpdateMsg); ok {
-			return collected
-		}
-	}
-	panic("initialCollectMessage: Init batch did not contain collection")
 }
 
 func twoSessions() []session.Session {

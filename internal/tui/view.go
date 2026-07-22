@@ -59,10 +59,10 @@ func (value model) View() tea.View {
 			diagnostics = diagnostics[:diagnosticHeight]
 		}
 	}
-
-	for index, line := range details {
-		details[index] = value.mutedText(line, width)
+	for index, detail := range details {
+		details[index] = value.mutedText(detail, width)
 	}
+
 	lines := []string{fitLine(value.header(), width), ""}
 	lines = append(lines, body...)
 	lines = append(lines, "")
@@ -70,12 +70,10 @@ func (value model) View() tea.View {
 	lines = append(lines, diagnostics...)
 	lines = append(lines, search...)
 	lines = append(lines, "", value.mutedText(help(width), width))
-	if inset > 0 {
-		margin := strings.Repeat(" ", inset)
-		for index, line := range lines {
-			if line != "" {
-				lines[index] = margin + line
-			}
+	margin := strings.Repeat(" ", inset)
+	for index, line := range lines {
+		if line != "" {
+			lines[index] = margin + line
 		}
 	}
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
@@ -85,7 +83,7 @@ func (value model) sessionLines(width int) ([]string, int) {
 	if len(value.rows) == 0 {
 		return []string{"  none"}, 0
 	}
-	layout := newRowLayout(rowSessions(value.rows), width, value.deps.Now(), value.deps.LocalTarget, value.stale)
+	layout := newRowLayout(rowSessions(value.rows), value.stale, width, value.deps.Now(), value.deps.LocalTarget)
 	lines := make([]string, 0, len(value.rows))
 	for index, row := range value.rows {
 		selected := index == value.selected
@@ -130,7 +128,7 @@ func (value model) renderHeader(row listRow, selected bool, width int) string {
 	line += strings.Repeat(" ", max(0, width-padding-lipgloss.Width(line)))
 	line += strings.Repeat(" ", padding)
 	if selected && !value.noColor {
-		line = value.styles.selected.Render(line)
+		line = value.selectedBackground(line)
 	}
 	return line
 }
@@ -169,14 +167,14 @@ func (value model) header() string {
 			hosts++
 		}
 	}
-	stats := fmt.Sprintf("%d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
+	stats := fmt.Sprintf("  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
 	if value.collecting {
 		stats += " · refreshing"
 	}
 	if value.noColor {
-		return "ars  " + stats
+		return "ars" + stats
 	}
-	return value.styles.title.Render("ars") + "  " + value.styles.muted.Render(stats)
+	return value.styles.title.Render("ars") + value.styles.muted.Render(stats)
 }
 
 func sessionTitle(item session.Session) string {
