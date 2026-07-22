@@ -98,6 +98,78 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	}
 }
 
+func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
+	value := readyModel()
+	value.width, value.height = 120, 24
+	lines := strings.Split(ansi.Strip(value.View().Content), "\n")
+
+	header := lineContaining(t, lines, "ars  1 active · 1 recent · 0 hosts")
+	active := lineContaining(t, lines, "Active")
+	activeRow := lineContaining(t, lines, "attached(1)")
+	recent := lineContaining(t, lines, "Recent")
+	recentRow := lineContaining(t, lines, "API repair")
+	details := lineContaining(t, lines, "/work/ars")
+	help := lineContaining(t, lines, "↑↓/jk move")
+
+	for _, pair := range []struct {
+		before int
+		after  int
+	}{
+		{header, active},
+		{activeRow, recent},
+		{recentRow, details},
+		{details, help},
+	} {
+		if pair.after != pair.before+2 || lines[pair.before+1] != "" {
+			t.Fatalf("lines %d and %d are not separated by one blank line:\n%s", pair.before, pair.after, strings.Join(lines, "\n"))
+		}
+	}
+}
+
+func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	content := value.View().Content
+	if ansi.Strip(content) != content {
+		t.Fatalf("NO_COLOR emitted ANSI: %q", content)
+	}
+	for _, want := range []string{"> ✻", "attached(1)", "Recent", "∙"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("NO_COLOR missing %q: %q", want, content)
+		}
+	}
+}
+
+func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	value.result.Warnings = []output.HostError{hostError("localhost", "partial", "metadata partial")}
+	value.status = "attach finished"
+	value.searching = true
+	value.query = "API"
+
+	lines := strings.Split(value.View().Content, "\n")
+	plain := strippedLines(lines)
+	header := lines[lineContaining(t, plain, "ars  1 active · 1 recent · 0 hosts")]
+	wantHeader := " " + value.styles.title.Render("ars") + value.styles.muted.Render("  1 active · 1 recent · 0 hosts")
+	if header != wantHeader {
+		t.Fatalf("header hierarchy = %q, want %q", header, wantHeader)
+	}
+
+	for _, want := range []string{"/work/ars", "metadata partial (partial)", "attach finished", "↑↓/jk move"} {
+		line := lines[lineContaining(t, plain, want)]
+		if ansi.Strip(line) == line {
+			t.Fatalf("secondary UI %q is not muted: %q", want, line)
+		}
+	}
+
+	search := lines[lineContaining(t, plain, "/API")]
+	wantSearch := " " + value.styles.selectedCursor.Render("/") + "API"
+	if search != wantSearch {
+		t.Fatalf("active search hierarchy = %q, want %q", search, wantSearch)
+	}
+}
+
 func TestViewShowsSelectedCanonicalDetailsAndBoundedDiagnostics(t *testing.T) {
 	model := readyModel()
 	model.width = 120
@@ -251,4 +323,23 @@ func selectedRow(content string) string {
 		}
 	}
 	return ""
+}
+
+func strippedLines(lines []string) []string {
+	plain := make([]string, len(lines))
+	for index, line := range lines {
+		plain[index] = ansi.Strip(line)
+	}
+	return plain
+}
+
+func lineContaining(t *testing.T, lines []string, want string) int {
+	t.Helper()
+	for index, line := range lines {
+		if strings.Contains(line, want) {
+			return index
+		}
+	}
+	t.Fatalf("missing line containing %q:\n%s", want, strings.Join(lines, "\n"))
+	return -1
 }
