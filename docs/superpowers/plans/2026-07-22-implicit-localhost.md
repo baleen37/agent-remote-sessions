@@ -27,6 +27,7 @@
 - `internal/tui/filter.go`: return a blank rendered location for localhost.
 - `internal/tui/view.go`: omit localhost from the host count and local diagnostic prefixes.
 - `internal/tui/filter_test.go`, `internal/tui/view_test.go`, `internal/tui/model_test.go`, `internal/tui/pty_integration_test.go`: presentation and search regressions.
+- `.github/workflows/ci.yml`, `test/release-workflow.test.cjs`: release package smoke uses the implicit local-only configuration.
 - `README.md`: remote-only inventory, implicit localhost, removed command, and migration behavior.
 
 ---
@@ -390,6 +391,8 @@ git commit -m "feat: hide localhost in TUI"
 ### Task 4: Update user documentation and run full verification
 
 **Files:**
+- Modify: `.github/workflows/ci.yml:75-84`
+- Test: `test/release-workflow.test.cjs:40-46`
 - Modify: `README.md:1-110`
 - Verify: all tracked source and tests
 
@@ -397,7 +400,49 @@ git commit -m "feat: hide localhost in TUI"
 - Documents: remote-only inventory, implicit `localhost`, local-only command, ignored legacy file
 - Preserves: JSON schema version 1 and SSH-native boundaries
 
-- [ ] **Step 1: Update README with the final user contract**
+- [ ] **Step 1: Write a failing release-smoke contract test**
+
+Replace the old test that requires matching `hosts` and `local-host` files:
+
+```js
+test("release smoke runs with implicit localhost and no inventory", () => {
+  assert.match(releaseJob, /mkdir -p "\$RUNNER_TEMP\/config\/ars"/);
+  assert.doesNotMatch(releaseJob, /config\/ars\/hosts/);
+  assert.doesNotMatch(releaseJob, /config\/ars\/local-host/);
+  assert.match(releaseJob, /ars" list --json \| grep -F '"schema_version":1'/);
+});
+```
+
+- [ ] **Step 2: Run the release workflow test and confirm RED**
+
+Run: `node --test test/release-workflow.test.cjs`
+
+Expected: FAIL because the workflow still writes `localhost` to both legacy
+configuration files.
+
+- [ ] **Step 3: Make the release smoke use implicit localhost**
+
+Keep the existing config directory creation and JSON smoke command, but remove:
+
+```yaml
+printf '%s\n' localhost | tee "$RUNNER_TEMP/config/ars/hosts" "$RUNNER_TEMP/config/ars/local-host" >/dev/null
+```
+
+The missing remote inventory must exercise the same local-only path users get
+without configuration.
+
+- [ ] **Step 4: Run release workflow and npm tests and confirm GREEN**
+
+Run:
+
+```bash
+node --test test/release-workflow.test.cjs
+npm test
+```
+
+Expected: the focused workflow tests and all npm tests pass.
+
+- [ ] **Step 5: Update README with the final user contract**
 
 Replace “Common roster and local identity” with “Localhost and remote
 inventory”. Document exactly:
@@ -417,7 +462,7 @@ section, describe the location column as blank for current-computer sessions
 and the configured SSH target for peers. In the JSON section, show
 `"target":"localhost"` and `"host":"localhost"` for local records.
 
-- [ ] **Step 2: Check docs and formatting**
+- [ ] **Step 6: Check docs and formatting**
 
 Run:
 
@@ -429,7 +474,7 @@ git diff --check
 Expected: `rg` finds only the intentional migration sentence about ignored
 `local-host`; `git diff --check` exits 0.
 
-- [ ] **Step 3: Run focused and full Go verification**
+- [ ] **Step 7: Run focused and full Go verification**
 
 Run:
 
@@ -442,7 +487,7 @@ go build ./cmd/ars ./cmd/ars-build ./cmd/ars-collector
 
 Expected: every command exits 0.
 
-- [ ] **Step 4: Run integration and package-contract verification**
+- [ ] **Step 8: Run integration and package-contract verification**
 
 Run:
 
@@ -457,14 +502,14 @@ Expected: tmux and PTY checks pass; SSH integration passes when local OpenSSH
 fixtures are available or reports its existing explicit prerequisite skip;
 all npm tests pass.
 
-- [ ] **Step 5: Commit documentation**
+- [ ] **Step 9: Commit documentation and release smoke**
 
 ```bash
-git add README.md
+git add README.md .github/workflows/ci.yml test/release-workflow.test.cjs
 git commit -m "docs: document implicit localhost"
 ```
 
-- [ ] **Step 6: Verify the final branch scope**
+- [ ] **Step 10: Verify the final branch scope**
 
 Run:
 
