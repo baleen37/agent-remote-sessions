@@ -47,6 +47,16 @@ local `ars` build: `darwin/arm64`, `linux/amd64`, and `linux/arm64`. Generated
 collector blobs and the root `ars` build artifact are local build outputs and
 must not be committed.
 
+## Automatic update check
+
+Interactive runs check GitHub Releases for a newer version with a 1.5
+second budget; any failure is ignored and ars starts normally. When a
+newer release exists, ars offers it before the TUI starts: press Enter to
+update and continue on the new version, or any other key to skip. npm
+installs update through `npm install -g @baleen37/ars`; standalone
+binaries are verified against `SHA256SUMS` and replaced in place. Source
+builds skip the check.
+
 ## Localhost and remote inventory
 
 The default inventory is `${XDG_CONFIG_HOME}/ars/hosts` when
