@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -37,6 +39,27 @@ func TestPTYAttachDetachRestoresTUI(t *testing.T) {
 	}
 	if !result.rawModeRestored || !result.cursorRestored || !result.alternateScreenRestored {
 		t.Fatalf("terminal restoration = raw:%v cursor:%v alternate:%v", result.rawModeRestored, result.cursorRestored, result.alternateScreenRestored)
+	}
+}
+
+func TestPTYTmuxCleanupReportsKillError(t *testing.T) {
+	want := errors.New("kill failed")
+	err := cleanupPTYTmux(context.Background(), func(context.Context) error { return want }, "unused", 0)
+	if !errors.Is(err, want) {
+		t.Fatalf("cleanup error = %v, want wrapped kill error", err)
+	}
+}
+
+func TestPTYTmuxCleanupReportsLeaks(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), arsruntime.SocketName)
+	if err := os.WriteFile(socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err := cleanupPTYTmux(ctx, func(context.Context) error { return nil }, socket, os.Getpid())
+	if err == nil || !strings.Contains(err.Error(), "provider PID") || !strings.Contains(err.Error(), socket) {
+		t.Fatalf("cleanup error = %v, want exact socket and provider PID leak", err)
 	}
 }
 
@@ -88,9 +111,20 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 		Title:     "PTY fixture provider",
 	}
 	runner := ptyTempTmuxRunner{tempDir: tmuxTemp}
-	t.Cleanup(func() {
-		_ = runner.Run(context.Background(), ptyTmuxCommand("kill-server"), nil, io.Discard, io.Discard)
-	})
+	socket := filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName)
+	providerPID := 0
+	cleaned := false
+	cleanup := func() {
+		if cleaned {
+			return
+		}
+		if err := cleanupPTYFixture(runner, socket, providerPID); err != nil {
+			t.Errorf("cleanup PTY ARS tmux: %v", err)
+			return
+		}
+		cleaned = true
+	}
+	t.Cleanup(cleanup)
 
 	master, terminal, err := pty.Open()
 	if err != nil {
@@ -151,6 +185,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 		t.Fatalf("write Enter: %v", err)
 	}
 	beforePID := waitForPTYPID(t, pidPath, runDone, &capture)
+	providerPID = beforePID
 	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
 		return strings.Contains(value, "ARS_FAKE_PROVIDER_ATTACHED")
 	}, "fake provider attach")
@@ -197,6 +232,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 	case <-time.After(time.Second):
 		t.Fatal("PTY reader did not terminate")
 	}
+	cleanup()
 	return ptyAttachDetachResult{
 		beforePID:               beforePID,
 		afterDetachPID:          afterDetachPID,
@@ -240,6 +276,56 @@ func (capture *ptyCapture) String() string {
 }
 
 type ptyTempTmuxRunner struct{ tempDir string }
+
+func cleanupPTYFixture(runner ptyTempTmuxRunner, socket string, providerPID int) error {
+	if !ptyPathExists(socket) && providerPID == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return cleanupPTYTmux(ctx, func(ctx context.Context) error {
+		var stderr strings.Builder
+		if err := runner.Run(ctx, ptyTmuxCommand("kill-server"), nil, io.Discard, &stderr); err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	}, socket, providerPID)
+}
+
+func cleanupPTYTmux(ctx context.Context, kill func(context.Context) error, socket string, providerPID int) error {
+	if err := kill(ctx); err != nil {
+		return fmt.Errorf("kill owned tmux server: %w", err)
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		providerAlive := providerPID > 0 && ptyProcessExists(providerPID)
+		if !providerAlive {
+			if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove owned tmux socket %s: %w", socket, err)
+			}
+		}
+		socketAlive := ptyPathExists(socket)
+		if !providerAlive && !socketAlive {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("owned tmux cleanup deadline: socket %s exists=%v; provider PID %d alive=%v: %w", socket, socketAlive, providerPID, providerAlive, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func ptyProcessExists(pid int) bool {
+	process, err := os.FindProcess(pid)
+	return err == nil && process.Signal(syscall.Signal(0)) == nil
+}
+
+func ptyPathExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
 
 func (runner ptyTempTmuxRunner) Output(ctx context.Context, command arsruntime.Command) ([]byte, error) {
 	return arsruntime.SystemRunner{}.Output(ctx, runner.command(command))

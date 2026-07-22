@@ -32,15 +32,38 @@ func TestDisposableTmuxPreservesProviderAfterDetach(t *testing.T) {
 	if attachedClients != 0 {
 		t.Fatalf("clients after Ctrl+Q = %d", attachedClients)
 	}
-	fixture.assertUserTmuxUntouched(t)
+	fixture.cleanupARSServer(t)
+	fixture.defaultTmux.assertUnchanged(t)
+}
+
+func TestOwnedTmuxCleanupReportsKillError(t *testing.T) {
+	want := errors.New("kill failed")
+	err := cleanupOwnedTmux(context.Background(), func(context.Context) error { return want }, "unused", 0)
+	if !errors.Is(err, want) {
+		t.Fatalf("cleanup error = %v, want wrapped kill error", err)
+	}
+}
+
+func TestOwnedTmuxCleanupReportsLeaks(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "ars-v1")
+	if err := os.WriteFile(socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err := cleanupOwnedTmux(ctx, func(context.Context) error { return nil }, socket, os.Getpid())
+	if err == nil || !strings.Contains(err.Error(), "provider PID") || !strings.Contains(err.Error(), socket) {
+		t.Fatalf("cleanup error = %v, want exact socket and provider PID leak", err)
+	}
 }
 
 type disposableTmuxFixture struct {
-	runner             tempTmuxRunner
-	item               session.Session
-	pidPath            string
-	userTmuxBefore     string
-	userTmuxExecutable string
+	runner      tempTmuxRunner
+	item        session.Session
+	pidPath     string
+	arsSocket   string
+	defaultTmux *defaultTmuxSentinel
+	arsCleaned  bool
 }
 
 func newDisposableTmuxFixture(t *testing.T) *disposableTmuxFixture {
@@ -84,14 +107,17 @@ func newDisposableTmuxFixture(t *testing.T) *disposableTmuxFixture {
 		t.Fatal(err)
 	}
 	fixture := &disposableTmuxFixture{
-		runner:             tempTmuxRunner{tempDir: tmuxTemp},
-		item:               item,
-		pidPath:            pidPath,
-		userTmuxBefore:     snapshotUserTmux(t, tmux),
-		userTmuxExecutable: tmux,
+		runner:      tempTmuxRunner{tempDir: tmuxTemp},
+		item:        item,
+		pidPath:     pidPath,
+		arsSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), SocketName),
+		defaultTmux: newDefaultTmuxSentinel(t, tmux, tmuxTemp),
+	}
+	if fixture.arsSocket == fixture.defaultTmux.socket {
+		t.Fatal("ARS and default tmux sentinel resolved to the same socket")
 	}
 	t.Cleanup(func() {
-		_ = fixture.runner.Run(context.Background(), arsTMUXCommand("kill-server"), nil, io.Discard, io.Discard)
+		fixture.cleanupARSServer(t)
 	})
 	return fixture
 }
@@ -168,12 +194,192 @@ func (fixture *disposableTmuxFixture) runtimeState(t *testing.T) (int, int) {
 	return afterPID, state.AttachedClients
 }
 
-func (fixture *disposableTmuxFixture) assertUserTmuxUntouched(t *testing.T) {
+func (fixture *disposableTmuxFixture) cleanupARSServer(t *testing.T) {
 	t.Helper()
-	after := snapshotUserTmux(t, fixture.userTmuxExecutable)
-	if after != fixture.userTmuxBefore {
-		t.Fatalf("default user tmux changed:\nbefore: %s\nafter:  %s", fixture.userTmuxBefore, after)
+	if fixture.arsCleaned {
+		return
 	}
+	providerPID := readProviderPIDIfPresent(t, fixture.pidPath)
+	if !pathExists(fixture.arsSocket) && providerPID == 0 {
+		fixture.arsCleaned = true
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := cleanupOwnedTmux(ctx, func(ctx context.Context) error {
+		var stderr strings.Builder
+		if err := fixture.runner.Run(ctx, arsTMUXCommand("kill-server"), nil, io.Discard, &stderr); err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	}, fixture.arsSocket, providerPID)
+	if err != nil {
+		t.Fatalf("cleanup disposable ARS tmux: %v", err)
+	}
+	fixture.arsCleaned = true
+}
+
+type defaultTmuxSentinel struct {
+	executable string
+	tempDir    string
+	socket     string
+	pid        int
+	before     defaultTmuxSnapshot
+	cleaned    bool
+}
+
+type defaultTmuxSnapshot struct {
+	sessions string
+	ctrlQ    string
+}
+
+func newDefaultTmuxSentinel(t *testing.T, tmux, tempDir string) *defaultTmuxSentinel {
+	t.Helper()
+	sentinel := &defaultTmuxSentinel{
+		executable: tmux,
+		tempDir:    tempDir,
+		socket:     filepath.Join(tempDir, "tmux-"+strconv.Itoa(os.Getuid()), "default"),
+	}
+	sentinel.run(t, "new-session", "-d", "-s", "default-sentinel")
+	t.Cleanup(func() { sentinel.cleanup(t) })
+	pid, err := strconv.Atoi(strings.TrimSpace(sentinel.output(t, "list-panes", "-t", "=default-sentinel", "-F", "#{pane_pid}")))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid default tmux sentinel PID: %d (%v)", pid, err)
+	}
+	sentinel.pid = pid
+	sentinel.run(t, "bind-key", "-n", "C-q", "display-message", "default-sentinel")
+	sentinel.before = sentinel.snapshot(t)
+	return sentinel
+}
+
+func (sentinel *defaultTmuxSentinel) assertUnchanged(t *testing.T) {
+	t.Helper()
+	after := sentinel.snapshot(t)
+	if after != sentinel.before {
+		t.Fatalf("test-owned default tmux changed:\nbefore: %#v\nafter:  %#v", sentinel.before, after)
+	}
+}
+
+func (sentinel *defaultTmuxSentinel) snapshot(t *testing.T) defaultTmuxSnapshot {
+	t.Helper()
+	sessions := sentinel.output(t, "list-sessions", "-F", "#{session_id}\\t#{session_name}\\t#{session_created}")
+	keys := sentinel.output(t, "list-keys", "-T", "root")
+	var ctrlQ []string
+	for _, line := range strings.Split(strings.TrimSpace(keys), "\n") {
+		if strings.Contains(line, " C-q ") {
+			ctrlQ = append(ctrlQ, line)
+		}
+	}
+	if len(ctrlQ) == 0 {
+		t.Fatal("test-owned default tmux has no C-q list-keys state")
+	}
+	return defaultTmuxSnapshot{sessions: sessions, ctrlQ: strings.Join(ctrlQ, "\n")}
+}
+
+func (sentinel *defaultTmuxSentinel) cleanup(t *testing.T) {
+	t.Helper()
+	if sentinel.cleaned {
+		return
+	}
+	if !pathExists(sentinel.socket) {
+		sentinel.cleaned = true
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := cleanupOwnedTmux(ctx, func(ctx context.Context) error {
+		command := defaultTmuxCommand(ctx, sentinel.executable, sentinel.tempDir, "kill-server")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}, sentinel.socket, sentinel.pid)
+	if err != nil {
+		t.Fatalf("cleanup test-owned default tmux: %v", err)
+	}
+	sentinel.cleaned = true
+}
+
+func (sentinel *defaultTmuxSentinel) run(t *testing.T, args ...string) {
+	t.Helper()
+	command := defaultTmuxCommand(context.Background(), sentinel.executable, sentinel.tempDir, args...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("run test-owned default tmux %q: %v: %s", args, err, output)
+	}
+}
+
+func (sentinel *defaultTmuxSentinel) output(t *testing.T, args ...string) string {
+	t.Helper()
+	command := defaultTmuxCommand(context.Background(), sentinel.executable, sentinel.tempDir, args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("query test-owned default tmux %q: %v: %s", args, err, output)
+	}
+	return string(output)
+}
+
+func defaultTmuxCommand(ctx context.Context, tmux, tempDir string, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, tmux, append([]string{"-f", "/dev/null"}, args...)...)
+	command.Env = isolatedTmuxEnv(tempDir)
+	return command
+}
+
+func isolatedTmuxEnv(tempDir string) []string {
+	environment := make([]string, 0, len(os.Environ())+3)
+	for _, value := range os.Environ() {
+		if strings.HasPrefix(value, "TMUX=") || strings.HasPrefix(value, "TMUX_PANE=") || strings.HasPrefix(value, "TMUX_TMPDIR=") {
+			continue
+		}
+		environment = append(environment, value)
+	}
+	return append(environment, "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+tempDir)
+}
+
+func cleanupOwnedTmux(ctx context.Context, kill func(context.Context) error, socket string, providerPID int) error {
+	if err := kill(ctx); err != nil {
+		return fmt.Errorf("kill owned tmux server: %w", err)
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		providerAlive := providerPID > 0 && processExists(providerPID) == nil
+		if !providerAlive {
+			if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove owned tmux socket %s: %w", socket, err)
+			}
+		}
+		socketAlive := pathExists(socket)
+		if !providerAlive && !socketAlive {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("owned tmux cleanup deadline: socket %s exists=%v; provider PID %d alive=%v: %w", socket, socketAlive, providerPID, providerAlive, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func readProviderPIDIfPresent(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid provider PID in %s: %q", path, data)
+	}
+	return pid
+}
+
+func pathExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 type tempTmuxRunner struct{ tempDir string }
@@ -261,20 +467,4 @@ func waitForAttachedClients(t *testing.T, runner Runner, item session.Session, w
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("attached clients did not become %d", want)
-}
-
-func snapshotUserTmux(t *testing.T, tmux string) string {
-	t.Helper()
-	command := exec.Command(tmux, "list-sessions", "-F", "#{session_id}\\t#{session_name}\\t#{session_created}")
-	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		return string(output)
-	}
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
-		return "no-server:" + string(output)
-	}
-	t.Fatalf("snapshot default tmux: %v: %s", err, output)
-	return fmt.Sprint(err)
 }

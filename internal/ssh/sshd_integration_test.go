@@ -34,8 +34,11 @@ func TestEphemeralSSHDCollectsAndAttaches(t *testing.T) {
 	ssh := integrationExecutable(t, "ssh")
 	sshKeygen := integrationExecutable(t, "ssh-keygen")
 	tmux := integrationExecutable(t, "tmux")
-	defaultTmuxBefore := integrationUserTmuxSnapshot(t, tmux)
 	server := startEphemeralSSHD(t, sshd, ssh, sshKeygen, tmux)
+	defaultTmux := newIntegrationDefaultTmuxSentinel(t, tmux, server.tmuxTemp)
+	if server.tmuxSocket == defaultTmux.socket {
+		t.Fatal("ARS and default tmux sentinel resolved to the same socket")
+	}
 	runner := configuredSSHRunner{ssh: ssh, config: server.clientConfig}
 
 	collector := []byte("#!/bin/sh\n" +
@@ -70,8 +73,28 @@ func TestEphemeralSSHDCollectsAndAttaches(t *testing.T) {
 	verifyUnknownHostKeyRejected(t, ssh, server)
 	t.Setenv("PATH", server.clientBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	exerciseRemoteAttachHandoff(t, server)
-	if after := integrationUserTmuxSnapshot(t, tmux); after != defaultTmuxBefore {
-		t.Fatalf("default user tmux changed:\nbefore: %s\nafter:  %s", defaultTmuxBefore, after)
+	server.cleanupTmux(t)
+	defaultTmux.assertUnchanged(t)
+}
+
+func TestIntegrationTmuxCleanupReportsKillError(t *testing.T) {
+	want := errors.New("kill failed")
+	err := cleanupIntegrationTmux(context.Background(), func(context.Context) error { return want }, "unused", 0)
+	if !errors.Is(err, want) {
+		t.Fatalf("cleanup error = %v, want wrapped kill error", err)
+	}
+}
+
+func TestIntegrationTmuxCleanupReportsLeaks(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), arsruntime.SocketName)
+	if err := os.WriteFile(socket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err := cleanupIntegrationTmux(ctx, func(context.Context) error { return nil }, socket, os.Getpid())
+	if err == nil || !strings.Contains(err.Error(), "provider PID") || !strings.Contains(err.Error(), socket) {
+		t.Fatalf("cleanup error = %v, want exact socket and provider PID leak", err)
 	}
 }
 
@@ -83,9 +106,17 @@ type ephemeralSSHD struct {
 	tmuxTemp     string
 	providerPID  string
 	root         string
+	tmux         string
+	tmuxSocket   string
+	tmuxCleaned  bool
+	command      *exec.Cmd
+	done         <-chan error
+	logFile      *os.File
+	sshdKillSent bool
+	sshdCleaned  bool
 }
 
-func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) ephemeralSSHD {
+func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *ephemeralSSHD {
 	t.Helper()
 	t.Setenv("TMPDIR", "/tmp")
 	root := t.TempDir()
@@ -213,21 +244,7 @@ func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) ephemer
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
-	t.Cleanup(func() {
-		_ = command.Process.Kill()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-		}
-		_ = logFile.Close()
-	})
-	waitForSSHD(t, port, done, logPath)
-	t.Cleanup(func() {
-		command := exec.Command(tmux, "-L", arsruntime.SocketName, "-f", "/dev/null", "kill-server")
-		command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+tmuxTemp)
-		_ = command.Run()
-	})
-	return ephemeralSSHD{
+	server := &ephemeralSSHD{
 		target:       "ars-integration",
 		clientConfig: clientConfig,
 		clientBin:    clientBin,
@@ -235,7 +252,243 @@ func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) ephemer
 		tmuxTemp:     tmuxTemp,
 		providerPID:  providerPID,
 		root:         root,
+		tmux:         tmux,
+		tmuxSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName),
+		command:      command,
+		done:         done,
+		logFile:      logFile,
 	}
+	t.Cleanup(func() { server.cleanupSSHD(t) })
+	t.Cleanup(func() { server.cleanupTmux(t) })
+	waitForSSHD(t, port, done, logPath)
+	return server
+}
+
+func (server *ephemeralSSHD) cleanupTmux(t *testing.T) {
+	t.Helper()
+	if server.tmuxCleaned {
+		return
+	}
+	providerPID := integrationProviderPIDIfPresent(t, server.providerPID)
+	if !integrationPathExists(server.tmuxSocket) && providerPID == 0 {
+		server.tmuxCleaned = true
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := cleanupIntegrationTmux(ctx, func(ctx context.Context) error {
+		command := integrationTmuxCommand(ctx, server.tmux, server.tmuxTemp, true, "kill-server")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}, server.tmuxSocket, providerPID)
+	if err != nil {
+		t.Errorf("cleanup ephemeral SSH ARS tmux: %v", err)
+		return
+	}
+	server.tmuxCleaned = true
+}
+
+func (server *ephemeralSSHD) cleanupSSHD(t *testing.T) {
+	t.Helper()
+	if server.sshdCleaned {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if !server.sshdKillSent {
+		if err := server.command.Process.Kill(); err != nil {
+			t.Errorf("cleanup ephemeral sshd: kill owned process: %v", err)
+			return
+		}
+		server.sshdKillSent = true
+	}
+	select {
+	case <-server.done:
+	case <-ctx.Done():
+		t.Errorf("cleanup ephemeral sshd: owned process cleanup deadline: %v", ctx.Err())
+		return
+	}
+	if err := server.logFile.Close(); err != nil {
+		t.Errorf("close ephemeral sshd log: %v", err)
+		return
+	}
+	server.sshdCleaned = true
+}
+
+type integrationDefaultTmuxSentinel struct {
+	executable string
+	tempDir    string
+	socket     string
+	pid        int
+	before     integrationDefaultTmuxSnapshot
+	cleaned    bool
+}
+
+type integrationDefaultTmuxSnapshot struct {
+	sessions string
+	ctrlQ    string
+}
+
+func newIntegrationDefaultTmuxSentinel(t *testing.T, tmux, tempDir string) *integrationDefaultTmuxSentinel {
+	t.Helper()
+	sentinel := &integrationDefaultTmuxSentinel{
+		executable: tmux,
+		tempDir:    tempDir,
+		socket:     filepath.Join(tempDir, "tmux-"+strconv.Itoa(os.Getuid()), "default"),
+	}
+	sentinel.run(t, "new-session", "-d", "-s", "default-sentinel")
+	t.Cleanup(func() { sentinel.cleanup(t) })
+	pid, err := strconv.Atoi(strings.TrimSpace(sentinel.output(t, "list-panes", "-t", "=default-sentinel", "-F", "#{pane_pid}")))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid default tmux sentinel PID: %d (%v)", pid, err)
+	}
+	sentinel.pid = pid
+	sentinel.run(t, "bind-key", "-n", "C-q", "display-message", "default-sentinel")
+	sentinel.before = sentinel.snapshot(t)
+	return sentinel
+}
+
+func (sentinel *integrationDefaultTmuxSentinel) assertUnchanged(t *testing.T) {
+	t.Helper()
+	after := sentinel.snapshot(t)
+	if after != sentinel.before {
+		t.Fatalf("test-owned default tmux changed:\nbefore: %#v\nafter:  %#v", sentinel.before, after)
+	}
+}
+
+func (sentinel *integrationDefaultTmuxSentinel) snapshot(t *testing.T) integrationDefaultTmuxSnapshot {
+	t.Helper()
+	sessions := sentinel.output(t, "list-sessions", "-F", "#{session_id}\\t#{session_name}\\t#{session_created}")
+	keys := sentinel.output(t, "list-keys", "-T", "root")
+	var ctrlQ []string
+	for _, line := range strings.Split(strings.TrimSpace(keys), "\n") {
+		if strings.Contains(line, " C-q ") {
+			ctrlQ = append(ctrlQ, line)
+		}
+	}
+	if len(ctrlQ) == 0 {
+		t.Fatal("test-owned default tmux has no C-q list-keys state")
+	}
+	return integrationDefaultTmuxSnapshot{sessions: sessions, ctrlQ: strings.Join(ctrlQ, "\n")}
+}
+
+func (sentinel *integrationDefaultTmuxSentinel) cleanup(t *testing.T) {
+	t.Helper()
+	if sentinel.cleaned {
+		return
+	}
+	if !integrationPathExists(sentinel.socket) {
+		sentinel.cleaned = true
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := cleanupIntegrationTmux(ctx, func(ctx context.Context) error {
+		command := integrationTmuxCommand(ctx, sentinel.executable, sentinel.tempDir, false, "kill-server")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}, sentinel.socket, sentinel.pid)
+	if err != nil {
+		t.Errorf("cleanup test-owned default tmux: %v", err)
+		return
+	}
+	sentinel.cleaned = true
+}
+
+func (sentinel *integrationDefaultTmuxSentinel) run(t *testing.T, args ...string) {
+	t.Helper()
+	command := integrationTmuxCommand(context.Background(), sentinel.executable, sentinel.tempDir, false, args...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("run test-owned default tmux %q: %v: %s", args, err, output)
+	}
+}
+
+func (sentinel *integrationDefaultTmuxSentinel) output(t *testing.T, args ...string) string {
+	t.Helper()
+	command := integrationTmuxCommand(context.Background(), sentinel.executable, sentinel.tempDir, false, args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("query test-owned default tmux %q: %v: %s", args, err, output)
+	}
+	return string(output)
+}
+
+func integrationTmuxCommand(ctx context.Context, tmux, tempDir string, ars bool, args ...string) *exec.Cmd {
+	prefix := []string{"-f", "/dev/null"}
+	if ars {
+		prefix = []string{"-L", arsruntime.SocketName, "-f", "/dev/null"}
+	}
+	command := exec.CommandContext(ctx, tmux, append(prefix, args...)...)
+	command.Env = integrationTmuxEnv(tempDir)
+	return command
+}
+
+func integrationTmuxEnv(tempDir string) []string {
+	environment := make([]string, 0, len(os.Environ())+3)
+	for _, value := range os.Environ() {
+		if strings.HasPrefix(value, "TMUX=") || strings.HasPrefix(value, "TMUX_PANE=") || strings.HasPrefix(value, "TMUX_TMPDIR=") {
+			continue
+		}
+		environment = append(environment, value)
+	}
+	return append(environment, "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+tempDir)
+}
+
+func cleanupIntegrationTmux(ctx context.Context, kill func(context.Context) error, socket string, providerPID int) error {
+	if err := kill(ctx); err != nil {
+		return fmt.Errorf("kill owned tmux server: %w", err)
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		providerAlive := providerPID > 0 && integrationProcessExists(providerPID)
+		if !providerAlive {
+			if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove owned tmux socket %s: %w", socket, err)
+			}
+		}
+		socketAlive := integrationPathExists(socket)
+		if !providerAlive && !socketAlive {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("owned tmux cleanup deadline: socket %s exists=%v; provider PID %d alive=%v: %w", socket, socketAlive, providerPID, providerAlive, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func integrationProviderPIDIfPresent(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid provider PID in %s: %q", path, data)
+	}
+	return pid
+}
+
+func integrationProcessExists(pid int) bool {
+	process, err := os.FindProcess(pid)
+	return err == nil && process.Signal(syscall.Signal(0)) == nil
+}
+
+func integrationPathExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func integrationExecutable(t *testing.T, name string) string {
@@ -261,7 +514,7 @@ func writeIntegrationExecutable(t *testing.T, path, contents string) {
 	}
 }
 
-func verifyUnknownHostKeyRejected(t *testing.T, ssh string, server ephemeralSSHD) {
+func verifyUnknownHostKeyRejected(t *testing.T, ssh string, server *ephemeralSSHD) {
 	t.Helper()
 	knownHosts := filepath.Join(server.root, "unknown-known-hosts")
 	if err := os.WriteFile(knownHosts, nil, 0o600); err != nil {
@@ -288,7 +541,7 @@ func verifyUnknownHostKeyRejected(t *testing.T, ssh string, server ephemeralSSHD
 	}
 }
 
-func exerciseRemoteAttachHandoff(t *testing.T, server ephemeralSSHD) {
+func exerciseRemoteAttachHandoff(t *testing.T, server *ephemeralSSHD) {
 	t.Helper()
 	item, err := session.BindDiscovered(server.target, session.Discovered{Candidate: session.Candidate{
 		Provider:  session.Claude,
@@ -449,7 +702,7 @@ func readIntegrationProviderPID(t *testing.T, path string) int {
 	return 0
 }
 
-func waitRemoteClients(t *testing.T, server ephemeralSSHD, want int) {
+func waitRemoteClients(t *testing.T, server *ephemeralSSHD, want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -462,7 +715,7 @@ func waitRemoteClients(t *testing.T, server ephemeralSSHD, want int) {
 	t.Fatalf("remote attached clients did not become %d", want)
 }
 
-func remoteAttachedClients(server ephemeralSSHD) (int, bool) {
+func remoteAttachedClients(server *ephemeralSSHD) (int, bool) {
 	command := exec.Command("tmux", "-L", arsruntime.SocketName, "-f", "/dev/null", "list-sessions", "-F", "#{session_attached}")
 	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+server.tmuxTemp)
 	output, err := command.Output()
@@ -473,7 +726,7 @@ func remoteAttachedClients(server ephemeralSSHD) (int, bool) {
 	return clients, err == nil
 }
 
-func remoteSessionCount(t *testing.T, server ephemeralSSHD) int {
+func remoteSessionCount(t *testing.T, server *ephemeralSSHD) int {
 	t.Helper()
 	command := exec.Command("tmux", "-L", arsruntime.SocketName, "-f", "/dev/null", "list-sessions", "-F", "#{session_name}")
 	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+server.tmuxTemp)
@@ -482,22 +735,6 @@ func remoteSessionCount(t *testing.T, server ephemeralSSHD) int {
 		t.Fatalf("list remote ARS runtimes: %v", err)
 	}
 	return len(strings.Fields(string(output)))
-}
-
-func integrationUserTmuxSnapshot(t *testing.T, tmux string) string {
-	t.Helper()
-	command := exec.Command(tmux, "list-sessions", "-F", "#{session_id}\\t#{session_name}\\t#{session_created}")
-	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		return string(output)
-	}
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
-		return "no-server:" + string(output)
-	}
-	t.Fatalf("snapshot default tmux: %v: %s", err, output)
-	return ""
 }
 
 func reserveLoopbackPort(t *testing.T) int {

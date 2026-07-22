@@ -253,23 +253,65 @@ func findE2ESession(t *testing.T, sessions []session.Session, nativeID string) s
 
 func assertJSONV1Shape(t *testing.T, data []byte) {
 	t.Helper()
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal(data, &document); err != nil {
+	if err := validateJSONV1Shape(data); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestJSONV1ShapeRejectsUnknownNestedKeys(t *testing.T) {
+	tests := map[string]string{
+		"host":  `{"schema_version":1,"hosts":[{"target":"node","status":"ok","extra":true}],"sessions":[],"errors":[]}`,
+		"error": `{"schema_version":1,"hosts":[],"sessions":[],"errors":[{"host":"node","code":"ssh_failed","message":"failed","extra":true}]}`,
+	}
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateJSONV1Shape([]byte(data))
+			if err == nil || !strings.Contains(err.Error(), "public JSON "+name+" keys") {
+				t.Fatalf("validateJSONV1Shape error = %v, want unknown %s keys", err, name)
+			}
+		})
+	}
+}
+
+func validateJSONV1Shape(data []byte) error {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		return err
+	}
 	if got := sortedJSONKeys(document); !slices.Equal(got, []string{"errors", "hosts", "schema_version", "sessions"}) {
-		t.Fatalf("public JSON keys = %v", got)
+		return fmt.Errorf("public JSON keys = %v", got)
+	}
+	var hosts []map[string]json.RawMessage
+	if err := json.Unmarshal(document["hosts"], &hosts); err != nil {
+		return err
+	}
+	for _, item := range hosts {
+		want := []string{"status", "target"}
+		if got := sortedJSONKeys(item); !slices.Equal(got, want) {
+			return fmt.Errorf("public JSON host keys = %v, want %v", got, want)
+		}
 	}
 	var sessions []map[string]json.RawMessage
 	if err := json.Unmarshal(document["sessions"], &sessions); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	want := []string{"cwd", "host", "native_id", "provider", "title", "updated_at"}
 	for _, item := range sessions {
 		if got := sortedJSONKeys(item); !slices.Equal(got, want) {
-			t.Fatalf("public JSON session keys = %v, want %v", got, want)
+			return fmt.Errorf("public JSON session keys = %v, want %v", got, want)
 		}
 	}
+	var errorsJSON []map[string]json.RawMessage
+	if err := json.Unmarshal(document["errors"], &errorsJSON); err != nil {
+		return err
+	}
+	for _, item := range errorsJSON {
+		want := []string{"code", "host", "message"}
+		if got := sortedJSONKeys(item); !slices.Equal(got, want) {
+			return fmt.Errorf("public JSON error keys = %v, want %v", got, want)
+		}
+	}
+	return nil
 }
 
 func sortedJSONKeys(values map[string]json.RawMessage) []string {
