@@ -188,6 +188,18 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		} else {
 			value.selectRow(0)
 		}
+	case tea.KeyPgDown:
+		value.movePage(1)
+	case tea.KeyPgUp:
+		value.movePage(-1)
+	case 'd':
+		if key.Mod&tea.ModCtrl != 0 {
+			value.movePage(1)
+		}
+	case 'u':
+		if key.Mod&tea.ModCtrl != 0 {
+			value.movePage(-1)
+		}
 	case tea.KeyEscape:
 		if value.query != "" {
 			value.query = ""
@@ -281,6 +293,10 @@ func (value *model) restoreSelection() {
 			return
 		}
 	}
+	if value.query != "" {
+		value.selectRow(firstSessionRow(value.rows))
+		return
+	}
 	if value.selectedRef.kind == rowSession {
 		for index, row := range value.rows {
 			if row.kind == rowHeader && row.project == value.selectedRef.project {
@@ -334,6 +350,16 @@ func (value *model) move(delta int) {
 		return
 	}
 	value.selectRow((value.selected + delta + len(value.rows)) % len(value.rows))
+}
+
+func (value *model) movePage(direction int) {
+	if len(value.rows) == 0 {
+		return
+	}
+	step := max(1, value.height-8)
+	index := value.selected + direction*step
+	index = max(0, min(index, len(value.rows)-1))
+	value.selectRow(index)
 }
 
 func printable(text string) bool {

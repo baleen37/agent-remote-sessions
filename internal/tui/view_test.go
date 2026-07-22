@@ -120,7 +120,7 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	value.width, value.height = 120, 24
 	lines := strings.Split(ansi.Strip(value.View().Content), "\n")
 
-	header := lineContaining(t, lines, "ars  1 active · 1 recent · 0 hosts")
+	header := lineContaining(t, lines, "ars  1 active · 1 recent")
 	firstHeader := lineContaining(t, lines, "▾ ars (1)")
 	activeRow := lineContaining(t, lines, "attached(1)")
 	secondHeader := lineContaining(t, lines, "▾ api (1)")
@@ -155,8 +155,8 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 
 	lines := strings.Split(value.View().Content, "\n")
 	plain := strippedLines(lines)
-	header := lines[lineContaining(t, plain, "ars  1 active · 1 recent · 0 hosts")]
-	wantHeader := " " + value.styles.title.Render("ars") + value.styles.muted.Render("  1 active · 1 recent · 0 hosts")
+	header := lines[lineContaining(t, plain, "ars  1 active · 1 recent")]
+	wantHeader := " " + value.styles.title.Render("ars") + value.styles.muted.Render("  1 active · 1 recent")
 	if header != wantHeader {
 		t.Fatalf("header hierarchy = %q, want %q", header, wantHeader)
 	}
@@ -241,7 +241,7 @@ func TestViewHidesLocalhostPresentation(t *testing.T) {
 	if strings.Contains(row, "localhost") || strings.Contains(row, "  local  ") {
 		t.Fatalf("local row exposes local target: %q", row)
 	}
-	if !strings.Contains(content, "1 hosts") || strings.Contains(content, "localhost: Claude") {
+	if !strings.Contains(content, "1 peer") || strings.Contains(content, "localhost: Claude") {
 		t.Fatalf("local presentation leaked: %q", content)
 	}
 	if !strings.Contains(content, "Claude discovery partial (corrupt)") {
@@ -579,6 +579,45 @@ func TestHelpAdaptsToSelectionSearchAndQuery(t *testing.T) {
 	content = ansi.Strip(model.View().Content)
 	if !strings.Contains(content, "esc clear") {
 		t.Fatalf("committed query help missing clear hint: %q", content)
+	}
+}
+
+func TestFilteredRowsKeepStableColumnLayout(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	providerStart := func(content string) int {
+		for _, line := range strings.Split(content, "\n") {
+			if strings.Contains(line, "API repair") {
+				return strings.Index(line, "codex")
+			}
+		}
+		return -1
+	}
+	unfiltered := providerStart(ansi.Strip(model.View().Content))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	filtered := providerStart(ansi.Strip(model.View().Content))
+	if unfiltered < 0 || unfiltered != filtered {
+		t.Fatalf("provider column moved while filtering: %d -> %d", unfiltered, filtered)
+	}
+}
+
+func TestHeaderCountsPeersWithGrammar(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model.result.Hosts = []output.HostResult{
+		{Target: "localhost", Status: output.HostOK},
+		{Target: "server", Status: output.HostOK},
+	}
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "1 peer") || strings.Contains(content, "1 peers") {
+		t.Fatalf("header peer grammar: %q", content)
+	}
+
+	model.result.Hosts = []output.HostResult{{Target: "localhost", Status: output.HostOK}}
+	content = ansi.Strip(model.View().Content)
+	if strings.Contains(content, "peer") || strings.Contains(content, "hosts") {
+		t.Fatalf("header shows peer count with no peers: %q", content)
 	}
 }
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -136,6 +137,67 @@ func TestModelGAndShiftGJumpToFirstAndLastRow(t *testing.T) {
 			t.Fatalf("g selected = %d, want 0", model.selected)
 		}
 	}
+}
+
+func TestModelPageKeysMoveByViewportWithoutWrapping(t *testing.T) {
+	model := readyModel()
+	model.result.Sessions = manySessions(30)
+	model.refreshVisible()
+	model, _ = updateModel(model, tea.WindowSizeMsg{Width: 120, Height: 14})
+	top := model.selected
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	if model.selected <= top {
+		t.Fatalf("PgDn selected = %d, want > %d", model.selected, top)
+	}
+	first := model.selected
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
+	if model.selected <= first {
+		t.Fatalf("Ctrl+D selected = %d, want > %d", model.selected, first)
+	}
+	for range 10 {
+		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	}
+	if model.selected != len(model.rows)-1 {
+		t.Fatalf("PgDn clamp selected = %d, want %d", model.selected, len(model.rows)-1)
+	}
+	for range 20 {
+		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgUp}))
+	}
+	if model.selected != 0 {
+		t.Fatalf("PgUp clamp selected = %d, want 0", model.selected)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'u', Mod: tea.ModCtrl}))
+	if model.selected != 0 {
+		t.Fatalf("Ctrl+U at top selected = %d, want 0", model.selected)
+	}
+}
+
+func TestModelSearchFallbackSelectsFirstMatchingSession(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	row, ok := model.selectedRow()
+	if !ok || row.kind != rowSession || row.session.Title != "API repair" {
+		t.Fatalf("search fallback selection = %+v", row)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	row, ok = model.selectedRow()
+	if !ok || row.kind != rowSession {
+		t.Fatalf("committed search selection = %+v", row)
+	}
+}
+
+func manySessions(count int) []session.Session {
+	items := make([]session.Session, 0, count)
+	for index := range count {
+		item := twoSessions()[1]
+		item.NativeID = fmt.Sprintf("0195f5dc-9e3f-7c26-8000-%012d", index)
+		item.Title = fmt.Sprintf("session %02d", index)
+		items = append(items, item)
+	}
+	return items
 }
 
 func TestModelRefreshCoalescesAndRejectsStaleGenerations(t *testing.T) {

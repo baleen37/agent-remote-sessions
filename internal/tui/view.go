@@ -94,7 +94,7 @@ func (value model) sessionLines(width int) ([]string, int) {
 		}
 		return []string{"  no sessions"}, 0
 	}
-	layout := newRowLayout(rowSessions(value.rows), value.stale, width, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(value.result.Sessions, value.stale, width, value.deps.Now(), value.deps.LocalTarget)
 	lines := make([]string, 0, len(value.rows))
 	for index, row := range value.rows {
 		selected := index == value.selected
@@ -172,13 +172,20 @@ func (value model) header() string {
 			active++
 		}
 	}
-	hosts := 0
+	peers := 0
 	for _, host := range value.result.Hosts {
 		if host.Target != value.deps.LocalTarget {
-			hosts++
+			peers++
 		}
 	}
-	stats := fmt.Sprintf("  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
+	stats := fmt.Sprintf("  %d active · %d recent", active, len(value.result.Sessions)-active)
+	switch peers {
+	case 0:
+	case 1:
+		stats += " · 1 peer"
+	default:
+		stats += fmt.Sprintf(" · %d peers", peers)
+	}
 	if value.collecting {
 		stats += " · refreshing"
 	}

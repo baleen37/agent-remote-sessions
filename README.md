@@ -130,6 +130,7 @@ Keys:
 
 - `Up`, `Down`, `j`, `k`: move
 - `g`, `G`: jump to the top or bottom
+- `PgUp`, `PgDn`, `Ctrl+U`, `Ctrl+D`: move one page
 - `/`: search; `Enter` keeps the filter, `Esc` cancels it, and `Esc` outside
   search clears a kept filter
 - `Enter`: start or attach, or toggle the project group under the cursor
