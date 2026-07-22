@@ -167,7 +167,7 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 	}
 	_, width := contentFrame(value.width)
 	details := detailLines(selected, width)
-	for _, text := range append(details, "metadata partial (partial)", "attach finished", help(width)) {
+	for _, text := range append(details, "metadata partial (partial)", "attach finished", value.help(width)) {
 		line := lines[lineContaining(t, plain, text)]
 		want := " " + value.styles.muted.Render(text)
 		if line != want {
@@ -176,7 +176,7 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 	}
 
 	search := lines[lineContaining(t, plain, "/API")]
-	wantSearch := " " + value.styles.selectedCursor.Render("/") + "API"
+	wantSearch := " " + value.styles.selectedCursor.Render("/") + "API" + value.styles.muted.Render("   1/2")
 	if search != wantSearch {
 		t.Fatalf("active search hierarchy = %q, want %q", search, wantSearch)
 	}
@@ -515,6 +515,71 @@ func foregroundCells(line string) []bool {
 	})
 	parser.Parse([]byte(line))
 	return cells
+}
+
+func TestViewShowsMatchCountWhileFiltering(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "1/2") {
+		t.Fatalf("filtering view missing match count: %q", content)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "1/2") {
+		t.Fatalf("committed filter view missing match count: %q", content)
+	}
+}
+
+func TestViewExplainsEmptyFilterAndEmptyInventory(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "zzz"}))
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, `no matches for "zzz"`) || !strings.Contains(content, "esc") {
+		t.Fatalf("empty filter view missing guidance: %q", content)
+	}
+
+	model = readyModel()
+	model.width = 120
+	model.result.Sessions = nil
+	model.refreshVisible()
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "no sessions") {
+		t.Fatalf("empty inventory view missing message: %q", content)
+	}
+}
+
+func TestHelpAdaptsToSelectionSearchAndQuery(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "enter attach") {
+		t.Fatalf("session help missing attach: %q", content)
+	}
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "enter toggle") || strings.Contains(content, "enter attach") {
+		t.Fatalf("header help missing toggle: %q", content)
+	}
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "enter apply") || !strings.Contains(content, "esc cancel") {
+		t.Fatalf("search help missing apply/cancel: %q", content)
+	}
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "esc clear") {
+		t.Fatalf("committed query help missing clear hint: %q", content)
+	}
 }
 
 func TestViewMarksStaleHostRowsAsCached(t *testing.T) {

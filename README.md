@@ -129,11 +129,18 @@ there is no fuzzy ranker.
 Keys:
 
 - `Up`, `Down`, `j`, `k`: move
-- `/`: search
-- `Enter`: start or attach
+- `g`, `G`: jump to the top or bottom
+- `/`: search; `Enter` keeps the filter, `Esc` cancels it, and `Esc` outside
+  search clears a kept filter
+- `Enter`: start or attach, or toggle the project group under the cursor
+- `Space`: toggle the project group under the cursor
 - `r`: refresh
 - `q`, `Ctrl+C`: quit ARS
 - `Ctrl+Q`: detach only while inside an attached ARS tmux client
+
+While a filter is set, the search line shows how many sessions match. The
+footer key help follows the cursor: it offers `enter toggle` on a group
+header and `enter attach` on a session.
 
 The screen collects at startup, on `r`, and after attach returns. Rows appear
 immediately from the last collection, cached per host under

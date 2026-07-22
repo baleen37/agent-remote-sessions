@@ -153,8 +153,12 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	}
 	if value.searching {
 		switch key.Code {
-		case tea.KeyEscape, tea.KeyEnter:
+		case tea.KeyEnter:
 			value.searching = false
+		case tea.KeyEscape:
+			value.searching = false
+			value.query = ""
+			value.refreshVisible()
 		case tea.KeyBackspace:
 			_, size := utf8.DecodeLastRuneInString(value.query)
 			if size > 0 {
@@ -175,6 +179,20 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		value.move(-1)
 	case tea.KeyDown, 'j':
 		value.move(1)
+	case 'g', 'G':
+		if len(value.rows) == 0 {
+			return value, nil
+		}
+		if key.Text == "G" {
+			value.selectRow(len(value.rows) - 1)
+		} else {
+			value.selectRow(0)
+		}
+	case tea.KeyEscape:
+		if value.query != "" {
+			value.query = ""
+			value.refreshVisible()
+		}
 	case '/':
 		value.searching = true
 	case 'r':

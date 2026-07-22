@@ -37,7 +37,15 @@ func (value model) View() tea.View {
 				prefix = value.styles.selectedCursor.Render(prefix)
 			}
 		}
-		search = append(search, fitLine(prefix+value.query, width))
+		count := ""
+		if value.query != "" {
+			matched := len(filterSessions(value.result.Sessions, value.query, value.deps.LocalTarget))
+			count = fmt.Sprintf("   %d/%d", matched, len(value.result.Sessions))
+			if !value.noColor {
+				count = value.styles.muted.Render(count)
+			}
+		}
+		search = append(search, fitLine(prefix+value.query+count, width))
 	}
 
 	if value.height > 0 {
@@ -69,7 +77,7 @@ func (value model) View() tea.View {
 	lines = append(lines, details...)
 	lines = append(lines, diagnostics...)
 	lines = append(lines, search...)
-	lines = append(lines, "", value.mutedText(help(width), width))
+	lines = append(lines, "", value.mutedText(value.help(width), width))
 	margin := strings.Repeat(" ", inset)
 	for index, line := range lines {
 		if line != "" {
@@ -81,7 +89,10 @@ func (value model) View() tea.View {
 
 func (value model) sessionLines(width int) ([]string, int) {
 	if len(value.rows) == 0 {
-		return []string{"  none"}, 0
+		if value.query != "" {
+			return []string{fitLine(fmt.Sprintf("  no matches for %q · esc to clear", value.query), width)}, 0
+		}
+		return []string{"  no sessions"}, 0
 	}
 	layout := newRowLayout(rowSessions(value.rows), value.stale, width, value.deps.Now(), value.deps.LocalTarget)
 	lines := make([]string, 0, len(value.rows))
@@ -311,9 +322,26 @@ func fitLine(line string, width int) string {
 	return ansi.Truncate(line, width, "…")
 }
 
-func help(width int) string {
+func (value model) help(width int) string {
+	separator := "   "
 	if width < 75 {
-		return "↑↓/jk move  / search  enter attach  r refresh  q quit"
+		separator = "  "
 	}
-	return "↑↓/jk move   / search   enter attach   r refresh   q quit"
+	if value.searching {
+		return strings.Join([]string{"type to filter", "enter apply", "esc cancel"}, separator)
+	}
+	action := "enter attach"
+	if row, ok := value.selectedRow(); ok && row.kind == rowHeader {
+		action = "enter toggle"
+	}
+	items := []string{"↑↓/jk move"}
+	if width >= 75 {
+		items = append(items, "g/G top/end")
+	}
+	items = append(items, "/ search")
+	if value.query != "" {
+		items = append(items, "esc clear")
+	}
+	items = append(items, action, "r refresh", "q quit")
+	return strings.Join(items, separator)
 }

@@ -90,7 +90,7 @@ func initialCommands(command tea.Cmd) (collected collectUpdateMsg, hasCollection
 	return collected, hasCollection, hasBackgroundQuery
 }
 
-func TestModelSearchBackspaceRemovesOneRuneAndEscapeRetainsQuery(t *testing.T) {
+func TestModelSearchBackspaceRemovesOneRuneAndEscapeClearsQuery(t *testing.T) {
 	model := readyModel()
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "배치"}))
@@ -99,8 +99,42 @@ func TestModelSearchBackspaceRemovesOneRuneAndEscapeRetainsQuery(t *testing.T) {
 		t.Fatalf("query after Backspace = %q", model.query)
 	}
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if model.searching || model.query != "배" {
+	if model.searching || model.query != "" {
 		t.Fatalf("Escape searching=%t query=%q", model.searching, model.query)
+	}
+	if len(model.rows) != 4 {
+		t.Fatalf("rows after Escape = %+v", model.rows)
+	}
+}
+
+func TestModelEscapeInNormalModeClearsCommittedQuery(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if model.searching || model.query != "API" || len(rowSessions(model.rows)) != 1 {
+		t.Fatalf("Enter searching=%t query=%q rows=%+v", model.searching, model.query, model.rows)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if model.query != "" || len(model.rows) != 4 {
+		t.Fatalf("Escape query=%q rows=%+v", model.query, model.rows)
+	}
+}
+
+func TestModelGAndShiftGJumpToFirstAndLastRow(t *testing.T) {
+	for _, bottom := range []tea.Key{
+		{Code: 'g', Text: "G", Mod: tea.ModShift},
+		{Code: 'G', Text: "G"},
+	} {
+		model := readyModel()
+		model, _ = updateModel(model, tea.KeyPressMsg(bottom))
+		if model.selected != len(model.rows)-1 {
+			t.Fatalf("G %+v selected = %d, want %d", bottom, model.selected, len(model.rows)-1)
+		}
+		model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
+		if model.selected != 0 {
+			t.Fatalf("g selected = %d, want 0", model.selected)
+		}
 	}
 }
 
