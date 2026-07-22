@@ -57,7 +57,7 @@ func TestRemoteAttachUsesOneTargetAndFixedLauncher(t *testing.T) {
 		"bind-key -n C-q detach-client",
 		"attach-session -d",
 		"'/work/it'\\''s app'",
-		"'claude' '--resume' '123e4567-e89b-42d3-a456-426614174000'",
+		`'\''claude'\'' '\''--resume'\'' '\''123e4567-e89b-42d3-a456-426614174000'\''`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script missing %q:\n%s", want, script)
@@ -82,6 +82,47 @@ func TestRemoteAttachScriptRechecksCreateRaceAndUsesExactTargets(t *testing.T) {
 	if !strings.Contains(script, "new-session -d -s '"+key+"'") ||
 		!strings.Contains(script, "attach-session -d -t '="+key+"'") {
 		t.Fatalf("script does not use exact runtime key:\n%s", script)
+	}
+}
+
+func TestRemoteAttachClaudeUnlocksLockedDarwinKeychainBeforeLaunch(t *testing.T) {
+	command, err := NewAttachCommand(context.Background(), "devbox", remoteAttachedSession(), remoteClaudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := command.command.Args[3]
+	for _, want := range []string{
+		`[ "$(uname)" = Darwin ]`,
+		"Claude Code-credentials",
+		"show-keychain-info",
+		"security unlock-keychain",
+		// The guard and launcher must be one shell-command word: tmux runs
+		// multi-word pane commands via exec, without a shell.
+		`fi; exec '\''claude'\'' '\''--resume'\'' '\''123e4567-e89b-42d3-a456-426614174000'\'''`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q:\n%s", want, script)
+		}
+	}
+	if guard, create := strings.Index(script, "unlock-keychain"), strings.Index(script, "new-session"); guard < create {
+		t.Fatalf("keychain guard is outside the created pane:\n%s", script)
+	}
+}
+
+func TestRemoteAttachCodexOmitsKeychainGuard(t *testing.T) {
+	item := remoteAttachedSession()
+	item.Provider = session.Codex
+	spec := provider.ResumeSpec{Executable: "codex", Args: []string{"resume", item.NativeID}}
+	command, err := NewAttachCommand(context.Background(), item.Host, item, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := command.command.Args[3]
+	if strings.Contains(script, "unlock-keychain") || strings.Contains(script, "Claude Code-credentials") {
+		t.Fatalf("codex script must not carry the claude keychain guard:\n%s", script)
+	}
+	if !strings.Contains(script, "'codex' 'resume' '"+item.NativeID+"'") {
+		t.Fatalf("codex script missing plain launcher:\n%s", script)
 	}
 }
 

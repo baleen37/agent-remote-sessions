@@ -54,6 +54,7 @@ func NewAttachCommand(
 	script := remoteAttachScript(
 		arsruntime.Key(string(item.Provider), item.NativeID),
 		item.CWD,
+		item.Provider,
 		spec,
 	)
 	return &AttachCommand{
@@ -61,15 +62,20 @@ func NewAttachCommand(
 	}, nil
 }
 
-func remoteAttachScript(name, cwd string, spec provider.ResumeSpec) string {
+func remoteAttachScript(name, cwd string, prov session.Provider, spec provider.ResumeSpec) string {
 	command := tmuxShellPrefix()
 	execCommand := "TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp exec tmux -L " + arsruntime.SocketName + " -f /dev/null"
 	target := quotePOSIX("=" + name)
 	createArgs := []string{
-		"new-session", "-d", "-s", quotePOSIX(name), "-c", quotePOSIX(cwd), quotePOSIX(spec.Executable),
+		"new-session", "-d", "-s", quotePOSIX(name), "-c", quotePOSIX(cwd),
 	}
-	for _, arg := range spec.Args {
-		createArgs = append(createArgs, quotePOSIX(arg))
+	if prov == session.Claude {
+		createArgs = append(createArgs, quotePOSIX(guardedPaneCommand(spec)))
+	} else {
+		createArgs = append(createArgs, quotePOSIX(spec.Executable))
+		for _, arg := range spec.Args {
+			createArgs = append(createArgs, quotePOSIX(arg))
+		}
 	}
 
 	return strings.Join([]string{
@@ -91,6 +97,32 @@ func remoteAttachScript(name, cwd string, spec provider.ResumeSpec) string {
 		command + " bind-key -n C-q detach-client",
 		execCommand + " attach-session -d -t " + target,
 	}, "\n")
+}
+
+// guardedPaneCommand wraps the claude launcher in a keychain unlock guard.
+// tmux executes a multi-word pane command directly via exec, so the guard and
+// the launcher must travel as one shell-command word.
+func guardedPaneCommand(spec provider.ResumeSpec) string {
+	words := []string{quotePOSIX(spec.Executable)}
+	for _, arg := range spec.Args {
+		words = append(words, quotePOSIX(arg))
+	}
+	return darwinKeychainGuard() + " exec " + strings.Join(words, " ")
+}
+
+// darwinKeychainGuard returns a pane-command fragment that unlocks the macOS
+// login keychain before launching claude. Claude Code stores credentials in
+// the login keychain, which SSH sessions leave locked. Keychain lock state is
+// per security session, so unlocking from the SSH shell would not reach a
+// pre-existing tmux server; the unlock must run inside the pane itself.
+func darwinKeychainGuard() string {
+	return `if [ "$(uname)" = Darwin ] && security find-generic-password -s 'Claude Code-credentials' >/dev/null 2>&1 && ! security show-keychain-info >/dev/null 2>&1; then` +
+		` echo 'ars: the macOS login keychain is locked, so Claude Code cannot read its credentials.';` +
+		` echo 'ars: enter the Mac user password to unlock it.';` +
+		` trap : INT;` +
+		` security unlock-keychain || echo 'ars: keychain still locked; claude will ask you to log in.';` +
+		` trap - INT;` +
+		` fi;`
 }
 
 func tmuxShellPrefix() string {
