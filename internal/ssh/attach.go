@@ -118,9 +118,18 @@ func guardedPaneCommand(spec provider.ResumeSpec) string {
 func darwinKeychainGuard() string {
 	return `if [ "$(uname)" = Darwin ] && security find-generic-password -s 'Claude Code-credentials' >/dev/null 2>&1 && ! security show-keychain-info >/dev/null 2>&1; then` +
 		` echo 'ars: the macOS login keychain is locked, so Claude Code cannot read its credentials.';` +
-		` echo 'ars: enter the Mac user password to unlock it.';` +
+		` echo 'ars: enter the Mac user password to unlock it (Ctrl-C to skip).';` +
 		` trap : INT;` +
-		` security unlock-keychain || echo 'ars: keychain still locked; claude will ask you to log in.';` +
+		` ars_tries=0;` +
+		` until security unlock-keychain; do` +
+		` ars_status=$?;` +
+		` ars_tries=$((ars_tries+1));` +
+		` if [ "$ars_status" -ge 128 ] || [ "$ars_tries" -ge 3 ]; then` +
+		` echo 'ars: keychain still locked; claude will ask you to log in.';` +
+		` break;` +
+		` fi;` +
+		` echo 'ars: unlock failed; try again.';` +
+		` done;` +
 		` trap - INT;` +
 		` fi;`
 }

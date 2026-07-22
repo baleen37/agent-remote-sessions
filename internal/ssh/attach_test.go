@@ -95,7 +95,11 @@ func TestRemoteAttachClaudeUnlocksLockedDarwinKeychainBeforeLaunch(t *testing.T)
 		`[ "$(uname)" = Darwin ]`,
 		"Claude Code-credentials",
 		"show-keychain-info",
-		"security unlock-keychain",
+		// A mistyped password must re-prompt instead of dropping the user
+		// into a logged-out claude; only interrupts and repeated failures
+		// fall through.
+		"until security unlock-keychain",
+		"try again",
 		// The guard and launcher must be one shell-command word: tmux runs
 		// multi-word pane commands via exec, without a shell.
 		`fi; exec '\''claude'\'' '\''--resume'\'' '\''123e4567-e89b-42d3-a456-426614174000'\'''`,
