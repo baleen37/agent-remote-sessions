@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,8 +35,8 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || !model.collecting || model.generation != 1 {
 		t.Fatalf("Init() collecting=%t generation=%d command=%v", model.collecting, model.generation, command)
 	}
-	message, ok := command().(collectUpdateMsg)
-	if !ok || message.generation != 1 || !message.update.Done || len(message.update.Result.Sessions) != 2 {
+	message, hasCollection, hasBackgroundQuery := initialCommands(command)
+	if !hasCollection || !hasBackgroundQuery || message.generation != 1 || !message.update.Done || len(message.update.Result.Sessions) != 2 {
 		t.Fatalf("Init command message = %#v", message)
 	}
 
@@ -62,6 +63,26 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	if command == nil || keyOf(attached) != keyOf(items[1]) {
 		t.Fatalf("attach command=%v session=%#v", command, attached)
 	}
+}
+
+func initialCommands(command tea.Cmd) (collected collectUpdateMsg, hasCollection, hasBackgroundQuery bool) {
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		return collectUpdateMsg{}, false, false
+	}
+	backgroundQuery := reflect.ValueOf(tea.RequestBackgroundColor).Pointer()
+	for _, child := range batch {
+		if reflect.ValueOf(child).Pointer() == backgroundQuery {
+			hasBackgroundQuery = true
+			continue
+		}
+		if update, ok := child().(collectUpdateMsg); ok {
+			collected = update
+			hasCollection = true
+		}
+	}
+	return collected, hasCollection, hasBackgroundQuery
 }
 
 func TestModelSearchBackspaceRemovesOneRuneAndEscapeRetainsQuery(t *testing.T) {
@@ -268,8 +289,8 @@ func readyModel() model {
 		NoColor:     true,
 	}
 	value := newModel(context.Background(), deps)
-	message, ok := value.Init()().(collectUpdateMsg)
-	if !ok {
+	message, hasCollection, _ := initialCommands(value.Init())
+	if !hasCollection {
 		panic("readyModel: Init did not produce collectUpdateMsg")
 	}
 	value, _ = updateModel(value, message)

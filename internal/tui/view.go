@@ -20,7 +20,8 @@ const (
 )
 
 func (value model) View() tea.View {
-	width := value.contentWidth()
+	terminalWidth := value.contentWidth()
+	inset, width := contentFrame(terminalWidth)
 	body, selectedLine := value.sessionLines(width)
 	var details []string
 	selected, hasSelection := value.selectedSession()
@@ -33,6 +34,9 @@ func (value model) View() tea.View {
 		prefix := "search: "
 		if value.searching {
 			prefix = "/"
+			if !value.noColor {
+				prefix = value.styles.selectedCursor.Render(prefix)
+			}
 		}
 		search = append(search, fitLine(prefix+value.query, width))
 	}
@@ -56,6 +60,9 @@ func (value model) View() tea.View {
 			diagnostics = diagnostics[:diagnosticHeight]
 		}
 	}
+	for index, detail := range details {
+		details[index] = value.mutedText(detail, width)
+	}
 
 	lines := []string{fitLine(value.header(), width), ""}
 	lines = append(lines, body...)
@@ -63,20 +70,27 @@ func (value model) View() tea.View {
 	lines = append(lines, details...)
 	lines = append(lines, diagnostics...)
 	lines = append(lines, search...)
-	lines = append(lines, "", fitLine(help(width), width))
+	lines = append(lines, "", value.mutedText(help(width), width))
+	margin := strings.Repeat(" ", inset)
+	for index, line := range lines {
+		if line != "" {
+			lines[index] = margin + line
+		}
+	}
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
 }
 
 func (value model) sessionLines(width int) ([]string, int) {
 	active, recent := splitSessions(value.visible)
-	lines := []string{value.stateText("Active", session.RuntimeAttached)}
-	lines = append(lines, value.renderGroup(active, width)...)
-	lines = append(lines, "", value.stateText("Recent", session.RuntimeSaved))
-	lines = append(lines, value.renderGroup(recent, width)...)
+	layout := newRowLayout(value.visible, value.stale, width, value.deps.Now(), value.deps.LocalTarget)
+	lines := []string{fitLine(value.stateText("Active", session.RuntimeAttached), width)}
+	lines = append(lines, value.renderGroup(active, layout)...)
+	lines = append(lines, "", fitLine(value.stateText("Recent", session.RuntimeSaved), width))
+	lines = append(lines, value.renderGroup(recent, layout)...)
 
 	selectedLine := 0
 	for index, line := range lines {
-		if strings.HasPrefix(ansi.Strip(line), "> ") {
+		if strings.HasPrefix(strings.TrimLeft(ansi.Strip(line), " "), "> ") {
 			selectedLine = index
 			break
 		}
@@ -118,11 +132,14 @@ func (value model) header() string {
 			hosts++
 		}
 	}
-	header := fmt.Sprintf("ars  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
+	stats := fmt.Sprintf("  %d active · %d recent · %d hosts", active, len(value.result.Sessions)-active, hosts)
 	if value.collecting {
-		header += " · refreshing"
+		stats += " · refreshing"
 	}
-	return header
+	if value.noColor {
+		return "ars" + stats
+	}
+	return value.styles.title.Render("ars") + value.styles.muted.Render(stats)
 }
 
 func splitSessions(items []session.Session) (active, recent []session.Session) {
@@ -136,103 +153,15 @@ func splitSessions(items []session.Session) (active, recent []session.Session) {
 	return active, recent
 }
 
-func (value model) renderGroup(items []session.Session, width int) []string {
+func (value model) renderGroup(items []session.Session, layout rowLayout) []string {
 	if len(items) == 0 {
-		return []string{"  none"}
+		return []string{fitLine("  none", layout.width)}
 	}
 	rows := make([]string, 0, len(items))
 	for _, item := range items {
-		rows = append(rows, value.renderRow(item, width))
+		rows = append(rows, value.renderRow(item, layout))
 	}
 	return rows
-}
-
-func (value model) renderRow(item session.Session, width int) string {
-	selected := keyOf(item) == value.selectedKey
-	prefix := "  "
-	if selected {
-		prefix = "> "
-	}
-
-	state := "∙"
-	if item.Runtime.State != session.RuntimeSaved {
-		state = "✻"
-	}
-	runtime := string(item.Runtime.State)
-	if item.Runtime.State == session.RuntimeAttached && width >= clientColumnWidth {
-		runtime = fmt.Sprintf("attached(%d)", item.Runtime.AttachedClients)
-	}
-	fields := []string{state, sessionTitle(item)}
-	flexible := []int{1}
-	if width >= providerColumnWidth {
-		fields = append(fields, string(item.Provider))
-	}
-	fields = append(fields, location(item, value.deps.LocalTarget))
-	flexible = append(flexible, len(fields)-1)
-	if width >= projectColumnWidth {
-		fields = append(fields, session.Project(item.CWD))
-		flexible = append(flexible, len(fields)-1)
-	}
-	fields = append(fields, runtime, activityAge(value.deps.Now(), item.UpdatedAt))
-	runtimeIndex := len(fields) - 2
-	_, isStale := value.stale[item.Host]
-	if isStale {
-		fields = append(fields, "cached")
-	}
-
-	truncateFlexibleFields(fields, flexible, width-lipgloss.Width(prefix))
-	fields[0] = value.stateText(fields[0], item.Runtime.State)
-	fields[runtimeIndex] = value.stateText(fields[runtimeIndex], item.Runtime.State)
-	if isStale {
-		fields[len(fields)-1] = value.stateText(fields[len(fields)-1], session.RuntimeSaved)
-	}
-	row := prefix + strings.Join(fields, "  ")
-	row = fitLine(row, width)
-	if selected && !value.noColor {
-		row = lipgloss.NewStyle().Background(lipgloss.Color("6")).Render(row)
-	}
-	return row
-}
-
-func truncateFlexibleFields(fields []string, flexible []int, width int) {
-	fixedWidth := 2 * (len(fields) - 1)
-	isFlexible := make([]bool, len(fields))
-	for _, index := range flexible {
-		isFlexible[index] = true
-	}
-	for index, field := range fields {
-		if !isFlexible[index] {
-			fixedWidth += lipgloss.Width(field)
-		}
-	}
-	remaining := width - fixedWidth
-	if remaining < 0 {
-		remaining = 0
-	}
-	pending := append([]int(nil), flexible...)
-	for len(pending) > 0 {
-		share := remaining / len(pending)
-		foundShortField := false
-		for pendingIndex, fieldIndex := range pending {
-			fieldWidth := lipgloss.Width(fields[fieldIndex])
-			if fieldWidth > share {
-				continue
-			}
-			remaining -= fieldWidth
-			pending = append(pending[:pendingIndex], pending[pendingIndex+1:]...)
-			foundShortField = true
-			break
-		}
-		if foundShortField {
-			continue
-		}
-		for pendingIndex, fieldIndex := range pending {
-			fieldWidth := remaining / (len(pending) - pendingIndex)
-			fields[fieldIndex] = ansi.Truncate(fields[fieldIndex], fieldWidth, "…")
-			remaining -= fieldWidth
-		}
-		return
-	}
 }
 
 func sessionTitle(item session.Session) string {
@@ -312,12 +241,12 @@ func (value model) diagnostics(width int) []string {
 		lines = append(lines, value.errorText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	for _, diagnostic := range value.result.Warnings {
-		lines = append(lines, fitLine(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
+		lines = append(lines, value.mutedText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	if value.status != "" {
-		status := fitLine(value.status, width)
+		status := value.mutedText(value.status, width)
 		if strings.HasPrefix(value.status, "attach failed:") {
-			status = value.errorText(status, width)
+			status = value.errorText(value.status, width)
 		}
 		lines = append(lines, status)
 	}
@@ -335,16 +264,22 @@ func (value model) stateText(text string, state session.RuntimeState) string {
 	if value.noColor {
 		return text
 	}
-	style := lipgloss.NewStyle()
 	switch state {
 	case session.RuntimeAttached:
-		style = style.Foreground(lipgloss.Color("2"))
+		return value.styles.attached.Render(text)
 	case session.RuntimeRunning:
-		style = style.Foreground(lipgloss.Color("3"))
+		return value.styles.running.Render(text)
 	default:
-		style = style.Faint(true)
+		return value.styles.saved.Render(text)
 	}
-	return style.Render(text)
+}
+
+func (value model) mutedText(text string, width int) string {
+	text = fitLine(text, width)
+	if value.noColor {
+		return text
+	}
+	return value.styles.muted.Render(text)
 }
 
 func (value model) errorText(text string, width int) string {
@@ -352,7 +287,7 @@ func (value model) errorText(text string, width int) string {
 	if value.noColor {
 		return text
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(text)
+	return value.styles.failure.Render(text)
 }
 
 func fitLine(line string, width int) string {
