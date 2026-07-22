@@ -85,7 +85,7 @@ func (value model) sessionLines(width int) ([]string, int) {
 	if len(value.rows) == 0 {
 		return []string{"  none"}, 0
 	}
-	layout := newRowLayout(rowSessions(value.rows), width, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(rowSessions(value.rows), width, value.deps.Now(), value.deps.LocalTarget, value.stale)
 	lines := make([]string, 0, len(value.rows))
 	for index, row := range value.rows {
 		selected := index == value.selected

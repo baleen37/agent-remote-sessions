@@ -78,11 +78,18 @@ func column(value string, width int, right bool) string {
 	return value + padding
 }
 
-func newRowLayout(items []session.Session, width int, now time.Time, localTarget string) rowLayout {
+func newRowLayout(items []session.Session, width int, now time.Time, localTarget string, stale map[string]struct{}) rowLayout {
 	layout := rowLayout{
 		width:        width,
 		showProvider: width >= providerColumnWidth,
 		showClients:  width >= clientColumnWidth,
+	}
+	cached := 0
+	for _, item := range items {
+		if _, isStale := stale[item.Host]; isStale {
+			cached = lipgloss.Width("cached") + lipgloss.Width(columnGutter)
+			break
+		}
 	}
 	for _, item := range items {
 		layout.title = max(layout.title, lipgloss.Width(sessionTitle(item)))
@@ -95,7 +102,7 @@ func newRowLayout(items []session.Session, width int, now time.Time, localTarget
 	}
 
 	fieldCount := 5 // marker, title, location, runtime, activity
-	fixed := 2*rowPadding(width) + rowPrefixSize + treeGuideWidth + 1 + layout.runtime + layout.activity
+	fixed := 2*rowPadding(width) + rowPrefixSize + treeGuideWidth + 1 + layout.runtime + layout.activity + cached
 	if layout.showProvider {
 		fieldCount++
 		fixed += layout.provider

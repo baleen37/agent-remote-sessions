@@ -371,6 +371,31 @@ func selectedRow(content string) string {
 	return ""
 }
 
+func TestStaleCachedColumnKeepsActivityVisible(t *testing.T) {
+	model := readyModel()
+	model.width, model.height, model.noColor = 80, 24, true
+	items := twoSessions()
+	items[1].Title = "a very long stale session title " + strings.Repeat("x", 80)
+	model.result.Sessions = items
+	model.stale = map[string]struct{}{"server": {}}
+	model.refreshVisible()
+
+	content := ansi.Strip(model.View().Content)
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, "a very long stale") {
+			continue
+		}
+		if !strings.HasSuffix(strings.TrimRight(line, " "), "cached") || !strings.Contains(line, "2d") {
+			t.Fatalf("stale row lost activity or cached column: %q", line)
+		}
+		if ansi.StringWidth(line) > model.width {
+			t.Fatalf("stale row exceeds width: %q", line)
+		}
+		return
+	}
+	t.Fatalf("stale row not found:\n%s", content)
+}
+
 func TestViewMarksStaleHostRowsAsCached(t *testing.T) {
 	model := readyModel()
 	model.width = 120
