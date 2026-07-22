@@ -36,6 +36,7 @@
 **Files:**
 - Modify: `internal/app/inventory.go:17-220`
 - Test: `internal/app/inventory_test.go:15-180`
+- Test: `internal/app/e2e_test.go` (update topology expectations only)
 
 **Interfaces:**
 - Produces: `const LocalhostTarget = "localhost"`
@@ -149,7 +150,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit the topology contract**
 
 ```bash
-git add internal/app/inventory.go internal/app/inventory_test.go
+git add internal/app/inventory.go internal/app/inventory_test.go internal/app/e2e_test.go
 git commit -m "feat: make localhost implicit in topology"
 ```
 
