@@ -280,18 +280,29 @@ host-key checking, remote create/detach with the same provider PID, and
 second-client handoff without modifying system sshd, persistent SSH state, or
 the default tmux server.
 
-Automated evidence is separate from real-host acceptance. Before release, use
-two genuinely ready hosts with the same ARS build and remote inventory and
-verify:
+### Real two-host acceptance
 
-1. Each computer renders its own sessions with a blank location and reports
-   them under `localhost` in JSON, while canonical session sets match.
-2. Host A starts Claude, `Ctrl+Q` returns to its TUI, and the provider PID stays
-   alive; host B then attaches the same PID and A returns to its TUI.
-3. Repeat the same flow for Codex.
-4. Network loss returns to the TUI without killing the provider, and an
+Automated evidence is separate from real-host acceptance. Before release, use
+two genuinely ready hosts with the same ARS build and reciprocal peer
+inventories: host A's `hosts` file contains only host B's configured SSH target,
+and host B's contains only host A's. Neither file lists its own computer.
+
+Identity is intentionally observer-relative: a computer is `localhost` to
+itself and its configured SSH target to its peer. Verify:
+
+1. Compare the two computers' visible session sets by `(provider, native ID)`,
+   not by host label or canonical session key.
+2. On host A, start a local Claude session, press `Ctrl+Q`, and confirm its PID
+   remains alive. On host B, select that same provider and native ID under host
+   A's configured SSH target, attach the same runtime and PID, and confirm A
+   returns to its TUI.
+3. Verify the reverse direction: start locally on B, then attach from A under
+   B's configured SSH target with the same provider, native ID, runtime, and
+   PID.
+4. Repeat both directions for Codex.
+5. Network loss returns to the TUI without killing the provider, and an
    unreachable peer remains visible beside healthy sessions.
-5. The user's default tmux server, configuration, keys, and sessions are
+6. The user's default tmux server, configuration, keys, and sessions are
    unchanged.
 
 If inventory, SSH, DNS, tmux, or provider readiness is missing, record this
