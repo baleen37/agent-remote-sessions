@@ -68,6 +68,24 @@ func TestRemoteAttachUsesOneTargetAndFixedLauncher(t *testing.T) {
 	}
 }
 
+func TestRemoteAttachShowsDetachHintOnStatusLineBeforeAttach(t *testing.T) {
+	command, err := NewAttachCommand(context.Background(), "devbox", remoteAttachedSession(), remoteClaudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := command.command.Args[3]
+	hint := "set-option -g status-right " + quotePOSIX(arsruntime.DetachHint)
+	if !strings.Contains(script, hint) {
+		t.Fatalf("script missing detach status hint %q:\n%s", hint, script)
+	}
+	if hintAt, attachAt := strings.Index(script, hint), strings.Index(script, "attach-session"); hintAt == -1 || hintAt > attachAt {
+		t.Fatalf("status hint is not set before attach:\n%s", script)
+	}
+	if !strings.Contains(arsruntime.DetachHint, "ctrl-q") {
+		t.Fatalf("shared detach hint does not name the key: %q", arsruntime.DetachHint)
+	}
+}
+
 func TestRemoteAttachScriptRechecksCreateRaceAndUsesExactTargets(t *testing.T) {
 	item := remoteAttachedSession()
 	command, err := NewAttachCommand(context.Background(), item.Host, item, remoteClaudeSpec())

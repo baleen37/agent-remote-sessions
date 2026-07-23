@@ -95,6 +95,7 @@ func remoteAttachScript(name, cwd string, prov session.Provider, spec provider.R
 		"  fi",
 		"fi",
 		command + " bind-key -n C-q detach-client",
+		command + " set-option -g status-right " + quotePOSIX(arsruntime.DetachHint),
 		execCommand + " attach-session -d -t " + target,
 	}, "\n")
 }

@@ -9,6 +9,11 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
+// DetachHint is the status-right override shown while attached: the ars detach
+// key followed by the usual tmux clock. Local and remote attach share it so
+// the status line reads the same everywhere.
+const DetachHint = "ctrl-q detach  %H:%M "
+
 type AttachCommand struct {
 	ctx    context.Context
 	runner Runner
@@ -63,6 +68,9 @@ func (command *AttachCommand) Run() error {
 	if err := command.runner.Run(command.ctx, bindDetach(), nil, io.Discard, command.stderr); err != nil {
 		return fmt.Errorf("bind detach key: %w", err)
 	}
+	if err := command.runner.Run(command.ctx, showDetachHint(), nil, io.Discard, command.stderr); err != nil {
+		return fmt.Errorf("show detach hint: %w", err)
+	}
 	return command.runner.Run(
 		command.ctx,
 		attachSession(name),
@@ -84,6 +92,14 @@ func newSession(name, cwd string, spec provider.ResumeSpec) Command {
 
 func bindDetach() Command {
 	return arsTMUXCommand("bind-key", "-n", "C-q", "detach-client")
+}
+
+// showDetachHint keeps a persistent "ctrl-q detach" note on the tmux status
+// line, since the detach binding lives in tmux rather than ars and is
+// otherwise invisible. The default status line is already on, so overriding
+// status-right reuses space the user can see the whole session.
+func showDetachHint() Command {
+	return arsTMUXCommand("set-option", "-g", "status-right", DetachHint)
 }
 
 func attachSession(name string) Command {
