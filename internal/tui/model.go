@@ -38,6 +38,7 @@ type ExecCommand interface {
 type Dependencies struct {
 	Collect     func(context.Context) <-chan Update
 	Attach      func(context.Context, session.Session) (ExecCommand, error)
+	Preview     func(context.Context, session.Session) ([]byte, error)
 	LocalTarget string
 	Now         func() time.Time
 	NoColor     bool
@@ -69,6 +70,11 @@ type model struct {
 	matched        int
 	searching      bool
 	showHelp       bool
+	previewOn      bool
+	previewKey     sessionKey
+	previewContent []string
+	previewErr     string
+	previewPending bool
 	collecting     bool
 	spinner        int
 	generation     uint64
@@ -91,6 +97,7 @@ func newModel(ctx context.Context, deps Dependencies) model {
 		ctx:        ctx,
 		deps:       deps,
 		collecting: true,
+		previewOn:  true,
 		generation: 1,
 		noColor:    deps.NoColor || noColor,
 		styles:     newViewStyles(true),
@@ -129,7 +136,11 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 			value.collecting = false
 		}
 		value.refreshVisible()
-		return value, waitForUpdate(message.generation, message.channel)
+		return value, tea.Batch(waitForUpdate(message.generation, message.channel), value.syncPreview())
+	case previewMsg:
+		return value.updatePreview(message)
+	case previewTickMsg:
+		return value.updatePreviewTick(message)
 	case spinnerTickMsg:
 		if message.generation != value.generation || !value.collecting {
 			return value, nil
@@ -149,9 +160,13 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		value.width = message.Width
 		value.height = message.Height
-		return value, nil
+		return value, value.syncPreview()
 	case tea.KeyPressMsg:
-		return value.updateKey(message)
+		updated, command := value.updateKey(message)
+		if command != nil {
+			return updated, command
+		}
+		return updated, updated.syncPreview()
 	default:
 		return value, nil
 	}
@@ -237,6 +252,14 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 	case '/':
 		value.searching = true
+	case 'p':
+		value.previewOn = !value.previewOn
+		if !value.previewOn {
+			value.previewKey = sessionKey{}
+			value.previewContent = nil
+			value.previewErr = ""
+			value.previewPending = false
+		}
 	case '?':
 		value.showHelp = true
 	case 'r':

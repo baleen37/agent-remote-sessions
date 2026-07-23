@@ -118,6 +118,16 @@ func main() {
 					}
 					return ssh.NewAttachCommand(ctx, host.Target, item, spec)
 				},
+				Preview: func(ctx context.Context, item session.Session) ([]byte, error) {
+					host, ok := hostsByTarget[item.Host]
+					if !ok {
+						return nil, fmt.Errorf("session host is not selected")
+					}
+					if host.Local {
+						return runtime.CapturePane(ctx, runtimeRunner, string(item.Provider), item.NativeID)
+					}
+					return ssh.CapturePane(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID)
+				},
 				LocalTarget: app.LocalhostTarget,
 			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},
