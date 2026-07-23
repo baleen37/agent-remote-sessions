@@ -16,16 +16,22 @@ const (
 	defaultWidth        = 80
 	providerColumnWidth = 70
 	clientColumnWidth   = 55
+	spinnerInterval     = 100 * time.Millisecond
 )
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func (value model) View() tea.View {
 	terminalWidth := value.contentWidth()
 	inset, width := contentFrame(terminalWidth)
+	if value.showHelp {
+		return value.helpOverlay(inset, width)
+	}
 	body, selectedLine := value.sessionLines(width)
 	var details []string
 	selected, hasSelection := value.selectedSession()
 	if hasSelection {
-		details = detailLines(selected, width)
+		details = detailLines(selected, width, value.deps.Now())
 	}
 	diagnostics := value.diagnostics(width)
 	var search []string
@@ -80,6 +86,47 @@ func (value model) View() tea.View {
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
 }
 
+func (value model) helpOverlay(inset, width int) tea.View {
+	bindings := [][2]string{
+		{"↑↓ / jk", "move"},
+		{"h / l", "fold / unfold group"},
+		{"g / G · Home / End", "jump to top / end"},
+		{"PgUp / PgDn · Ctrl+U / Ctrl+D", "page up / down"},
+		{"/", "search"},
+		{"enter", "attach session · toggle group"},
+		{"space", "toggle group"},
+		{"r", "refresh"},
+		{"q", "quit"},
+		{"Ctrl+Q", "detach from an attached session"},
+	}
+	keyWidth := 0
+	for _, binding := range bindings {
+		keyWidth = max(keyWidth, lipgloss.Width(binding[0]))
+	}
+	title := "ars keys"
+	if !value.noColor {
+		title = value.styles.title.Render(title)
+	}
+	lines := []string{fitLine(title, width), ""}
+	for _, binding := range bindings {
+		key := binding[0] + strings.Repeat(" ", max(0, keyWidth-lipgloss.Width(binding[0])))
+		plain := fitLine(key+"  "+binding[1], width)
+		if !value.noColor {
+			description := strings.TrimPrefix(plain, key+"  ")
+			plain = key + "  " + value.styles.muted.Render(description)
+		}
+		lines = append(lines, plain)
+	}
+	lines = append(lines, "", value.mutedText("? / esc / q to close", width))
+	margin := strings.Repeat(" ", inset)
+	for index, line := range lines {
+		if line != "" {
+			lines[index] = margin + line
+		}
+	}
+	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
+}
+
 // boundedLayout bounds the detail lines to the terminal height and returns
 // them with the height left for the session list. movePage derives its page
 // step from the same computation so paging matches one visible screen.
@@ -89,7 +136,7 @@ func (value model) boundedLayout(details []string, selected session.Session, sea
 	}
 	detailHeight := value.height - (2 + 1 + 1 + searchLines + 2)
 	if len(details) > detailHeight {
-		details = boundedDetailLines(selected, width, detailHeight)
+		details = boundedDetailLines(selected, width, detailHeight, value.deps.Now())
 	}
 	return details, max(1, value.height-(2+1+len(details)+searchLines+2))
 }
@@ -99,7 +146,8 @@ func (value model) sessionLines(width int) ([]string, int) {
 		if value.query != "" {
 			return []string{fitLine(fmt.Sprintf("  no matches for %q · esc to clear", value.query), width)}, 0
 		}
-		return []string{"  no sessions"}, 0
+		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
+		return []string{"  no sessions yet", "", hint}, 0
 	}
 	layout := newRowLayout(value.result.Sessions, value.stale, width, value.deps.Now(), value.deps.LocalTarget)
 	lines := make([]string, 0, len(value.rows))
@@ -220,7 +268,7 @@ func (value model) header() string {
 		stats += fmt.Sprintf(" · %d peers", peers)
 	}
 	if value.collecting {
-		stats += " · refreshing"
+		stats += " · " + spinnerFrames[value.spinner%len(spinnerFrames)]
 	}
 	if value.noColor {
 		return "ars" + stats
@@ -257,8 +305,16 @@ func (value model) selectedSession() (session.Session, bool) {
 	return row.session, true
 }
 
-func detailLines(item session.Session, width int) []string {
-	fields := []string{item.CWD, item.NativeID, item.UpdatedAt.Format(time.RFC3339Nano)}
+func humanizedActivity(now, updatedAt time.Time) string {
+	age := activityAge(now, updatedAt)
+	if age == "now" {
+		return "now"
+	}
+	return age + " ago"
+}
+
+func detailLines(item session.Session, width int, now time.Time) []string {
+	fields := []string{item.CWD, item.NativeID, humanizedActivity(now, item.UpdatedAt)}
 	lines := make([]string, 0, len(fields))
 	line := ""
 	for _, field := range fields {
@@ -283,11 +339,11 @@ func detailLines(item session.Session, width int) []string {
 	return lines
 }
 
-func boundedDetailLines(item session.Session, width, height int) []string {
+func boundedDetailLines(item session.Session, width, height int, now time.Time) []string {
 	if height <= 0 {
 		return nil
 	}
-	fields := []string{item.CWD, item.NativeID, item.UpdatedAt.Format(time.RFC3339Nano)}
+	fields := []string{item.CWD, item.NativeID, humanizedActivity(now, item.UpdatedAt)}
 	if height == 1 {
 		fields = fields[1:2]
 	} else if height == 2 {
@@ -387,6 +443,6 @@ func (value model) help(width int) string {
 	if value.query != "" {
 		items = append(items, "esc clear")
 	}
-	items = append(items, action, "r refresh", "q quit")
+	items = append(items, action, "r refresh", "q quit", "? help")
 	return strings.Join(items, separator)
 }

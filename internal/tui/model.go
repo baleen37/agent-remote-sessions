@@ -49,6 +49,10 @@ type collectUpdateMsg struct {
 	channel    <-chan Update
 }
 
+type spinnerTickMsg struct {
+	generation uint64
+}
+
 type attachDoneMsg struct {
 	err error
 }
@@ -64,7 +68,9 @@ type model struct {
 	query          string
 	matched        int
 	searching      bool
+	showHelp       bool
 	collecting     bool
+	spinner        int
 	generation     uint64
 	stale          map[string]struct{}
 	cancelCollect  context.CancelFunc
@@ -98,6 +104,7 @@ func newModel(ctx context.Context, deps Dependencies) model {
 func (value model) Init() tea.Cmd {
 	return tea.Batch(
 		value.initialCollect,
+		spinnerTick(value.generation),
 		tea.RequestBackgroundColor,
 	)
 }
@@ -123,6 +130,12 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		}
 		value.refreshVisible()
 		return value, waitForUpdate(message.generation, message.channel)
+	case spinnerTickMsg:
+		if message.generation != value.generation || !value.collecting {
+			return value, nil
+		}
+		value.spinner = (value.spinner + 1) % len(spinnerFrames)
+		return value, spinnerTick(value.generation)
 	case attachDoneMsg:
 		if message.err != nil {
 			value.status = boundedStatus("attach failed: " + message.err.Error())
@@ -151,6 +164,13 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			value.cancelCollect()
 		}
 		return value, tea.Quit
+	}
+	if value.showHelp {
+		switch {
+		case key.Text == "?", key.Code == tea.KeyEscape, key.Code == 'q':
+			value.showHelp = false
+		}
+		return value, nil
 	}
 	if value.searching {
 		if key.Code == 'u' && key.Mod&tea.ModCtrl != 0 {
@@ -217,6 +237,8 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 	case '/':
 		value.searching = true
+	case '?':
+		value.showHelp = true
 	case 'r':
 		if value.collecting {
 			return value, nil
@@ -269,7 +291,17 @@ func (value model) restartCollection() (model, tea.Cmd) {
 	value.cancelCollect = cancel
 	value.generation++
 	value.collecting = true
-	return value, waitForUpdate(value.generation, value.deps.Collect(collectCtx))
+	value.spinner = 0
+	return value, tea.Batch(
+		waitForUpdate(value.generation, value.deps.Collect(collectCtx)),
+		spinnerTick(value.generation),
+	)
+}
+
+func spinnerTick(generation uint64) tea.Cmd {
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg {
+		return spinnerTickMsg{generation: generation}
+	})
 }
 
 func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
@@ -457,7 +489,7 @@ func (value model) pageStep() int {
 	var details []string
 	selected, hasSelection := value.selectedSession()
 	if hasSelection {
-		details = detailLines(selected, width)
+		details = detailLines(selected, width, value.deps.Now())
 	}
 	searchLines := 0
 	if value.query != "" || value.searching {
