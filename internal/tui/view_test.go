@@ -63,7 +63,7 @@ func TestSmallHeightBoundsMaximumLengthCWDDetails(t *testing.T) {
 		"> ",
 		"/cccccccc",
 		"123e4567-e89b-42d3-a456-426614174000",
-		"2026-07-19T12:00:00Z",
+		"1d ago",
 		"↑↓/jk move",
 	} {
 		if !strings.Contains(content, want) {
@@ -168,7 +168,7 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 		t.Fatal("no selected session")
 	}
 	_, width := contentFrame(value.width)
-	details := detailLines(selected, width)
+	details := detailLines(selected, width, value.deps.Now())
 	for _, text := range append(details, "metadata partial (partial)", "attach finished", value.help(width)) {
 		line := lines[lineContaining(t, plain, text)]
 		want := " " + value.styles.muted.Render(text)
@@ -194,7 +194,7 @@ func TestViewShowsSelectedCanonicalDetailsAndBoundedDiagnostics(t *testing.T) {
 
 	content := ansi.Strip(model.View().Content)
 	for _, want := range []string{
-		"/work/ars", "123e4567-e89b-42d3-a456-426614174000", "2026-07-19T12:00:00Z",
+		"/work/ars", "123e4567-e89b-42d3-a456-426614174000", "1d ago",
 		"server: failed", "Claude discovery partial (corrupt)", "status",
 	} {
 		if !strings.Contains(content, want) {
@@ -584,8 +584,74 @@ func TestViewExplainsEmptyFilterAndEmptyInventory(t *testing.T) {
 	model.result.Sessions = nil
 	model.refreshVisible()
 	content = ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "no sessions") {
+	if !strings.Contains(content, "no sessions yet") {
 		t.Fatalf("empty inventory view missing message: %q", content)
+	}
+	if !strings.Contains(content, "ars remote add <host>") {
+		t.Fatalf("empty inventory view missing next-action hint: %q", content)
+	}
+}
+
+func TestViewShowsHumanizedTimestampInDetails(t *testing.T) {
+	model := readyModel()
+	model.width, model.height, model.noColor = 120, 24, true
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "1d ago") {
+		t.Fatalf("detail line missing humanized timestamp: %q", content)
+	}
+	if strings.Contains(content, "2026-07-19T12:00:00Z") {
+		t.Fatalf("detail line still shows raw RFC3339 timestamp: %q", content)
+	}
+}
+
+func TestHelpOverlayListsBindingsIncludingDetach(t *testing.T) {
+	model := readyModel()
+	model.width, model.height, model.noColor = 120, 24, true
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	content := ansi.Strip(model.View().Content)
+	for _, want := range []string{
+		"↑↓ / jk", "h / l", "g / G", "PgUp / PgDn", "Ctrl+U / Ctrl+D",
+		"search", "enter", "space", "refresh", "quit",
+		"Ctrl+Q", "detach",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("help overlay missing %q: %q", want, content)
+		}
+	}
+}
+
+func TestHelpOverlayFitsNarrowTerminal(t *testing.T) {
+	model := readyModel()
+	model.width, model.height, model.noColor = 40, 20, true
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	content := model.View().Content
+	for _, line := range strings.Split(content, "\n") {
+		if ansi.StringWidth(line) > model.width {
+			t.Fatalf("help overlay line exceeds width %d: %q", model.width, line)
+		}
+	}
+}
+
+func TestFooterHelpIncludesHelpHint(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "? help") {
+		t.Fatalf("footer help missing ? help hint: %q", content)
+	}
+}
+
+func TestHeaderShowsSpinnerFrameWhileCollecting(t *testing.T) {
+	model := readyModel()
+	model.width, model.noColor = 120, true
+	model.collecting = true
+	model.spinner = 0
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, spinnerFrames[0]) {
+		t.Fatalf("header missing spinner frame while collecting: %q", content)
+	}
+	if strings.Contains(content, "refreshing") {
+		t.Fatalf("header still shows static refreshing text: %q", content)
 	}
 }
 

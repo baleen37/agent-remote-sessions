@@ -75,6 +75,26 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	}
 }
 
+// collectionFrom drains a refresh command into its collectUpdateMsg. Refresh
+// batches the collection with a spinner tick, so the batch children run
+// concurrently and the first collectUpdateMsg wins over the slow tick.
+func collectionFrom(command tea.Cmd) collectUpdateMsg {
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		return message.(collectUpdateMsg)
+	}
+	found := make(chan collectUpdateMsg, len(batch))
+	for _, child := range batch {
+		go func(child tea.Cmd) {
+			if update, ok := child().(collectUpdateMsg); ok {
+				found <- update
+			}
+		}(child)
+	}
+	return <-found
+}
+
 func initialCommands(command tea.Cmd) (collected collectUpdateMsg, hasCollection, hasBackgroundQuery bool) {
 	message := command()
 	batch, ok := message.(tea.BatchMsg)
@@ -340,7 +360,7 @@ func TestModelCollapseSurvivesRefreshAndSearchOverridesIt(t *testing.T) {
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'k', Text: "k"}))
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	value, command := updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'r', Text: "r"}))
-	value, _ = updateModel(value, command().(collectUpdateMsg))
+	value, _ = updateModel(value, collectionFrom(command))
 	if len(value.rows) != 2 || !value.rows[0].collapsed {
 		t.Fatalf("collapse lost on refresh: %+v", value.rows)
 	}
@@ -532,8 +552,8 @@ func TestModelAttachCompletionStoresBoundedStatusAndCollectsExactlyOnce(t *testi
 	if model.status == "" || len(model.status) > maxStatusBytes {
 		t.Fatalf("bounded status length=%d status=%q", len(model.status), model.status)
 	}
-	message, ok := command().(collectUpdateMsg)
-	if !ok || message.generation != 2 || collects != 1 {
+	message := collectionFrom(command)
+	if message.generation != 2 || collects != 1 {
 		t.Fatalf("refresh message=%#v collects=%d", message, collects)
 	}
 }
@@ -546,8 +566,8 @@ func TestModelAttachCompletionSupersedesCollectionInFlight(t *testing.T) {
 	if command == nil || !model.collecting || model.generation != 3 {
 		t.Fatalf("attach completion command=%v collecting=%t generation=%d", command, model.collecting, model.generation)
 	}
-	message, ok := command().(collectUpdateMsg)
-	if !ok || message.generation != 3 {
+	message := collectionFrom(command)
+	if message.generation != 3 {
 		t.Fatalf("refresh message = %#v", message)
 	}
 }
@@ -639,6 +659,81 @@ func TestModelQuitCancelsCollectionContext(t *testing.T) {
 	case <-capturedCtx.Done():
 	default:
 		t.Fatal("quitting with 'q' did not cancel the in-flight collection context")
+	}
+}
+
+func TestModelQuestionMarkTogglesHelpOverlay(t *testing.T) {
+	value := readyModel()
+	if value.showHelp {
+		t.Fatal("help overlay open before pressing ?")
+	}
+	for _, close := range []tea.Key{
+		{Code: '?', Text: "?"},
+		{Code: tea.KeyEscape},
+		{Code: 'q', Text: "q"},
+	} {
+		var command tea.Cmd
+		value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+		if !value.showHelp {
+			t.Fatal("? did not open help overlay")
+		}
+		value, command = updateModel(value, tea.KeyPressMsg(close))
+		if value.showHelp {
+			t.Fatalf("%+v did not close help overlay", close)
+		}
+		if command != nil {
+			t.Fatalf("%+v while help open produced command %v", close, command)
+		}
+	}
+}
+
+func TestModelQuestionMarkWhileSearchingTypesIntoQuery(t *testing.T) {
+	value := readyModel()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	if value.showHelp {
+		t.Fatal("? opened help overlay while searching")
+	}
+	if value.query != "?" {
+		t.Fatalf("query = %q, want %q", value.query, "?")
+	}
+}
+
+func TestModelSpinnerTicksWhileCollectingAndStopsWhenDone(t *testing.T) {
+	value := readyModel()
+	value.collecting = true
+	value.generation = 2
+	value.spinner = 0
+
+	value, command := updateModel(value, spinnerTickMsg{generation: 2})
+	if value.spinner != 1 {
+		t.Fatalf("spinner frame = %d, want 1", value.spinner)
+	}
+	if command == nil {
+		t.Fatal("spinner tick did not schedule the next tick while collecting")
+	}
+
+	value, command = updateModel(value, spinnerTickMsg{generation: 1})
+	if command != nil {
+		t.Fatal("stale-generation spinner tick scheduled another tick")
+	}
+
+	value.collecting = false
+	value, command = updateModel(value, spinnerTickMsg{generation: 2})
+	if command != nil {
+		t.Fatal("spinner kept ticking after collection finished")
+	}
+}
+
+func TestModelRestartCollectionStartsSpinner(t *testing.T) {
+	value := readyModel()
+	value.collecting = false
+	value, command := value.restartCollection()
+	if command == nil {
+		t.Fatal("restartCollection returned no command")
+	}
+	if _, ok := command().(tea.BatchMsg); !ok {
+		t.Fatal("restartCollection did not batch a spinner tick with collection")
 	}
 }
 
