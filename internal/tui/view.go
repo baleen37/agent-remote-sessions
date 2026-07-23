@@ -64,7 +64,7 @@ func (value model) View() tea.View {
 		var bodyHeight int
 		details, bodyHeight = value.boundedLayout(details, selected, len(search), width)
 		fixedHeight := 2 + 1 + len(details) + len(search) + 2
-		body = visibleLines(body, selectedLine, bodyHeight)
+		body = value.scrolledBody(body, selectedLine, bodyHeight, listWidth)
 		panelHeight = bodyHeight
 		diagnosticHeight := value.height - (fixedHeight + len(body))
 		if diagnosticHeight < len(diagnostics) {
@@ -238,18 +238,58 @@ func (value model) renderMore(row listRow, selected bool, width int) string {
 	return line
 }
 
-func visibleLines(lines []string, selected, height int) []string {
-	if height >= len(lines) {
+// scrolledBody windows the list body to the viewport and, when rows fall
+// outside it, spends the first and/or last viewport line on a muted indicator
+// counting the hidden rows. Indicators take the place of a content row rather
+// than adding a line, so the body stays exactly height tall and the
+// boundedLayout contract holds; the selected row always keeps a content slot.
+func (value model) scrolledBody(lines []string, selected, height, width int) []string {
+	if height >= len(lines) || height <= 0 {
 		return lines
 	}
-	start := selected - height + 1
-	if start < 0 {
-		start = 0
+	// Resolve how many viewport lines the indicators claim. The content window
+	// is bottom-anchored on the selection over the remaining rows; its bounds
+	// then decide whether each indicator is actually needed. This is circular —
+	// adding an indicator shrinks the window, which can reveal the need for the
+	// other indicator — so iterate until the counts stop changing, which the
+	// window over a finite list always reaches. Indicators may claim at most
+	// height-1 lines so at least one content row (always including the
+	// selection) survives; a 1-line viewport shows only the selected row.
+	budget := min(2, height-1)
+	topInd, botInd := 0, 0
+	var start, rows int
+	for range 3 {
+		rows = height - topInd - botInd
+		start = selected - rows + 1
+		start = max(0, min(start, len(lines)-rows))
+		newTop, newBot := 0, 0
+		if start > 0 && budget >= 1 {
+			newTop = 1
+		}
+		if start+rows < len(lines) && newTop < budget {
+			newBot = 1
+		}
+		if newTop == topInd && newBot == botInd {
+			break
+		}
+		topInd, botInd = newTop, newBot
 	}
-	if start+height > len(lines) {
-		start = len(lines) - height
+	window := make([]string, 0, height)
+	if topInd == 1 {
+		window = append(window, value.scrollIndicator("↑", start, width))
 	}
-	return lines[start : start+height]
+	window = append(window, lines[start:start+rows]...)
+	if botInd == 1 {
+		window = append(window, value.scrollIndicator("↓", len(lines)-(start+rows), width))
+	}
+	return window
+}
+
+func (value model) scrollIndicator(arrow string, hidden, width int) string {
+	text := fmt.Sprintf("%s %d more", arrow, hidden)
+	padding := rowPadding(width)
+	line := strings.Repeat(" ", padding) + fitLine(text, width-2*padding)
+	return value.mutedText(line, width)
 }
 
 func (value model) contentWidth() int {

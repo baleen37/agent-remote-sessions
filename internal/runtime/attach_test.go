@@ -36,6 +36,7 @@ func TestAttachCommandCreatesBindsAndAttachesOnce(t *testing.T) {
 		tmuxCommand("has-session", "-t", "="+key),
 		tmuxCommand("new-session", "-d", "-s", key, "-c", item.CWD, "claude", "--resume", item.NativeID),
 		tmuxCommand("bind-key", "-n", "C-q", "detach-client"),
+		tmuxCommand("set-option", "-g", "status-right", DetachHint),
 		tmuxCommand("attach-session", "-d", "-t", "="+key),
 	}
 	if !reflect.DeepEqual(runner.commands, want) {
@@ -45,6 +46,41 @@ func TestAttachCommandCreatesBindsAndAttachesOnce(t *testing.T) {
 		runner.calls[len(runner.calls)-1].stdout != io.Discard ||
 		runner.calls[len(runner.calls)-1].stderr != io.Discard {
 		t.Fatal("attach did not receive configured standard streams")
+	}
+}
+
+func TestAttachCommandShowsDetachHintOnStatusLine(t *testing.T) {
+	runner := &attachRunner{hasErrors: []error{nil}}
+	command, err := NewAttachCommand(context.Background(), runner, attachedSession(), claudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.SetStdin(strings.NewReader(""))
+	command.SetStdout(io.Discard)
+	command.SetStderr(io.Discard)
+	if err := command.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	var hint Command
+	for _, c := range runner.commands {
+		if c.Args[4] == "set-option" {
+			hint = c
+		}
+	}
+	if hint.Name == "" {
+		t.Fatalf("attach did not set a status option: %v", runner.commandNames())
+	}
+	if want := []string{"set-option", "-g", "status-right", DetachHint}; !slices.Equal(hint.Args[4:], want) {
+		t.Fatalf("status option = %v, want %v", hint.Args[4:], want)
+	}
+	if !strings.Contains(DetachHint, "ctrl-q") || !strings.Contains(DetachHint, "detach") {
+		t.Fatalf("detach hint does not name the key: %q", DetachHint)
+	}
+	// The hint must be set before attach so it is visible from the first frame.
+	names := runner.commandNames()
+	if slices.Index(names, "set-option") > slices.Index(names, "attach-session") {
+		t.Fatalf("status hint set after attach: %v", names)
 	}
 }
 
@@ -64,7 +100,7 @@ func TestAttachCommandDoesNotRestartExistingRuntime(t *testing.T) {
 	if slices.Contains(runner.commandNames(), "new-session") {
 		t.Fatal("runtime restarted")
 	}
-	if want := []string{"has-session", "bind-key", "attach-session"}; !slices.Equal(runner.commandNames(), want) {
+	if want := []string{"has-session", "bind-key", "set-option", "attach-session"}; !slices.Equal(runner.commandNames(), want) {
 		t.Fatalf("commands = %v, want %v", runner.commandNames(), want)
 	}
 }
@@ -88,7 +124,7 @@ func TestAttachCommandRechecksAfterConcurrentCreate(t *testing.T) {
 	if err := command.Run(); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	want := []string{"has-session", "new-session", "has-session", "bind-key", "attach-session"}
+	want := []string{"has-session", "new-session", "has-session", "bind-key", "set-option", "attach-session"}
 	if !slices.Equal(runner.commandNames(), want) {
 		t.Fatalf("commands = %v, want %v", runner.commandNames(), want)
 	}
