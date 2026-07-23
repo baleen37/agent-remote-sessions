@@ -27,7 +27,13 @@ func (value model) View() tea.View {
 	if value.showHelp {
 		return value.helpOverlay(inset, width)
 	}
-	body, selectedLine := value.sessionLines(width)
+	previewShown := value.previewVisible()
+	listWidth := width
+	previewCols := 0
+	if previewShown {
+		listWidth, previewCols = previewWidth(width)
+	}
+	body, selectedLine := value.sessionLines(listWidth)
 	var details []string
 	selected, hasSelection := value.selectedSession()
 	if hasSelection {
@@ -53,11 +59,13 @@ func (value model) View() tea.View {
 		search = append(search, fitLine(prefix+value.query+count, width))
 	}
 
+	panelHeight := len(body)
 	if value.height > 0 {
 		var bodyHeight int
 		details, bodyHeight = value.boundedLayout(details, selected, len(search), width)
 		fixedHeight := 2 + 1 + len(details) + len(search) + 2
 		body = visibleLines(body, selectedLine, bodyHeight)
+		panelHeight = bodyHeight
 		diagnosticHeight := value.height - (fixedHeight + len(body))
 		if diagnosticHeight < len(diagnostics) {
 			if diagnosticHeight < 0 {
@@ -68,6 +76,10 @@ func (value model) View() tea.View {
 	}
 	for index, detail := range details {
 		details[index] = value.mutedText(detail, width)
+	}
+
+	if previewShown {
+		body = value.joinPreview(body, listWidth, previewCols, panelHeight)
 	}
 
 	lines := []string{fitLine(value.header(), width), ""}
@@ -93,6 +105,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		{"g / G · Home / End", "jump to top / end"},
 		{"PgUp / PgDn · Ctrl+U / Ctrl+D", "page up / down"},
 		{"/", "search"},
+		{"p", "toggle preview pane"},
 		{"enter", "attach session · toggle group"},
 		{"space", "toggle group"},
 		{"r", "refresh"},
@@ -442,6 +455,13 @@ func (value model) help(width int) string {
 	items = append(items, "/ search")
 	if value.query != "" {
 		items = append(items, "esc clear")
+	}
+	if value.contentWidth() >= previewMinWidth {
+		label := "p preview"
+		if !value.previewOn {
+			label = "p preview off"
+		}
+		items = append(items, label)
 	}
 	items = append(items, action, "r refresh", "q quit", "? help")
 	return strings.Join(items, separator)
