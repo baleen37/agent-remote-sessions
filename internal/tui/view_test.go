@@ -639,6 +639,40 @@ func TestHelpOverlayListsBindingsIncludingDetach(t *testing.T) {
 	}
 }
 
+func TestHeaderShowsFilterIndicatorWhenActive(t *testing.T) {
+	model := readyModel()
+	model.width, model.noColor = 120, true
+	content := ansi.Strip(model.View().Content)
+	if strings.Contains(content, "· filter") {
+		t.Fatalf("header shows filter indicator with no filter active: %q", content)
+	}
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "!"}))
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "· filter ●") {
+		t.Fatalf("header missing filter indicator for attached: %q", content)
+	}
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "#"}))
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "· filter ●○") {
+		t.Fatalf("header missing combined filter indicator: %q", content)
+	}
+}
+
+func TestEmptyFilterResultShowsGuidance(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "@"}))
+	if len(model.rows) != 0 {
+		t.Fatalf("rows with no running sessions = %+v, want none", model.rows)
+	}
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "no sessions match filter · esc to clear") {
+		t.Fatalf("empty filter view missing guidance: %q", content)
+	}
+}
+
 func TestHelpOverlayShowsStateSymbolLegend(t *testing.T) {
 	model := readyModel()
 	model.width, model.height, model.noColor = 120, 24, true
@@ -661,6 +695,31 @@ func TestHelpOverlayFitsNarrowTerminal(t *testing.T) {
 	}
 }
 
+func TestHelpOverlayAndFooterAdvertiseStateFilter(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	content := ansi.Strip(model.help(model.contentWidth()))
+	if !strings.Contains(content, "!@# filter") {
+		t.Fatalf("footer help missing state filter hint: %q", content)
+	}
+
+	model.showHelp = true
+	overlay := ansi.Strip(model.View().Content)
+	if !strings.Contains(overlay, "! / @ / #") || !strings.Contains(overlay, "filter attached / running / saved") {
+		t.Fatalf("help overlay missing state filter binding:\n%s", overlay)
+	}
+}
+
+func TestFooterShowsEscClearWhenFilterActiveWithoutQuery(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "!"}))
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "esc clear") {
+		t.Fatalf("footer missing esc clear hint while filter active: %q", content)
+	}
+}
+
 func TestHelpOverlayAndFooterAdvertiseGroupJump(t *testing.T) {
 	model := readyModel()
 	model.width = 120
@@ -678,7 +737,7 @@ func TestHelpOverlayAndFooterAdvertiseGroupJump(t *testing.T) {
 
 func TestFooterHelpIncludesHelpHint(t *testing.T) {
 	model := readyModel()
-	model.width = 120
+	model.width = 140
 	content := ansi.Strip(model.View().Content)
 	if !strings.Contains(content, "? help") {
 		t.Fatalf("footer help missing ? help hint: %q", content)

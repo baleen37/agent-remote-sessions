@@ -106,6 +106,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		{"1-9", "jump to group"},
 		{"PgUp / PgDn · Ctrl+U / Ctrl+D", "page up / down"},
 		{"/", "search"},
+		{"! / @ / #", "filter attached / running / saved"},
 		{"p", "toggle preview pane"},
 		{"enter", "attach session · toggle group"},
 		{"space", "toggle group"},
@@ -159,6 +160,9 @@ func (value model) sessionLines(width int) ([]string, int) {
 	if len(value.rows) == 0 {
 		if value.query != "" {
 			return []string{fitLine(fmt.Sprintf("  no matches for %q · esc to clear", value.query), width)}, 0
+		}
+		if value.filterActive() {
+			return []string{fitLine("  no sessions match filter · esc to clear", width)}, 0
 		}
 		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
 		return []string{"  no sessions yet", "", hint}, 0
@@ -324,10 +328,25 @@ func (value model) header() string {
 	if value.collecting {
 		stats += " · " + spinnerFrames[value.spinner%len(spinnerFrames)]
 	}
+	if symbols := value.filterSymbols(); symbols != "" {
+		stats += " · filter " + symbols
+	}
 	if value.noColor {
 		return "ars" + stats
 	}
 	return value.styles.title.Render("ars") + value.styles.muted.Render(stats)
+}
+
+// filterSymbols returns the state symbols for the active filter, in
+// attached/running/saved order, or "" when no filter is active.
+func (value model) filterSymbols() string {
+	symbols := ""
+	for _, state := range []session.RuntimeState{session.RuntimeAttached, session.RuntimeRunning, session.RuntimeSaved} {
+		if value.stateFilter[state] {
+			symbols += stateSymbol(state)
+		}
+	}
+	return symbols
 }
 
 func sessionTitle(item session.Session) string {
@@ -502,10 +521,10 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "h/l fold", "g/G top/end", "1-9 group")
+		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter")
 	}
 	items = append(items, "/ search")
-	if value.query != "" {
+	if value.query != "" || value.filterActive() {
 		items = append(items, "esc clear")
 	}
 	if value.contentWidth() >= previewMinWidth {

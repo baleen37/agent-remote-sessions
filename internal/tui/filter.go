@@ -17,6 +17,21 @@ func keyOf(item session.Session) sessionKey {
 	return sessionKey{host: item.Host, provider: item.Provider, nativeID: item.NativeID}
 }
 
+// filterByState keeps sessions whose runtime state is enabled in states. An
+// empty or nil set means no filter is active, so every session passes.
+func filterByState(items []session.Session, states map[session.RuntimeState]bool) []session.Session {
+	if len(states) == 0 {
+		return append([]session.Session(nil), items...)
+	}
+	filtered := make([]session.Session, 0, len(items))
+	for _, item := range items {
+		if states[item.Runtime.State] {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
 func filterSessions(items []session.Session, query, localTarget string) []session.Session {
 	if query == "" {
 		return append([]session.Session(nil), items...)
