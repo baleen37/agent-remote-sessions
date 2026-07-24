@@ -103,6 +103,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		{"↑↓ / jk", "move"},
 		{"h / l", "fold / unfold group"},
 		{"g / G · Home / End", "jump to top / end"},
+		{"1-9", "jump to group"},
 		{"PgUp / PgDn · Ctrl+U / Ctrl+D", "page up / down"},
 		{"/", "search"},
 		{"p", "toggle preview pane"},
@@ -501,7 +502,7 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "h/l fold", "g/G top/end")
+		items = append(items, "h/l fold", "g/G top/end", "1-9 group")
 	}
 	items = append(items, "/ search")
 	if value.query != "" {

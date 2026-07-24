@@ -163,6 +163,41 @@ func TestModelGAndShiftGJumpToFirstAndLastRow(t *testing.T) {
 	}
 }
 
+func TestModelNumberKeyJumpsToNthGroupHeader(t *testing.T) {
+	model := readyModel()
+	items := manySessions(15)
+	for index := range items {
+		items[index].CWD = fmt.Sprintf("/work/project-%02d", index/5)
+	}
+	model.result.Sessions = items
+	model.refreshVisible()
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '2', Text: "2"}))
+	row, ok := model.selectedRow()
+	if !ok || row.kind != rowHeader || row.project != "project-01" {
+		t.Fatalf("2 selection = %+v, want header for project-01", row)
+	}
+}
+
+func TestModelNumberKeyBeyondGroupCountIsNoop(t *testing.T) {
+	model := readyModel()
+	before, _ := model.selectedRow()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '9', Text: "9"}))
+	after, _ := model.selectedRow()
+	if after != before {
+		t.Fatalf("9 selection changed = %+v, want unchanged %+v", after, before)
+	}
+}
+
+func TestModelNumberKeyWhileSearchingTypesIntoQuery(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '2', Text: "2"}))
+	if model.query != "2" {
+		t.Fatalf("query while searching = %q, want %q", model.query, "2")
+	}
+}
+
 func TestModelPageKeysMoveByViewportWithoutWrapping(t *testing.T) {
 	model := readyModel()
 	model.result.Sessions = manySessions(30)
