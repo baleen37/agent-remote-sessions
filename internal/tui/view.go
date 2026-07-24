@@ -108,6 +108,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		{"/", "search"},
 		{"! / @ / #", "filter attached / running / saved"},
 		{"p", "toggle preview pane"},
+		{"x", "kill session (3s grace · u undo)"},
 		{"enter", "attach session · toggle group"},
 		{"space", "toggle group"},
 		{"r", "refresh"},
@@ -439,7 +440,7 @@ func (value model) diagnostics(width int) []string {
 	}
 	if value.status != "" {
 		status := value.mutedText(value.status, width)
-		if strings.HasPrefix(value.status, "attach failed:") {
+		if strings.HasPrefix(value.status, "attach failed:") || strings.HasPrefix(value.status, "kill failed:") {
 			status = value.errorText(value.status, width)
 		}
 		lines = append(lines, status)
@@ -521,7 +522,7 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter")
+		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter", "x kill")
 	}
 	items = append(items, "/ search")
 	if value.query != "" || value.filterActive() {
@@ -543,7 +544,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
+	droppable := []string{"x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {

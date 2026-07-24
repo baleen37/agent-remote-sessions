@@ -39,6 +39,7 @@ type Dependencies struct {
 	Collect     func(context.Context) <-chan Update
 	Attach      func(context.Context, session.Session) (ExecCommand, error)
 	Preview     func(context.Context, session.Session) ([]byte, error)
+	Kill        func(context.Context, session.Session) error
 	LocalTarget string
 	Now         func() time.Time
 	NoColor     bool
@@ -76,6 +77,9 @@ type model struct {
 	previewContent []string
 	previewErr     string
 	previewPending bool
+	killSeq        uint64
+	killPending    bool
+	killTarget     session.Session
 	collecting     bool
 	spinner        int
 	generation     uint64
@@ -142,6 +146,10 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		return value.updatePreview(message)
 	case previewTickMsg:
 		return value.updatePreviewTick(message)
+	case killFireMsg:
+		return value.updateKillFire(message)
+	case killDoneMsg:
+		return value.updateKillDone(message)
 	case spinnerTickMsg:
 		if message.generation != value.generation || !value.collecting {
 			return value, nil
@@ -245,6 +253,12 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	case 'u':
 		if key.Mod&tea.ModCtrl != 0 {
 			value.movePage(-1)
+		} else {
+			value = value.cancelKill()
+		}
+	case 'x':
+		if row, ok := value.selectedRow(); ok {
+			return value.startKill(row)
 		}
 	case tea.KeyEscape:
 		if value.query != "" {
@@ -347,6 +361,8 @@ func (value model) restartCollection() (model, tea.Cmd) {
 	value.generation++
 	value.collecting = true
 	value.spinner = 0
+	value.killPending = false
+	value.killTarget = session.Session{}
 	return value, tea.Batch(
 		waitForUpdate(value.generation, value.deps.Collect(collectCtx)),
 		spinnerTick(value.generation),
