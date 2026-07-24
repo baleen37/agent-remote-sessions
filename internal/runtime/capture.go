@@ -26,3 +26,18 @@ func KillSession(ctx context.Context, runner Runner, provider, nativeID string) 
 	name := Key(provider, nativeID)
 	return runner.Run(ctx, arsTMUXCommand("kill-session", "-t", "="+name), nil, io.Discard, io.Discard)
 }
+
+// SendKeys sends a single line of text to a local ars-managed session's pane
+// without attaching to it: the text is sent literally (so it cannot be
+// misread as key names), followed by Enter to submit it.
+func SendKeys(ctx context.Context, runner Runner, provider, nativeID, text string) error {
+	if runner == nil {
+		return fmt.Errorf("tmux runner is nil")
+	}
+	name := Key(provider, nativeID)
+	target := "=" + name + ":"
+	if err := runner.Run(ctx, arsTMUXCommand("send-keys", "-t", target, "-l", "--", text), nil, io.Discard, io.Discard); err != nil {
+		return err
+	}
+	return runner.Run(ctx, arsTMUXCommand("send-keys", "-t", target, "Enter"), nil, io.Discard, io.Discard)
+}

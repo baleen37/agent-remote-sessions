@@ -74,3 +74,28 @@ func killSessionCommand(name string) string {
 	sessionTarget := singleQuote("=" + name)
 	return tmux + " kill-session -t " + sessionTarget
 }
+
+// SendKeys sends a single line of text to an ars-managed session's pane on a
+// remote host without attaching to it: the text is sent literally (so it
+// cannot be misread as key names), followed by Enter to submit it.
+func SendKeys(ctx context.Context, runner Runner, target, provider, nativeID, text string) error {
+	if runner == nil {
+		return fmt.Errorf("SSH runner is nil")
+	}
+	name := arsruntime.Key(provider, nativeID)
+	stderr := newBoundedBuffer(stderrOutputLimit)
+	runErr := runner.Run(ctx, "ssh", collectionSSHArgs(target, defaultConnectTimeout, remoteShellCommand(sendKeysCommand(name, text))), nil, io.Discard, stderr)
+	if runErr != nil {
+		return commandError("SSH send-keys", runErr, stderr)
+	}
+	return nil
+}
+
+func sendKeysCommand(name, text string) string {
+	tmux := tmuxShellPrefix()
+	// The trailing colon resolves "=name:" as the session's active pane;
+	// "=name" alone is read as a pane spec and fails to match.
+	paneTarget := quotePOSIX("=" + name + ":")
+	return tmux + " send-keys -t " + paneTarget + " -l -- " + quotePOSIX(text) +
+		" && " + tmux + " send-keys -t " + paneTarget + " Enter"
+}

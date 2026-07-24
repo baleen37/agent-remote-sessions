@@ -40,6 +40,7 @@ type Dependencies struct {
 	Attach      func(context.Context, session.Session) (ExecCommand, error)
 	Preview     func(context.Context, session.Session) ([]byte, error)
 	Kill        func(context.Context, session.Session) error
+	Send        func(ctx context.Context, item session.Session, text string) error
 	LocalTarget string
 	Now         func() time.Time
 	NoColor     bool
@@ -71,6 +72,9 @@ type model struct {
 	query          string
 	matched        int
 	searching      bool
+	composing      bool
+	compose        string
+	composeTarget  session.Session
 	showHelp       bool
 	previewOn      bool
 	previewKey     sessionKey
@@ -150,6 +154,8 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		return value.updateKillFire(message)
 	case killDoneMsg:
 		return value.updateKillDone(message)
+	case sendDoneMsg:
+		return value.updateSendDone(message)
 	case spinnerTickMsg:
 		if message.generation != value.generation || !value.collecting {
 			return value, nil
@@ -223,6 +229,30 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 		return value, nil
 	}
+	if value.composing {
+		if key.Code == 'u' && key.Mod&tea.ModCtrl != 0 {
+			value.compose = ""
+			return value, nil
+		}
+		switch key.Code {
+		case tea.KeyEnter:
+			return value.submitCompose()
+		case tea.KeyEscape:
+			value.composing = false
+			value.compose = ""
+			value.composeTarget = session.Session{}
+		case tea.KeyBackspace:
+			_, size := utf8.DecodeLastRuneInString(value.compose)
+			if size > 0 {
+				value.compose = value.compose[:len(value.compose)-size]
+			}
+		default:
+			if printable(key.Text) {
+				value.compose += key.Text
+			}
+		}
+		return value, nil
+	}
 
 	switch key.Code {
 	case tea.KeyUp, 'k':
@@ -259,6 +289,10 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	case 'x':
 		if row, ok := value.selectedRow(); ok {
 			return value.startKill(row)
+		}
+	case 'm':
+		if row, ok := value.selectedRow(); ok {
+			return value.startCompose(row)
 		}
 	case tea.KeyEscape:
 		if value.query != "" {
@@ -581,7 +615,7 @@ func (value model) pageStep() int {
 		details = detailLines(selected, width, value.deps.Now())
 	}
 	searchLines := 0
-	if value.query != "" || value.searching {
+	if value.query != "" || value.searching || value.composing {
 		searchLines = 1
 	}
 	_, bodyHeight := value.boundedLayout(details, selected, searchLines, width)

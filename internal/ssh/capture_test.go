@@ -127,3 +127,65 @@ func TestKillSessionReturnsErrorWithStderr(t *testing.T) {
 		t.Fatalf("KillSession() error = %v, want stderr included", err)
 	}
 }
+
+func TestSendKeysSendsLiteralTextThenEnterOnRemote(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{}
+	err := SendKeys(context.Background(), runner, "host", "claude", "123e4567-e89b-42d3-a456-426614174000", "hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1 (single shell command)", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.name != "ssh" {
+		t.Fatalf("runner name = %q, want ssh", call.name)
+	}
+	name := arsruntime.Key("claude", "123e4567-e89b-42d3-a456-426614174000")
+	if got, want := call.args[len(call.args)-1], remoteShellCommand(sendKeysCommand(name, "hello world")); got != want {
+		t.Fatalf("send-keys command = %q, want %q", got, want)
+	}
+	script := sendKeysCommand(name, "hello world")
+	if !strings.Contains(script, "send-keys -t '="+name+":' -l -- 'hello world'") {
+		t.Fatalf("script missing literal send-keys:\n%s", script)
+	}
+	if !strings.Contains(script, "send-keys -t '="+name+":' Enter") {
+		t.Fatalf("script missing Enter send-keys:\n%s", script)
+	}
+}
+
+func TestSendKeysQuotesTextContainingSingleQuotes(t *testing.T) {
+	t.Parallel()
+
+	name := arsruntime.Key("claude", "id")
+	script := sendKeysCommand(name, "it's a test")
+	if !strings.Contains(script, `'it'\''s a test'`) {
+		t.Fatalf("script did not safely quote embedded single quote:\n%s", script)
+	}
+}
+
+func TestSendKeysRequiresRunner(t *testing.T) {
+	t.Parallel()
+
+	if err := SendKeys(context.Background(), nil, "host", "claude", "id", "hi"); err == nil {
+		t.Fatal("SendKeys() with nil runner did not error")
+	}
+}
+
+func TestSendKeysReturnsErrorWithStderr(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{run: func(_ context.Context, _ int, _ runnerCall, _, stderr io.Writer) error {
+		_, _ = io.WriteString(stderr, "no such session")
+		return errors.New("exit status 1")
+	}}
+	err := SendKeys(context.Background(), runner, "host", "claude", "id", "hi")
+	if err == nil {
+		t.Fatal("SendKeys() did not propagate runner error")
+	}
+	if !strings.Contains(err.Error(), "no such session") {
+		t.Fatalf("SendKeys() error = %v, want stderr included", err)
+	}
+}

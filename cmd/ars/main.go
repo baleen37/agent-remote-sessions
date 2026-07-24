@@ -138,6 +138,16 @@ func main() {
 					}
 					return ssh.KillSession(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID)
 				},
+				Send: func(ctx context.Context, item session.Session, text string) error {
+					host, ok := hostsByTarget[item.Host]
+					if !ok {
+						return fmt.Errorf("session host is not selected")
+					}
+					if host.Local {
+						return runtime.SendKeys(ctx, runtimeRunner, string(item.Provider), item.NativeID, text)
+					}
+					return ssh.SendKeys(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID, text)
+				},
 				LocalTarget: app.LocalhostTarget,
 			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},
