@@ -102,15 +102,17 @@ func (adapter claudeAdapter) discover(ctx context.Context, home string, sessionL
 }
 
 type claudeRecord struct {
-	Type        string `json:"type"`
-	SessionID   string `json:"sessionId"`
-	CWD         string `json:"cwd"`
-	Title       string `json:"title"`
-	CustomTitle string `json:"customTitle"`
-	AgentName   string `json:"agentName"`
-	AgentID     string `json:"agentId"`
-	IsInternal  bool   `json:"isInternal"`
-	IsSidechain bool   `json:"isSidechain"`
+	Type        string          `json:"type"`
+	SessionID   string          `json:"sessionId"`
+	CWD         string          `json:"cwd"`
+	Title       string          `json:"title"`
+	CustomTitle string          `json:"customTitle"`
+	AgentName   string          `json:"agentName"`
+	AgentID     string          `json:"agentId"`
+	IsInternal  bool            `json:"isInternal"`
+	IsMeta      bool            `json:"isMeta"`
+	IsSidechain bool            `json:"isSidechain"`
+	Message     json.RawMessage `json:"message"`
 }
 
 func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, string) {
@@ -128,7 +130,7 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 		return session.Candidate{}, false, "incompatible"
 	}
 
-	var id, cwd, title string
+	var id, cwd, title, promptTitle string
 	titleRank := 0
 	excluded := false
 	mixedIDs := false
@@ -168,6 +170,9 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 			title = value
 			titleRank = rank
 		}
+		if promptTitle == "" {
+			promptTitle = claudePromptTitle(record)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return session.Candidate{}, false, "resource_limit"
@@ -195,7 +200,7 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 		NativeID:  id,
 		UpdatedAt: info.ModTime().UTC(),
 		CWD:       cwd,
-		Title:     title,
+		Title:     firstNonEmpty(title, promptTitle),
 	}
 	if err := session.ValidateCandidate(candidate); err != nil {
 		return session.Candidate{}, false, strongerError(errorCode, "incompatible")
@@ -217,6 +222,56 @@ func claudeNativeTitle(record claudeRecord) (string, int) {
 	default:
 		return "", 0
 	}
+}
+
+// claudePromptTitle turns a user transcript record into a display title, so sessions
+// without a native title record still show something other than their UUID. Meta
+// records, slash-command wrappers, and tool-result-only content carry no prompt the
+// user typed, so they yield "" and the caller keeps looking at later records.
+func claudePromptTitle(record claudeRecord) string {
+	if record.Type != "user" || record.IsMeta || len(record.Message) == 0 {
+		return ""
+	}
+	var message struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(record.Message, &message) != nil {
+		return ""
+	}
+	text := claudeMessageText(message.Content)
+	if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "Caveat:") {
+		return ""
+	}
+	title := codexTitle(text)
+	if title == "" || !validClaudeCandidateText("/", title) {
+		return ""
+	}
+	return title
+}
+
+// claudeMessageText extracts the prompt text from message.content, which is either a
+// plain string or an array of blocks whose first text block holds the prompt.
+func claudeMessageText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &blocks) != nil {
+		return ""
+	}
+	for _, block := range blocks {
+		if block.Type == "text" {
+			return strings.TrimSpace(block.Text)
+		}
+	}
+	return ""
 }
 
 func validClaudeCandidateText(cwd, title string) bool {
