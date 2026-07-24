@@ -302,8 +302,28 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			value.cancelCollect()
 		}
 		return value, tea.Quit
+	default:
+		if len(key.Text) == 1 && key.Text[0] >= '1' && key.Text[0] <= '9' {
+			value.jumpToGroup(int(key.Text[0] - '0'))
+		}
 	}
 	return value, nil
+}
+
+// jumpToGroup selects the Nth rowHeader in the visible rows (1-indexed). It
+// is a no-op if fewer than n groups are visible.
+func (value *model) jumpToGroup(n int) {
+	count := 0
+	for index, row := range value.rows {
+		if row.kind != rowHeader {
+			continue
+		}
+		count++
+		if count == n {
+			value.selectRow(index)
+			return
+		}
+	}
 }
 
 func (value model) restartCollection() (model, tea.Cmd) {

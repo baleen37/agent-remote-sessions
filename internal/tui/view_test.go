@@ -661,6 +661,21 @@ func TestHelpOverlayFitsNarrowTerminal(t *testing.T) {
 	}
 }
 
+func TestHelpOverlayAndFooterAdvertiseGroupJump(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	content := ansi.Strip(model.help(model.contentWidth()))
+	if !strings.Contains(content, "1-9 group") {
+		t.Fatalf("footer help missing group jump hint: %q", content)
+	}
+
+	model.showHelp = true
+	overlay := ansi.Strip(model.View().Content)
+	if !strings.Contains(overlay, "jump to group") {
+		t.Fatalf("help overlay missing group jump binding:\n%s", overlay)
+	}
+}
+
 func TestFooterHelpIncludesHelpHint(t *testing.T) {
 	model := readyModel()
 	model.width = 120
