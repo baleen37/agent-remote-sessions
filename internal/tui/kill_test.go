@@ -219,6 +219,130 @@ func TestModelXAndUAreLiteralWhileSearching(t *testing.T) {
 	}
 }
 
+func TestModelKillDoneStaleDoesNotStompNewerPendingKill(t *testing.T) {
+	killed := 0
+	model := readyModel()
+	model.result.Sessions = manySessions(2)
+	model.refreshVisible()
+	model.deps.Kill = func(context.Context, session.Session) error {
+		killed++
+		return nil
+	}
+	collects := 0
+	model.deps.Collect = func(context.Context) <-chan Update {
+		collects++
+		channel := make(chan Update, 1)
+		channel <- Update{Done: true}
+		close(channel)
+		return channel
+	}
+
+	// A fires first (slow async Kill still in flight).
+	firstRow, _ := model.selectedRow()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	firstSeq := model.killSeq
+
+	// Before A's killDoneMsg arrives, the user selects a different session and
+	// presses x again: B becomes the newer (and only) pending kill.
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	secondRow, _ := model.selectedRow()
+	if keyOf(secondRow.session) == keyOf(firstRow.session) {
+		t.Fatal("test setup did not move selection to a different session")
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	secondSeq := model.killSeq
+	if secondSeq == firstSeq {
+		t.Fatal("second x did not bump killSeq")
+	}
+	wantArmedStatus := "killing " + sessionTitle(secondRow.session) + " in 3s · u undo"
+	if model.status != wantArmedStatus {
+		t.Fatalf("status before stale done = %q, want %q", model.status, wantArmedStatus)
+	}
+
+	// A's stale killDoneMsg now arrives.
+	model, command := updateModel(model, killDoneMsg{seq: firstSeq, title: sessionTitle(firstRow.session), err: nil})
+
+	// B's pending kill must still be armed: status restored, killPending true,
+	// and the timer for B (secondSeq) must still fire.
+	if !model.killPending || model.killSeq != secondSeq {
+		t.Fatalf("stale done cleared the newer pending kill: killPending=%t killSeq=%d, want pending for seq %d", model.killPending, model.killSeq, secondSeq)
+	}
+	if model.status != wantArmedStatus {
+		t.Fatalf("stale done overwrote newer pending status: got %q, want %q", model.status, wantArmedStatus)
+	}
+	// The stale completion still triggers its own refresh (the old session
+	// really did die), so a restartCollection command is expected here.
+	if command == nil {
+		t.Fatal("stale killDoneMsg did not restart collection for its own outcome")
+	}
+	model, _ = updateModel(model, collectionFrom(command))
+
+	// B's own grace-period timer then fires and must still kill B.
+	model, command = updateModel(model, killFireMsg{seq: secondSeq})
+	if command == nil {
+		t.Fatal("B's killFireMsg produced no command after surviving the stale done")
+	}
+	message := command()
+	done, ok := message.(killDoneMsg)
+	if !ok || done.err != nil || done.seq != secondSeq {
+		t.Fatalf("B's kill result = %#v, want killDoneMsg{seq: %d, err: nil}", message, secondSeq)
+	}
+	if killed != 1 {
+		t.Fatalf("Kill invoked %d times, want 1 (only for B)", killed)
+	}
+}
+
+func TestModelStaleKillFailureDoesNotStompNewerPendingKill(t *testing.T) {
+	model := readyModel()
+	model.result.Sessions = manySessions(2)
+	model.refreshVisible()
+
+	firstRow, _ := model.selectedRow()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	firstSeq := model.killSeq
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	secondRow, _ := model.selectedRow()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	secondSeq := model.killSeq
+	wantArmedStatus := "killing " + sessionTitle(secondRow.session) + " in 3s · u undo"
+
+	model, command := updateModel(model, killDoneMsg{seq: firstSeq, title: sessionTitle(firstRow.session), err: errors.New("boom")})
+	if !model.killPending || model.killSeq != secondSeq || model.status != wantArmedStatus {
+		t.Fatalf("stale failed done disturbed newer pending: killPending=%t killSeq=%d status=%q", model.killPending, model.killSeq, model.status)
+	}
+	if command == nil {
+		t.Fatal("stale failed killDoneMsg did not restart collection for its own outcome")
+	}
+}
+
+func TestModelKillFailedStatusIsErrorStyled(t *testing.T) {
+	model := readyModel()
+	model.noColor = false
+	model.styles = newViewStyles(true)
+	model.deps.Kill = func(context.Context, session.Session) error {
+		return errors.New("boom")
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	seq := model.killSeq
+	model, command := updateModel(model, killFireMsg{seq: seq})
+	done := command().(killDoneMsg)
+	model, _ = updateModel(model, done)
+
+	lines := model.diagnostics(80)
+	if len(lines) == 0 {
+		t.Fatal("diagnostics() returned no lines for kill failed status")
+	}
+	got := lines[len(lines)-1]
+	want := model.errorText(model.status, 80)
+	if got != want {
+		t.Fatalf("kill failed status rendered = %q, want error-styled %q", got, want)
+	}
+	if muted := model.mutedText(model.status, 80); got == muted {
+		t.Fatal("kill failed status rendered muted instead of error-styled")
+	}
+}
+
 func TestHelpOverlayAndFooterAdvertiseKill(t *testing.T) {
 	model := readyModel()
 	model.width = 140

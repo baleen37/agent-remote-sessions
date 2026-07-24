@@ -440,7 +440,7 @@ func (value model) diagnostics(width int) []string {
 	}
 	if value.status != "" {
 		status := value.mutedText(value.status, width)
-		if strings.HasPrefix(value.status, "attach failed:") {
+		if strings.HasPrefix(value.status, "attach failed:") || strings.HasPrefix(value.status, "kill failed:") {
 			status = value.errorText(value.status, width)
 		}
 		lines = append(lines, status)

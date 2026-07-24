@@ -15,6 +15,7 @@ type killFireMsg struct {
 }
 
 type killDoneMsg struct {
+	seq   uint64
 	title string
 	err   error
 }
@@ -59,17 +60,26 @@ func (value model) updateKillFire(message killFireMsg) (model, tea.Cmd) {
 		return value, nil
 	}
 	target := value.killTarget
-	return value, runKill(value.ctx, value.deps.Kill, target)
+	return value, runKill(value.ctx, value.deps.Kill, message.seq, target)
 }
 
-func runKill(ctx context.Context, kill func(context.Context, session.Session) error, target session.Session) tea.Cmd {
+func runKill(ctx context.Context, kill func(context.Context, session.Session) error, seq uint64, target session.Session) tea.Cmd {
 	return func() tea.Msg {
 		err := kill(ctx, target)
-		return killDoneMsg{title: sessionTitle(target), err: err}
+		return killDoneMsg{seq: seq, title: sessionTitle(target), err: err}
 	}
 }
 
 func (value model) updateKillDone(message killDoneMsg) (model, tea.Cmd) {
+	// A newer x can arm a different pending kill while this one is still in
+	// flight (e.g. a slow SSH kill). The invariant that wins is "the user's
+	// latest x stays armed": a stale completion (seq mismatch) still reports
+	// its own outcome and still restarts collection (the old session really
+	// did die/fail), but must not clear the newer pending kill or its status.
+	current := value.killSeq == message.seq && value.killPending
+	if !current {
+		return value.restartCollectionKeepingPending()
+	}
 	value.killPending = false
 	value.killTarget = session.Session{}
 	if message.err != nil {
@@ -78,4 +88,15 @@ func (value model) updateKillDone(message killDoneMsg) (model, tea.Cmd) {
 	}
 	value.status = "killed " + message.title
 	return value.restartCollection()
+}
+
+// restartCollectionKeepingPending restarts collection for a stale kill
+// completion without disturbing a newer pending kill: restartCollection
+// otherwise unconditionally clears killPending/killTarget, which would drop
+// the pending kill the user just armed with a later x.
+func (value model) restartCollectionKeepingPending() (model, tea.Cmd) {
+	pending, target, seq := value.killPending, value.killTarget, value.killSeq
+	updated, command := value.restartCollection()
+	updated.killPending, updated.killTarget, updated.killSeq = pending, target, seq
+	return updated, command
 }
