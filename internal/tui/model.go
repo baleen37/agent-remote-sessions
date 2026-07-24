@@ -66,6 +66,7 @@ type model struct {
 	selected       int
 	selectedRef    rowRef
 	groupMode      map[string]groupMode
+	stateFilter    map[session.RuntimeState]bool
 	query          string
 	matched        int
 	searching      bool
@@ -249,6 +250,9 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		if value.query != "" {
 			value.query = ""
 			value.refreshVisible()
+		} else if value.filterActive() {
+			value.stateFilter = nil
+			value.refreshVisible()
 		}
 	case '/':
 		value.searching = true
@@ -306,6 +310,14 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		if len(key.Text) == 1 && key.Text[0] >= '1' && key.Text[0] <= '9' {
 			value.jumpToGroup(int(key.Text[0] - '0'))
 		}
+		switch key.Text {
+		case "!":
+			value.toggleStateFilter(session.RuntimeAttached)
+		case "@":
+			value.toggleStateFilter(session.RuntimeRunning)
+		case "#":
+			value.toggleStateFilter(session.RuntimeSaved)
+		}
 	}
 	return value, nil
 }
@@ -358,10 +370,28 @@ func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 }
 
 func (value *model) refreshVisible() {
-	filtered := filterSessions(value.result.Sessions, value.query, value.deps.LocalTarget)
+	filtered := filterByState(value.result.Sessions, value.stateFilter)
+	filtered = filterSessions(filtered, value.query, value.deps.LocalTarget)
 	value.matched = len(filtered)
 	value.rows = buildRows(filtered, value.groupMode, value.query != "")
 	value.restoreSelection()
+}
+
+// toggleStateFilter flips the given runtime state in the active filter set.
+func (value *model) toggleStateFilter(state session.RuntimeState) {
+	if value.stateFilter == nil {
+		value.stateFilter = make(map[session.RuntimeState]bool)
+	}
+	if value.stateFilter[state] {
+		delete(value.stateFilter, state)
+	} else {
+		value.stateFilter[state] = true
+	}
+	value.refreshVisible()
+}
+
+func (value model) filterActive() bool {
+	return len(value.stateFilter) > 0
 }
 
 func (value *model) restoreSelection() {

@@ -198,6 +198,109 @@ func TestModelNumberKeyWhileSearchingTypesIntoQuery(t *testing.T) {
 	}
 }
 
+func TestModelBangTogglesAttachedFilter(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "!"}))
+	if !model.stateFilter[session.RuntimeAttached] {
+		t.Fatalf("stateFilter after ! = %+v, want attached on", model.stateFilter)
+	}
+	if model.matched != 1 {
+		t.Fatalf("matched after ! filter = %d, want 1 attached session", model.matched)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "!"}))
+	if model.stateFilter[session.RuntimeAttached] {
+		t.Fatalf("stateFilter after second ! = %+v, want attached off", model.stateFilter)
+	}
+	if model.matched != 2 {
+		t.Fatalf("matched after clearing filter = %d, want all sessions back", model.matched)
+	}
+}
+
+func TestModelAtTogglesRunningFilter(t *testing.T) {
+	model := readyModel()
+	model.result.Sessions = manySessions(1)
+	model.refreshVisible()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "@"}))
+	if !model.stateFilter[session.RuntimeRunning] {
+		t.Fatalf("stateFilter after @ = %+v, want running on", model.stateFilter)
+	}
+	if model.matched != 1 {
+		t.Fatalf("matched after @ filter = %d, want only running session", model.matched)
+	}
+}
+
+func TestModelHashTogglesSavedFilter(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "#"}))
+	if !model.stateFilter[session.RuntimeSaved] {
+		t.Fatalf("stateFilter after # = %+v, want saved on", model.stateFilter)
+	}
+	if model.matched != 1 {
+		t.Fatalf("matched after # filter = %d, want 1 saved session", model.matched)
+	}
+}
+
+func TestModelCombinedFiltersShowUnionOfStates(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "!"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "#"}))
+	if model.matched != 2 {
+		t.Fatalf("matched with attached+saved filter = %d, want both sessions", model.matched)
+	}
+}
+
+func TestModelFilterComposesWithSearchQuery(t *testing.T) {
+	nonMatching := readyModel()
+	nonMatching, _ = updateModel(nonMatching, tea.KeyPressMsg(tea.Key{Text: "#"}))
+	nonMatching, _ = updateModel(nonMatching, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	nonMatching, _ = updateModel(nonMatching, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "connection"}))
+	if len(rowSessions(nonMatching.rows)) != 0 || nonMatching.matched != 0 {
+		t.Fatalf("saved filter + non-matching query rows = %+v matched=%d, want none", nonMatching.rows, nonMatching.matched)
+	}
+
+	matching := readyModel()
+	matching, _ = updateModel(matching, tea.KeyPressMsg(tea.Key{Text: "#"}))
+	matching, _ = updateModel(matching, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	matching, _ = updateModel(matching, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "API"}))
+	if len(rowSessions(matching.rows)) != 1 || matching.matched != 1 {
+		t.Fatalf("saved filter + matching query rows = %+v matched=%d, want 1", matching.rows, matching.matched)
+	}
+}
+
+func TestModelEscapeClearsQueryBeforeFilter(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "!"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "connection"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if model.query != "connection" {
+		t.Fatalf("query before escape = %q", model.query)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if model.query != "" {
+		t.Fatalf("query after first escape = %q, want cleared", model.query)
+	}
+	if !model.stateFilter[session.RuntimeAttached] {
+		t.Fatalf("filter cleared by same escape as query: %+v", model.stateFilter)
+	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if model.stateFilter[session.RuntimeAttached] {
+		t.Fatalf("filter after second escape = %+v, want cleared", model.stateFilter)
+	}
+}
+
+func TestModelBangAtHashAreLiteralWhileSearching(t *testing.T) {
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '/'}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "!@#"}))
+	if model.query != "!@#" {
+		t.Fatalf("query while searching = %q, want literal !@#", model.query)
+	}
+	if model.stateFilter[session.RuntimeAttached] || model.stateFilter[session.RuntimeRunning] || model.stateFilter[session.RuntimeSaved] {
+		t.Fatalf("stateFilter mutated while searching literal !@#: %+v", model.stateFilter)
+	}
+}
+
 func TestModelPageKeysMoveByViewportWithoutWrapping(t *testing.T) {
 	model := readyModel()
 	model.result.Sessions = manySessions(30)
