@@ -130,7 +130,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		}
 		lines = append(lines, plain)
 	}
-	lines = append(lines, "", value.mutedText("? / esc / q to close", width))
+	lines = append(lines, "", value.mutedText("● attached · ◐ running · ○ saved", width), value.mutedText("? / esc / q to close", width))
 	margin := strings.Repeat(" ", inset)
 	for index, line := range lines {
 		if line != "" {
@@ -202,7 +202,7 @@ func (value model) renderHeader(row listRow, selected bool, width int) string {
 	}
 	text := fmt.Sprintf("%s %s (%d)", symbol, row.project, row.count)
 	if row.collapsed && row.state != session.RuntimeSaved {
-		text += " " + value.stateText("✻", row.state)
+		text += " " + value.stateText(stateSymbol(row.state), row.state)
 	}
 	padding := rowPadding(width)
 	line := fitLine(cursor+text, width-2*padding)
@@ -412,7 +412,7 @@ func boundedDetailLines(item session.Session, width, height int, now time.Time) 
 func (value model) diagnostics(width int) []string {
 	lines := make([]string, 0, len(value.result.Errors)+len(value.result.Warnings)+1)
 	for _, diagnostic := range value.result.Errors {
-		lines = append(lines, value.errorText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
+		lines = append(lines, value.errorText("✕ "+diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	for _, diagnostic := range value.result.Warnings {
 		lines = append(lines, value.mutedText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
@@ -432,6 +432,17 @@ func diagnosticLine(value output.HostError, localTarget string) string {
 		return fmt.Sprintf("%s (%s)", value.Message, value.Code)
 	}
 	return fmt.Sprintf("%s: %s (%s)", value.Host, value.Message, value.Code)
+}
+
+func stateSymbol(state session.RuntimeState) string {
+	switch state {
+	case session.RuntimeAttached:
+		return "●"
+	case session.RuntimeRunning:
+		return "◐"
+	default:
+		return "○"
+	}
 }
 
 func (value model) stateText(text string, state session.RuntimeState) string {

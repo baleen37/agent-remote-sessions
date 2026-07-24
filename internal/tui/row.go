@@ -140,12 +140,8 @@ func (value model) renderRow(row listRow, selected bool, layout rowLayout) strin
 	if row.last {
 		guide = "└─ "
 	}
-	marker := "∙"
-	if item.Runtime.State != session.RuntimeSaved {
-		marker = "✻"
-	}
 	fields := []string{
-		value.stateText(marker, item.Runtime.State),
+		value.stateText(stateSymbol(item.Runtime.State), item.Runtime.State),
 		column(sessionTitle(item), layout.title, false),
 	}
 	if layout.showProvider {
