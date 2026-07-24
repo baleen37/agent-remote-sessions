@@ -13,6 +13,44 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// TestPreviewPaneShortListStaysWithinTerminalHeight reproduces a bug seen on a
+// real 140x35 terminal with the preview pane on, a short session list, host
+// warnings, and compose active: joinPreview pads the body up to the
+// bounded-layout budget, but the diagnostics budget was computed against the
+// pre-pad body length, so the total line count exceeded value.height and the
+// compose line and footer were pushed off screen.
+func TestPreviewPaneShortListStaysWithinTerminalHeight(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width = 140
+	value.height = 35
+	if !value.previewVisible() {
+		t.Fatal("preview should be visible at 140 columns")
+	}
+	value.result.Warnings = []output.HostError{
+		hostError("one", "warn", "first warning"),
+		hostError("two", "warn", "second warning"),
+		hostError("three", "warn", "third warning"),
+	}
+	value.refreshVisible()
+	value.composing = true
+	value.composeTarget = value.result.Sessions[0]
+	value.compose = "hello"
+
+	view := value.View()
+	content := ansi.Strip(view.Content)
+	if lines := strings.Count(content, "\n") + 1; lines > value.height {
+		t.Fatalf("view height = %d, want <= %d:\n%s", lines, value.height, content)
+	}
+	if !strings.Contains(content, "send to "+sessionTitle(value.composeTarget)+": hello") {
+		t.Fatalf("compose line missing from view:\n%s", content)
+	}
+	if !strings.Contains(content, "enter send") {
+		t.Fatalf("footer missing from view:\n%s", content)
+	}
+}
+
 func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 	model := readyModel()
 	model.width = 120

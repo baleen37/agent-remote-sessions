@@ -72,7 +72,11 @@ func (value model) View() tea.View {
 		fixedHeight := 2 + 1 + len(details) + len(search) + 2
 		body = value.scrolledBody(body, selectedLine, bodyHeight, listWidth)
 		panelHeight = bodyHeight
-		diagnosticHeight := value.height - (fixedHeight + len(body))
+		bodyLen := len(body)
+		if previewShown {
+			bodyLen = panelHeight
+		}
+		diagnosticHeight := value.height - (fixedHeight + bodyLen)
 		if diagnosticHeight < len(diagnostics) {
 			if diagnosticHeight < 0 {
 				diagnosticHeight = 0
