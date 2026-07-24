@@ -41,7 +41,13 @@ func (value model) View() tea.View {
 	}
 	diagnostics := value.diagnostics(width)
 	var search []string
-	if value.query != "" || value.searching {
+	if value.composing {
+		prefix := "send to " + sessionTitle(value.composeTarget) + ": "
+		if !value.noColor {
+			prefix = value.styles.selectedCursor.Render(prefix)
+		}
+		search = append(search, fitLine(prefix+value.compose, width))
+	} else if value.query != "" || value.searching {
 		prefix := "search: "
 		if value.searching {
 			prefix = "/"
@@ -109,6 +115,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		{"! / @ / #", "filter attached / running / saved"},
 		{"p", "toggle preview pane"},
 		{"x", "kill session (3s grace · u undo)"},
+		{"m", "send a line without attaching"},
 		{"enter", "attach session · toggle group"},
 		{"space", "toggle group"},
 		{"r", "refresh"},
@@ -440,7 +447,7 @@ func (value model) diagnostics(width int) []string {
 	}
 	if value.status != "" {
 		status := value.mutedText(value.status, width)
-		if strings.HasPrefix(value.status, "attach failed:") || strings.HasPrefix(value.status, "kill failed:") {
+		if strings.HasPrefix(value.status, "attach failed:") || strings.HasPrefix(value.status, "kill failed:") || strings.HasPrefix(value.status, "send failed:") {
 			status = value.errorText(value.status, width)
 		}
 		lines = append(lines, status)
@@ -511,6 +518,9 @@ func (value model) help(width int) string {
 	if value.searching {
 		return strings.Join([]string{"type to filter", "enter apply", "esc cancel"}, separator)
 	}
+	if value.composing {
+		return strings.Join([]string{"type message", "enter send", "esc cancel"}, separator)
+	}
 	action := "enter attach"
 	if row, ok := value.selectedRow(); ok {
 		switch row.kind {
@@ -522,7 +532,7 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter", "x kill")
+		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter", "x kill", "m msg")
 	}
 	items = append(items, "/ search")
 	if value.query != "" || value.filterActive() {
@@ -544,7 +554,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
+	droppable := []string{"m msg", "x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {
