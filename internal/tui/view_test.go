@@ -35,7 +35,7 @@ func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 
 	content := ansi.Strip(model.View().Content)
 	for _, want := range []string{
-		"> └─ ∙  session 15",
+		"> └─ ○  session 15",
 		"0195f5dc-9e3f-7c26-8000-000000000015",
 		"↑↓/jk move",
 	} {
@@ -104,7 +104,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	for _, identity := range []string{"connection check", "claude", "server", "1d"} {
 		assertSpanForeground(t, row, identity, false)
 	}
-	for _, state := range []string{"✻", "attached(1)"} {
+	for _, state := range []string{"●", "attached(1)"} {
 		assertSpanForeground(t, row, state, true)
 		if styled := model.styles.attached.Render(state); !strings.Contains(row, styled) {
 			t.Fatalf("state %q does not use attached style: %q", state, row)
@@ -195,7 +195,7 @@ func TestViewShowsSelectedCanonicalDetailsAndBoundedDiagnostics(t *testing.T) {
 	content := ansi.Strip(model.View().Content)
 	for _, want := range []string{
 		"/work/ars", "123e4567-e89b-42d3-a456-426614174000", "1d ago",
-		"server: failed", "Claude discovery partial (corrupt)", "status",
+		"✕ server: failed", "Claude discovery partial (corrupt)", "status",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("missing %q: %q", want, content)
@@ -205,6 +205,10 @@ func TestViewShowsSelectedCanonicalDetailsAndBoundedDiagnostics(t *testing.T) {
 		if len(line) > 0 && ansi.StringWidth(line) > model.width {
 			t.Fatalf("line width = %d, want <= %d: %q", ansi.StringWidth(line), model.width, line)
 		}
+	}
+	warning := lineContaining(t, strippedLines(strings.Split(content, "\n")), "Claude discovery partial")
+	if strings.HasPrefix(strings.TrimSpace(strings.Split(content, "\n")[warning]), "✕") {
+		t.Fatalf("warning line should not carry the error prefix: %q", content)
 	}
 }
 
@@ -326,7 +330,7 @@ func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
 	if ansi.Strip(content) != content {
 		t.Fatalf("NO_COLOR emitted ANSI: %q", content)
 	}
-	for _, want := range []string{"> └─ ✻", "attached(1)", "▾ api (1)", "∙"} {
+	for _, want := range []string{"> └─ ●", "attached(1)", "▾ api (1)", "○"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("NO_COLOR missing %q: %q", want, content)
 		}
@@ -343,7 +347,7 @@ func TestViewGroupsSessionsUnderProjectHeaders(t *testing.T) {
 	if arsAt == -1 || apiAt == -1 || arsAt > apiAt {
 		t.Fatalf("headers missing or misordered:\n%s", plain)
 	}
-	if !strings.Contains(plain, "└─ ✻  connection check") {
+	if !strings.Contains(plain, "└─ ●  connection check") {
 		t.Fatalf("missing tree guide session row:\n%s", plain)
 	}
 	if strings.Contains(plain, "Active") || strings.Contains(plain, "Recent") {
@@ -356,7 +360,7 @@ func TestViewCollapsedHeaderShowsCountAndActiveMarker(t *testing.T) {
 	value.width, value.height, value.noColor = 120, 24, true
 	value.toggle("ars")
 	plain := ansi.Strip(value.View().Content)
-	if !strings.Contains(plain, "▸ ars (1) ✻") {
+	if !strings.Contains(plain, "▸ ars (1) ●") {
 		t.Fatalf("collapsed header missing marker:\n%s", plain)
 	}
 	if strings.Contains(plain, "connection check") {
@@ -372,8 +376,8 @@ func TestViewTreeGuidesMarkLastSession(t *testing.T) {
 	value.width, value.height, value.noColor = 120, 24, true
 	value = openAllGroups(value)
 	plain := ansi.Strip(value.View().Content)
-	if !strings.Contains(plain, "├─ ✻  connection check") ||
-		!strings.Contains(plain, "└─ ∙  API repair") {
+	if !strings.Contains(plain, "├─ ●  connection check") ||
+		!strings.Contains(plain, "└─ ○  API repair") {
 		t.Fatalf("guides wrong:\n%s", plain)
 	}
 }
@@ -385,7 +389,7 @@ func TestViewRendersMoreRowForAutoPartialGroups(t *testing.T) {
 	value.refreshVisible()
 	plain := ansi.Strip(value.View().Content)
 	if !strings.Contains(plain, "▾ ars (2)") ||
-		!strings.Contains(plain, "├─ ✻  connection check") ||
+		!strings.Contains(plain, "├─ ●  connection check") ||
 		!strings.Contains(plain, "└─ … 1 more") {
 		t.Fatalf("auto partial group rows wrong:\n%s", plain)
 	}
@@ -604,6 +608,21 @@ func TestViewShowsHumanizedTimestampInDetails(t *testing.T) {
 	}
 }
 
+func TestStateSymbolMapsRuntimeStates(t *testing.T) {
+	for _, testCase := range []struct {
+		state session.RuntimeState
+		want  string
+	}{
+		{session.RuntimeAttached, "●"},
+		{session.RuntimeRunning, "◐"},
+		{session.RuntimeSaved, "○"},
+	} {
+		if got := stateSymbol(testCase.state); got != testCase.want {
+			t.Fatalf("stateSymbol(%q) = %q, want %q", testCase.state, got, testCase.want)
+		}
+	}
+}
+
 func TestHelpOverlayListsBindingsIncludingDetach(t *testing.T) {
 	model := readyModel()
 	model.width, model.height, model.noColor = 120, 24, true
@@ -617,6 +636,16 @@ func TestHelpOverlayListsBindingsIncludingDetach(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("help overlay missing %q: %q", want, content)
 		}
+	}
+}
+
+func TestHelpOverlayShowsStateSymbolLegend(t *testing.T) {
+	model := readyModel()
+	model.width, model.height, model.noColor = 120, 24, true
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "● attached · ◐ running · ○ saved") {
+		t.Fatalf("help overlay missing state symbol legend: %q", content)
 	}
 }
 
