@@ -68,21 +68,9 @@ func (value model) View() tea.View {
 	panelHeight := len(body)
 	if value.height > 0 {
 		var bodyHeight int
-		details, bodyHeight = value.boundedLayout(details, selected, len(search), width)
-		fixedHeight := 2 + 1 + len(details) + len(search) + 2
+		details, diagnostics, bodyHeight = value.boundedLayout(details, selected, diagnostics, len(search), width)
 		body = value.scrolledBody(body, selectedLine, bodyHeight, listWidth)
 		panelHeight = bodyHeight
-		bodyLen := len(body)
-		if previewShown {
-			bodyLen = panelHeight
-		}
-		diagnosticHeight := value.height - (fixedHeight + bodyLen)
-		if diagnosticHeight < len(diagnostics) {
-			if diagnosticHeight < 0 {
-				diagnosticHeight = 0
-			}
-			diagnostics = diagnostics[:diagnosticHeight]
-		}
 	}
 	for index, detail := range details {
 		details[index] = value.mutedText(detail, width)
@@ -154,18 +142,38 @@ func (value model) helpOverlay(inset, width int) tea.View {
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
 }
 
-// boundedLayout bounds the detail lines to the terminal height and returns
-// them with the height left for the session list. movePage derives its page
-// step from the same computation so paging matches one visible screen.
-func (value model) boundedLayout(details []string, selected session.Session, searchLines, width int) ([]string, int) {
+// boundedLayout bounds the detail and diagnostics lines to the terminal
+// height and returns them alongside the height left for the session list.
+// movePage derives its page step from the same computation so paging matches
+// one visible screen.
+//
+// Diagnostics (errors, then warnings, then the status line last) compete
+// with the body for the same budget instead of only getting body leftovers:
+// otherwise a full-screen body (a long list, or a short one padded by the
+// preview pane) starves diagnostics to zero and the status line kill/send
+// rely on for feedback never renders. When starved, diagnostics are
+// truncated from the front so the status line — the last element — is the
+// last one dropped, and at least one line is reserved for it up front so it
+// survives unless height is too small to fit anything past the fixed frame.
+func (value model) boundedLayout(details []string, selected session.Session, diagnostics []string, searchLines, width int) ([]string, []string, int) {
 	if value.height <= 0 {
-		return details, len(value.rows)
+		return details, diagnostics, len(value.rows)
 	}
-	detailHeight := value.height - (2 + 1 + 1 + searchLines + 2)
+	statusFloor := 0
+	if value.status != "" {
+		statusFloor = 1
+	}
+	detailHeight := value.height - (2 + 1 + 1 + statusFloor + searchLines + 2)
 	if len(details) > detailHeight {
 		details = boundedDetailLines(selected, width, detailHeight, value.deps.Now())
 	}
-	return details, max(1, value.height-(2+1+len(details)+searchLines+2))
+	diagnosticHeight := value.height - (2 + 1 + len(details) + 1 + searchLines + 2)
+	diagnosticHeight = max(diagnosticHeight, statusFloor)
+	if len(diagnostics) > diagnosticHeight {
+		diagnostics = diagnostics[len(diagnostics)-diagnosticHeight:]
+	}
+	bodyHeight := max(1, value.height-(2+1+len(details)+len(diagnostics)+searchLines+2))
+	return details, diagnostics, bodyHeight
 }
 
 func (value model) sessionLines(width int) ([]string, int) {
