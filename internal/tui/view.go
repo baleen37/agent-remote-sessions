@@ -535,5 +535,32 @@ func (value model) help(width int) string {
 		items = append(items, label)
 	}
 	items = append(items, action, "r refresh", "q quit", "? help")
-	return strings.Join(items, separator)
+	return joinFooterItems(items, separator, width)
+}
+
+// joinFooterItems joins footer hints with separator, dropping the lowest
+// priority droppable hints (in this order) until the line fits width.
+// Higher priority items (navigation, search, quit, help, etc.) are never
+// dropped, so on very narrow terminals the line may still overflow.
+func joinFooterItems(items []string, separator string, width int) string {
+	droppable := []string{"!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
+	line := strings.Join(items, separator)
+	for _, drop := range droppable {
+		if lipgloss.Width(line) <= width {
+			break
+		}
+		items = removeItem(items, drop)
+		line = strings.Join(items, separator)
+	}
+	return line
+}
+
+func removeItem(items []string, target string) []string {
+	filtered := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != target {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }

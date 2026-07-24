@@ -697,7 +697,7 @@ func TestHelpOverlayFitsNarrowTerminal(t *testing.T) {
 
 func TestHelpOverlayAndFooterAdvertiseStateFilter(t *testing.T) {
 	model := readyModel()
-	model.width = 120
+	model.width = 140
 	content := ansi.Strip(model.help(model.contentWidth()))
 	if !strings.Contains(content, "!@# filter") {
 		t.Fatalf("footer help missing state filter hint: %q", content)
@@ -737,10 +737,40 @@ func TestHelpOverlayAndFooterAdvertiseGroupJump(t *testing.T) {
 
 func TestFooterHelpIncludesHelpHint(t *testing.T) {
 	model := readyModel()
-	model.width = 140
+	model.width = 120
 	content := ansi.Strip(model.View().Content)
 	if !strings.Contains(content, "? help") {
 		t.Fatalf("footer help missing ? help hint: %q", content)
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "? help") && strings.Contains(line, "…") {
+			t.Fatalf("footer line truncated instead of dropping lower priority hints: %q", line)
+		}
+	}
+}
+
+func TestFooterAtWideWidthShowsAllHints(t *testing.T) {
+	model := readyModel()
+	model.width = 140
+	content := ansi.Strip(model.View().Content)
+	for _, want := range []string{"!@# filter", "1-9 group", "g/G top/end", "h/l fold", "? help"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("wide footer missing %q: %q", want, content)
+		}
+	}
+}
+
+func TestFooterAtCommonWidthDropsLowPriorityHintsBeforeHighPriorityOnes(t *testing.T) {
+	model := readyModel()
+	model.width = 120
+	content := ansi.Strip(model.View().Content)
+	if strings.Contains(content, "!@# filter") {
+		t.Fatalf("footer at width 120 should drop !@# filter to make room: %q", content)
+	}
+	for _, want := range []string{"? help", "q quit", "r refresh", "enter attach", "/ search", "↑↓/jk move"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("footer at width 120 missing high priority hint %q: %q", want, content)
+		}
 	}
 }
 
