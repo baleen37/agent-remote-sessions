@@ -92,7 +92,7 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 		if !started || harness.collections != 2 || harness.sshRunner.uploadCount() != 2 {
 			t.Fatalf("started/collections/uploads = %v/%d/%d", started, harness.collections, harness.sshRunner.uploadCount())
 		}
-		if want := []string{"has-session", "bind-key", "set-option", "attach-session"}; !slices.Equal(harness.runtimeRunner.attachCommands(), want) {
+		if want := []string{"has-session", "bind-key", "set-option", "set-option", "attach-session"}; !slices.Equal(harness.runtimeRunner.attachCommands(), want) {
 			t.Fatalf("local attach commands = %v, want %v", harness.runtimeRunner.attachCommands(), want)
 		}
 		if harness.sshRunner.sawUnexpectedCommand() {

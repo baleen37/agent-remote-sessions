@@ -84,6 +84,24 @@ func TestRemoteAttachShowsDetachHintOnStatusLineBeforeAttach(t *testing.T) {
 	if !strings.Contains(arsruntime.DetachHint, "ctrl-q") {
 		t.Fatalf("shared detach hint does not name the key: %q", arsruntime.DetachHint)
 	}
+	if !strings.Contains(arsruntime.DetachHint, "tmux -L "+arsruntime.SocketName) {
+		t.Fatalf("shared detach hint does not count the ars socket's own sessions: %q", arsruntime.DetachHint)
+	}
+}
+
+func TestRemoteAttachSetsStatusIntervalBeforeAttach(t *testing.T) {
+	command, err := NewAttachCommand(context.Background(), "devbox", remoteAttachedSession(), remoteClaudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := command.command.Args[3]
+	interval := "set-option -g status-interval 5"
+	if !strings.Contains(script, interval) {
+		t.Fatalf("script missing status-interval %q:\n%s", interval, script)
+	}
+	if intervalAt, attachAt := strings.Index(script, interval), strings.Index(script, "attach-session"); intervalAt == -1 || intervalAt > attachAt {
+		t.Fatalf("status-interval is not set before attach:\n%s", script)
+	}
 }
 
 func TestRemoteAttachScriptRechecksCreateRaceAndUsesExactTargets(t *testing.T) {

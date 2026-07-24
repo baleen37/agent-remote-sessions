@@ -37,6 +37,7 @@ func TestAttachCommandCreatesBindsAndAttachesOnce(t *testing.T) {
 		tmuxCommand("new-session", "-d", "-s", key, "-c", item.CWD, "claude", "--resume", item.NativeID),
 		tmuxCommand("bind-key", "-n", "C-q", "detach-client"),
 		tmuxCommand("set-option", "-g", "status-right", DetachHint),
+		tmuxCommand("set-option", "-g", "status-interval", "5"),
 		tmuxCommand("attach-session", "-d", "-t", "="+key),
 	}
 	if !reflect.DeepEqual(runner.commands, want) {
@@ -64,7 +65,7 @@ func TestAttachCommandShowsDetachHintOnStatusLine(t *testing.T) {
 
 	var hint Command
 	for _, c := range runner.commands {
-		if c.Args[4] == "set-option" {
+		if c.Args[4] == "set-option" && c.Args[6] == "status-right" {
 			hint = c
 		}
 	}
@@ -77,10 +78,42 @@ func TestAttachCommandShowsDetachHintOnStatusLine(t *testing.T) {
 	if !strings.Contains(DetachHint, "ctrl-q") || !strings.Contains(DetachHint, "detach") {
 		t.Fatalf("detach hint does not name the key: %q", DetachHint)
 	}
+	if !strings.Contains(DetachHint, "tmux -L "+SocketName) {
+		t.Fatalf("detach hint does not count the ars socket's own sessions: %q", DetachHint)
+	}
 	// The hint must be set before attach so it is visible from the first frame.
 	names := runner.commandNames()
 	if slices.Index(names, "set-option") > slices.Index(names, "attach-session") {
 		t.Fatalf("status hint set after attach: %v", names)
+	}
+}
+
+func TestAttachCommandSetsStatusIntervalBeforeAttach(t *testing.T) {
+	runner := &attachRunner{hasErrors: []error{nil}}
+	command, err := NewAttachCommand(context.Background(), runner, attachedSession(), claudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.SetStdin(strings.NewReader(""))
+	command.SetStdout(io.Discard)
+	command.SetStderr(io.Discard)
+	if err := command.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := tmuxCommand("set-option", "-g", "status-interval", "5")
+	names := runner.commandNames()
+	intervalIndex := -1
+	for index, command := range runner.commands {
+		if reflect.DeepEqual(command, want) {
+			intervalIndex = index
+		}
+	}
+	if intervalIndex == -1 {
+		t.Fatalf("commands = %#v, want to contain %#v", runner.commands, want)
+	}
+	if intervalIndex > slices.Index(names, "attach-session") {
+		t.Fatalf("status-interval not set before attach: %v", names)
 	}
 }
 
@@ -100,7 +133,7 @@ func TestAttachCommandDoesNotRestartExistingRuntime(t *testing.T) {
 	if slices.Contains(runner.commandNames(), "new-session") {
 		t.Fatal("runtime restarted")
 	}
-	if want := []string{"has-session", "bind-key", "set-option", "attach-session"}; !slices.Equal(runner.commandNames(), want) {
+	if want := []string{"has-session", "bind-key", "set-option", "set-option", "attach-session"}; !slices.Equal(runner.commandNames(), want) {
 		t.Fatalf("commands = %v, want %v", runner.commandNames(), want)
 	}
 }
@@ -124,7 +157,7 @@ func TestAttachCommandRechecksAfterConcurrentCreate(t *testing.T) {
 	if err := command.Run(); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	want := []string{"has-session", "new-session", "has-session", "bind-key", "set-option", "attach-session"}
+	want := []string{"has-session", "new-session", "has-session", "bind-key", "set-option", "set-option", "attach-session"}
 	if !slices.Equal(runner.commandNames(), want) {
 		t.Fatalf("commands = %v, want %v", runner.commandNames(), want)
 	}

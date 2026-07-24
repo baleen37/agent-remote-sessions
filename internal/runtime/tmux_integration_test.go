@@ -36,6 +36,21 @@ func TestDisposableTmuxPreservesProviderAfterDetach(t *testing.T) {
 	fixture.defaultTmux.assertUnchanged(t)
 }
 
+func TestDisposableTmuxSetsStatusOptionsWhileAttached(t *testing.T) {
+	fixture := newDisposableTmuxFixture(t)
+
+	statusRight, statusInterval := fixture.attachAndReadStatusOptions(t)
+
+	if statusRight != DetachHint {
+		t.Fatalf("status-right = %q, want %q", statusRight, DetachHint)
+	}
+	if statusInterval != "5" {
+		t.Fatalf("status-interval = %q, want %q", statusInterval, "5")
+	}
+	fixture.cleanupARSServer(t)
+	fixture.defaultTmux.assertUnchanged(t)
+}
+
 func TestOwnedTmuxCleanupReportsKillError(t *testing.T) {
 	want := errors.New("kill failed")
 	err := cleanupOwnedTmux(context.Background(), func(context.Context) error { return want }, "unused", 0)
@@ -161,6 +176,63 @@ func (fixture *disposableTmuxFixture) attachAndDetach(t *testing.T) int {
 		t.Fatal("attach command did not return after Ctrl+Q")
 	}
 	return beforePID
+}
+
+// attachAndReadStatusOptions attaches, reads the live status-right and
+// status-interval options off the ars tmux server, then detaches so the
+// caller can still run cleanup.
+func (fixture *disposableTmuxFixture) attachAndReadStatusOptions(t *testing.T) (statusRight, statusInterval string) {
+	t.Helper()
+	command, err := NewAttachCommand(context.Background(), fixture.runner, fixture.item, provider.ResumeSpec{
+		Executable: "claude",
+		Args:       []string{"--resume", fixture.item.NativeID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = terminal.Close()
+	})
+	command.SetStdin(terminal)
+	command.SetStdout(terminal)
+	command.SetStderr(terminal)
+	done := make(chan error, 1)
+	go func() { done <- command.Run() }()
+	var output synchronizedBuffer
+	go func() { _, _ = io.Copy(&output, master) }()
+
+	waitForProviderPIDOrAttachExit(t, fixture.pidPath, done, &output)
+	waitForAttachedClients(t, fixture.runner, fixture.item, 1)
+
+	statusRight = fixture.showOption(t, "status-right")
+	statusInterval = fixture.showOption(t, "status-interval")
+
+	if _, err := master.Write([]byte{0x11}); err != nil {
+		t.Fatalf("write Ctrl+Q: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("attach command after Ctrl+Q: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach command did not return after Ctrl+Q")
+	}
+	return statusRight, statusInterval
+}
+
+func (fixture *disposableTmuxFixture) showOption(t *testing.T, name string) string {
+	t.Helper()
+	output, err := fixture.runner.Output(context.Background(), arsTMUXCommand("show-options", "-g", "-v", name))
+	if err != nil {
+		t.Fatalf("show-options -g %s: %v", name, err)
+	}
+	return strings.TrimSuffix(string(output), "\n")
 }
 
 type synchronizedBuffer struct {

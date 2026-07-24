@@ -9,10 +9,14 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
-// DetachHint is the status-right override shown while attached: the ars detach
-// key followed by the usual tmux clock. Local and remote attach share it so
-// the status line reads the same everywhere.
-const DetachHint = "ctrl-q detach  %H:%M "
+// DetachHint is the status-right override shown while attached: a live count
+// of ars sessions on this host's ars socket, the detach key, and the usual
+// tmux clock. The count is a tmux `#()` shell interpolation, refreshed every
+// status-interval seconds by the tmux server rendering the status line, so it
+// always reports that host's own ars sessions with no daemon and no
+// local/remote branching. Local and remote attach share it so the status line
+// reads the same everywhere.
+const DetachHint = "#(TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp tmux -L " + SocketName + " -f /dev/null list-sessions 2>/dev/null | wc -l | tr -d ' ') ars · ctrl-q detach  %H:%M "
 
 type AttachCommand struct {
 	ctx    context.Context
@@ -71,6 +75,9 @@ func (command *AttachCommand) Run() error {
 	if err := command.runner.Run(command.ctx, showDetachHint(), nil, io.Discard, command.stderr); err != nil {
 		return fmt.Errorf("show detach hint: %w", err)
 	}
+	if err := command.runner.Run(command.ctx, setStatusInterval(), nil, io.Discard, command.stderr); err != nil {
+		return fmt.Errorf("set status interval: %w", err)
+	}
 	return command.runner.Run(
 		command.ctx,
 		attachSession(name),
@@ -100,6 +107,12 @@ func bindDetach() Command {
 // status-right reuses space the user can see the whole session.
 func showDetachHint() Command {
 	return arsTMUXCommand("set-option", "-g", "status-right", DetachHint)
+}
+
+// setStatusInterval speeds up status-right refreshes so the live session
+// count in DetachHint stays current, rather than the tmux default of 15s.
+func setStatusInterval() Command {
+	return arsTMUXCommand("set-option", "-g", "status-interval", "5")
 }
 
 func attachSession(name string) Command {
