@@ -13,6 +13,145 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// TestPreviewPaneShortListStaysWithinTerminalHeight reproduces a bug seen on a
+// real 140x35 terminal with the preview pane on, a short session list, host
+// warnings, and compose active: joinPreview pads the body up to the
+// bounded-layout budget, but the diagnostics budget was computed against the
+// pre-pad body length, so the total line count exceeded value.height and the
+// compose line and footer were pushed off screen.
+func TestPreviewPaneShortListStaysWithinTerminalHeight(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width = 140
+	value.height = 35
+	if !value.previewVisible() {
+		t.Fatal("preview should be visible at 140 columns")
+	}
+	value.result.Warnings = []output.HostError{
+		hostError("one", "warn", "first warning"),
+		hostError("two", "warn", "second warning"),
+		hostError("three", "warn", "third warning"),
+	}
+	value.refreshVisible()
+	value.composing = true
+	value.composeTarget = value.result.Sessions[0]
+	value.compose = "hello"
+
+	view := value.View()
+	content := ansi.Strip(view.Content)
+	if lines := strings.Count(content, "\n") + 1; lines > value.height {
+		t.Fatalf("view height = %d, want <= %d:\n%s", lines, value.height, content)
+	}
+	if !strings.Contains(content, "send to "+sessionTitle(value.composeTarget)+": hello") {
+		t.Fatalf("compose line missing from view:\n%s", content)
+	}
+	if !strings.Contains(content, "enter send") {
+		t.Fatalf("footer missing from view:\n%s", content)
+	}
+}
+
+// longSessionList returns enough attached (non-collapsing), distinctly
+// grouped sessions to fill any reasonable terminal height, so bodyHeight
+// consumes the entire body budget and diagnostics have no leftover space
+// unless the layout explicitly reserves it for them.
+func longSessionList(count int) []session.Session {
+	sessions := make([]session.Session, 0, count)
+	for index := range count {
+		item := twoSessions()[1]
+		item.NativeID = fmt.Sprintf("0195f5dc-9e3f-7c26-8000-%012d", index)
+		item.Title = fmt.Sprintf("session %02d", index)
+		item.CWD = fmt.Sprintf("/work/project-%02d", index)
+		item.Runtime = session.Runtime{State: session.RuntimeAttached, AttachedClients: 1}
+		sessions = append(sessions, item)
+	}
+	return sessions
+}
+
+// TestStatusLineSurvivesPreviewPaneWithLongList reproduces the starvation the
+// preview-pane height fix exposed: joinPreview makes panelHeight consume the
+// entire body budget, so diagnosticHeight (leftover after body) is always 0
+// and the status line (which kill/send rely on for feedback) never renders
+// while the preview pane is on, even though the terminal has 35 rows.
+func TestStatusLineSurvivesPreviewPaneWithLongList(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width = 140
+	value.height = 35
+	value.result.Sessions = longSessionList(40)
+	value.refreshVisible()
+	if !value.previewVisible() {
+		t.Fatal("preview should be visible at 140 columns")
+	}
+	value.result.Warnings = []output.HostError{
+		hostError("one", "warn", "first warning"),
+		hostError("two", "warn", "second warning"),
+	}
+	value.status = "killing session 00 in 3s · u undo"
+	value.refreshVisible()
+
+	content := ansi.Strip(value.View().Content)
+	if lines := strings.Count(content, "\n") + 1; lines > value.height {
+		t.Fatalf("view height = %d, want <= %d:\n%s", lines, value.height, content)
+	}
+	if !strings.Contains(content, value.status) {
+		t.Fatalf("status line missing from view:\n%s", content)
+	}
+	if _, ok := value.selectedRow(); !ok {
+		t.Fatal("no selected row")
+	}
+}
+
+// TestStatusLineSurvivesLongListWithoutPreview is the same starvation but
+// without the preview pane: a long list alone already consumes the whole
+// body budget pre-existing this fix, so the status line was never visible.
+func TestStatusLineSurvivesLongListWithoutPreview(t *testing.T) {
+	value := readyModel()
+	value.width = 120
+	value.height = 24
+	value.result.Sessions = longSessionList(40)
+	value.refreshVisible()
+	value.status = "no live session to kill"
+
+	content := ansi.Strip(value.View().Content)
+	if lines := strings.Count(content, "\n") + 1; lines > value.height {
+		t.Fatalf("view height = %d, want <= %d:\n%s", lines, value.height, content)
+	}
+	if !strings.Contains(content, value.status) {
+		t.Fatalf("status line missing from view:\n%s", content)
+	}
+}
+
+// TestStatusLineSurvivesExtremeStarvation forces a tiny terminal with several
+// warnings and a status: the status line must still win the last kept
+// diagnostics slot, the body must still render at least the selected row,
+// and the frame must stay within height.
+func TestStatusLineSurvivesExtremeStarvation(t *testing.T) {
+	value := readyModel()
+	value.width = 120
+	value.height = 8
+	value.result.Sessions = longSessionList(40)
+	value.refreshVisible()
+	value.result.Warnings = []output.HostError{
+		hostError("one", "warn", "first warning"),
+		hostError("two", "warn", "second warning"),
+		hostError("three", "warn", "third warning"),
+	}
+	value.status = "sent to session 00"
+
+	content := ansi.Strip(value.View().Content)
+	if lines := strings.Count(content, "\n") + 1; lines > value.height {
+		t.Fatalf("view height = %d, want <= %d:\n%s", lines, value.height, content)
+	}
+	if !strings.Contains(content, value.status) {
+		t.Fatalf("status line missing from view under starvation:\n%s", content)
+	}
+	if _, ok := value.selectedRow(); !ok {
+		t.Fatal("no selected row")
+	}
+}
+
 func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 	model := readyModel()
 	model.width = 120

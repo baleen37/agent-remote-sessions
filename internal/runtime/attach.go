@@ -101,10 +101,11 @@ func bindDetach() Command {
 	return arsTMUXCommand("bind-key", "-n", "C-q", "detach-client")
 }
 
-// showDetachHint keeps a persistent "ctrl-q detach" note on the tmux status
-// line, since the detach binding lives in tmux rather than ars and is
-// otherwise invisible. The default status line is already on, so overriding
-// status-right reuses space the user can see the whole session.
+// showDetachHint keeps a persistent "ctrl-q detach" note and the live ars
+// session count on the tmux status line, since the detach binding lives in
+// tmux rather than ars and is otherwise invisible. The default status line is
+// already on, so overriding status-right reuses space the user can see the
+// whole session.
 func showDetachHint() Command {
 	return arsTMUXCommand("set-option", "-g", "status-right", DetachHint)
 }

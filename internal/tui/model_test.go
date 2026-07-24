@@ -75,6 +75,28 @@ func TestModelInitialCollectionNavigatesFiltersAndAttaches(t *testing.T) {
 	}
 }
 
+// TestPageStepShrinksWhileComposingLikeSearching mirrors how the search-slot
+// line shrinks pageStep while searching: View() renders the same search-slot
+// line for compose mode (view.go), so pageStep must count it too.
+func TestPageStepShrinksWhileComposingLikeSearching(t *testing.T) {
+	value := readyModel()
+	value.width, value.height = 120, 24
+
+	base := value.pageStep()
+
+	searchingValue := value
+	searchingValue.searching = true
+	if step := searchingValue.pageStep(); step != base-1 {
+		t.Fatalf("pageStep while searching = %d, want %d", step, base-1)
+	}
+
+	composingValue := value
+	composingValue.composing = true
+	if step := composingValue.pageStep(); step != base-1 {
+		t.Fatalf("pageStep while composing = %d, want %d", step, base-1)
+	}
+}
+
 // collectionFrom drains a refresh command into its collectUpdateMsg. Refresh
 // batches the collection with a spinner tick, so the batch children run
 // concurrently and the first collectUpdateMsg wins over the slow tick.

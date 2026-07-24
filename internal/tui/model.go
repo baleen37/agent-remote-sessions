@@ -618,7 +618,8 @@ func (value model) pageStep() int {
 	if value.query != "" || value.searching || value.composing {
 		searchLines = 1
 	}
-	_, bodyHeight := value.boundedLayout(details, selected, searchLines, width)
+	diagnostics := value.diagnostics(width)
+	_, _, bodyHeight := value.boundedLayout(details, selected, diagnostics, searchLines, width)
 	return max(1, bodyHeight)
 }
 
