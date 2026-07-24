@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	arsruntime "github.com/baleen37/agent-remote-sessions/internal/runtime"
@@ -50,4 +51,26 @@ func capturePaneCommand(name string) string {
 	return "if " + tmux + " has-session -t " + sessionTarget + " >/dev/null 2>&1; then " +
 		tmux + " capture-pane -p -t " + paneTarget + "; else " +
 		"printf '%s\\n' '" + noLivePaneMarker + "'; fi"
+}
+
+// KillSession terminates an ars-managed tmux session on a remote host. It is
+// an on-demand action for the TUI kill key and is never part of collection.
+func KillSession(ctx context.Context, runner Runner, target, provider, nativeID string) error {
+	if runner == nil {
+		return fmt.Errorf("SSH runner is nil")
+	}
+	name := arsruntime.Key(provider, nativeID)
+	stderr := newBoundedBuffer(stderrOutputLimit)
+	runErr := runner.Run(ctx, "ssh", collectionSSHArgs(target, defaultConnectTimeout, remoteShellCommand(killSessionCommand(name))), nil, io.Discard, stderr)
+	if runErr != nil {
+		return commandError("SSH kill-session", runErr, stderr)
+	}
+	return nil
+}
+
+func killSessionCommand(name string) string {
+	tmux := tmuxShellPrefix()
+	// No trailing colon: kill-session targets the whole session, not a pane.
+	sessionTarget := singleQuote("=" + name)
+	return tmux + " kill-session -t " + sessionTarget
 }

@@ -128,6 +128,16 @@ func main() {
 					}
 					return ssh.CapturePane(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID)
 				},
+				Kill: func(ctx context.Context, item session.Session) error {
+					host, ok := hostsByTarget[item.Host]
+					if !ok {
+						return fmt.Errorf("session host is not selected")
+					}
+					if host.Local {
+						return runtime.KillSession(ctx, runtimeRunner, string(item.Provider), item.NativeID)
+					}
+					return ssh.KillSession(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID)
+				},
 				LocalTarget: app.LocalhostTarget,
 			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},

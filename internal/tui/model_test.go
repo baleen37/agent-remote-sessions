@@ -889,6 +889,7 @@ func readyModel() model {
 	deps := Dependencies{
 		Collect:     staticCollect(result),
 		Attach:      func(context.Context, session.Session) (ExecCommand, error) { return &fakeExecCommand{}, nil },
+		Kill:        func(context.Context, session.Session) error { return nil },
 		LocalTarget: "localhost",
 		Now:         func() time.Time { return time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC) },
 		NoColor:     true,
