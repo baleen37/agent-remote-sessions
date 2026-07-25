@@ -26,10 +26,10 @@ func FuzzDecode(f *testing.F) {
 			return
 		}
 
-		begin := []byte("ARS/2 BEGIN " + testNonce + "\n")
-		end := []byte(fmt.Sprintf("ARS/2 END %s %d\n", testNonce, len(discovered)))
+		begin := []byte("ARS/3 BEGIN " + testNonce + "\n")
+		end := []byte("ARS/3 END " + testNonce + "\n")
 		beginAt := bytes.Index(input, begin)
-		if beginAt < 0 || !bytes.Equal(input[len(input)-len(end):], end) {
+		if beginAt < 0 || len(input) < len(end) || !bytes.Equal(input[len(input)-len(end):], end) {
 			t.Fatal("Decode() accepted an incomplete envelope")
 		}
 		if err := successfulDecodeSemantics(discovered, results, report); err != nil {
@@ -142,11 +142,12 @@ func fuzzSeeds(t testing.TB) [][]byte {
 	t.Helper()
 	limits := DefaultLimits()
 	valid := validTranscript(t)
+	progressive := encodeStream(t, limits, recentProtocolSnapshot(), completeProtocolSnapshot())
 	candidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	line := sessionLine(t, candidate)
 
 	var tooMany bytes.Buffer
-	tooMany.WriteString("ARS/2 BEGIN " + testNonce + "\n")
+	tooMany.WriteString("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"snapshot\",\"phase\":\"complete\"}\n")
 	for range limits.Sessions + 1 {
 		tooMany.Write(line)
 	}
@@ -155,47 +156,60 @@ func fuzzSeeds(t testing.TB) [][]byte {
 	candidate.Title = strings.Repeat("t", session.MaxTitleBytes)
 	largeLine := sessionLine(t, candidate)
 	var tooLarge bytes.Buffer
-	tooLarge.WriteString("ARS/2 BEGIN " + testNonce + "\n")
+	tooLarge.WriteString("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"snapshot\",\"phase\":\"complete\"}\n")
 	for tooLarge.Len() <= int(limits.TotalBytes) {
 		tooLarge.Write(largeLine)
 	}
 
 	invalidCandidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	invalidCandidate.CWD = "relative/path"
-	begin := []byte("ARS/2 BEGIN " + testNonce)
-	end := []byte("ARS/2 END " + testNonce + " 2")
+	begin := []byte("ARS/3 BEGIN " + testNonce)
+	end := []byte("ARS/3 END " + testNonce)
 	empty := rawTranscript(t, nil, []provider.Result{
 		{Provider: session.Claude, Status: provider.OK},
 		{Provider: session.Codex, Status: provider.OK},
 	})
-	emptyEnd := []byte("ARS/2 END " + testNonce + " 0")
+	snapshotEnd := []byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":2}")
+	emptySnapshotEnd := []byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":0}")
+	recent := rawSnapshot(t, recentProtocolSnapshot())
+	complete := rawSnapshot(t, completeProtocolSnapshot())
 	seeds := [][]byte{
 		valid,
+		progressive,
 		bytes.TrimSuffix(valid, []byte{'\n'}),
 		bytes.ReplaceAll(valid, []byte{'\n'}, []byte{'\r', '\n'}),
 		bytes.Replace(valid, begin, append([]byte{' '}, begin...), 1),
-		bytes.Replace(valid, begin, []byte("ARS/2\tBEGIN\t"+testNonce), 1),
-		bytes.Replace(valid, begin, []byte("ARS/2  BEGIN "+testNonce), 1),
+		bytes.Replace(valid, begin, []byte("ARS/3\tBEGIN\t"+testNonce), 1),
+		bytes.Replace(valid, begin, []byte("ARS/3  BEGIN "+testNonce), 1),
 		bytes.Replace(valid, begin, append(append([]byte(nil), begin...), ' '), 1),
 		bytes.Replace(valid, end, append([]byte{' '}, end...), 1),
-		bytes.Replace(valid, end, []byte("ARS/2\tEND\t"+testNonce+"\t2"), 1),
-		bytes.Replace(valid, end, []byte("ARS/2  END "+testNonce+" 2"), 1),
+		bytes.Replace(valid, end, []byte("ARS/3\tEND\t"+testNonce), 1),
+		bytes.Replace(valid, end, []byte("ARS/3  END "+testNonce), 1),
 		bytes.Replace(valid, end, append(append([]byte(nil), end...), ' '), 1),
-		bytes.Replace(valid, end, []byte("ARS/2 END "+testNonce+" +2"), 1),
-		bytes.Replace(valid, end, []byte("ARS/2 END "+testNonce+" 02"), 1),
-		bytes.Replace(empty, emptyEnd, []byte("ARS/2 END "+testNonce+" -0"), 1),
-		[]byte("ARS/2 BEGIN ffffffffffffffffffffffffffffffff\n"),
-		[]byte("ARS/2 BEGIN\n"),
-		[]byte("ARS/1 BEGIN " + testNonce + "\n"),
-		[]byte("ARS/2 BEGIN " + testNonce + "\n{\"type\":\"prompt\"}\n"),
-		append([]byte("ARS/2 BEGIN "+testNonce+"\n"), 0xff),
-		[]byte("ARS/2 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"),
-		[]byte(strings.Repeat("x\n", int(limits.StartupBytes/2)+1) + "ARS/2 BEGIN " + testNonce + "\n"),
+		bytes.Replace(valid, snapshotEnd, []byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":+2}"), 1),
+		bytes.Replace(valid, snapshotEnd, []byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":02}"), 1),
+		bytes.Replace(empty, emptySnapshotEnd, []byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":-0}"), 1),
+		[]byte("ARS/3 BEGIN ffffffffffffffffffffffffffffffff\n"),
+		[]byte("ARS/3 BEGIN\n"),
+		[]byte("ARS/2 BEGIN " + testNonce + "\n"),
+		[]byte("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"prompt\"}\n"),
+		[]byte("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"snapshot\",\"phase\":\"unknown\"}\n"),
+		[]byte("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"snapshot\",\"phase\":\"recent\",\"extra\":true}\n"),
+		bytes.Replace(valid, snapshotEnd,
+			[]byte("{\"type\":\"snapshot_end\",\"phase\":\"recent\",\"sessions\":2}"), 1),
+		bytes.Replace(valid, snapshotEnd,
+			[]byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":2,\"extra\":true}"), 1),
+		rawStream(complete, recent),
+		rawStream(recent, recent, complete),
+		rawStream(complete, complete),
+		append([]byte("ARS/3 BEGIN "+testNonce+"\n"), 0xff),
+		[]byte("ARS/3 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"),
+		[]byte(strings.Repeat("x\n", int(limits.StartupBytes/2)+1) + "ARS/3 BEGIN " + testNonce + "\n"),
 		tooLarge.Bytes(),
 		tooMany.Bytes(),
-		valid[:bytes.LastIndex(valid, []byte("ARS/2 END"))],
-		bytes.Replace(valid, []byte("ARS/2 END "+testNonce+" 2"), []byte("ARS/2 END "+testNonce+" 1"), 1),
-		append([]byte("ARS/2 BEGIN "+testNonce+"\n"), sessionLine(t, invalidCandidate)...),
+		valid[:bytes.LastIndex(valid, []byte("ARS/3 END"))],
+		bytes.Replace(valid, snapshotEnd, []byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":1}"), 1),
+		append([]byte("ARS/3 BEGIN "+testNonce+"\n{\"type\":\"snapshot\",\"phase\":\"complete\"}\n"), sessionLine(t, invalidCandidate)...),
 	}
 	for _, state := range []session.Runtime{
 		{State: session.RuntimeSaved},
