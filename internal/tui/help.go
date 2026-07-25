@@ -17,6 +17,7 @@ const (
 	helpSessionRow
 	helpMoreRow
 	helpPreview
+	helpFullscreen
 	helpKillPending
 	helpFilterActive
 )
@@ -61,6 +62,7 @@ var helpBindings = []helpBinding{
 		featured:       []helpContext{helpPreview},
 	},
 	{key: "f", text: "fullscreen preview", featured: []helpContext{helpPreview}},
+	{key: "j / k · PgUp / PgDn · Ctrl+U / Ctrl+D", text: "scroll scrollback", featured: []helpContext{helpFullscreen}},
 	{key: "P", text: "pin / unpin session", featured: []helpContext{helpSessionRow}},
 	{key: "x", text: "kill session / group (3s grace · u undo)", featured: []helpContext{helpGroupRow, helpSessionRow}},
 	{key: "u", text: "undo the pending kill", featured: []helpContext{helpKillPending}},
@@ -90,6 +92,12 @@ func (value model) helpContexts() map[helpContext]bool {
 	if value.previewVisible() {
 		contexts[helpPreview] = true
 	}
+	// previewFullscreen itself is already false by the time the overlay is
+	// open (opening it exits fullscreen so closing it lands in the split
+	// view), so helpFromFullscreen carries the context across that exit.
+	if value.previewFullscreen || value.helpFromFullscreen {
+		contexts[helpFullscreen] = true
+	}
 	if value.killPending {
 		contexts[helpKillPending] = true
 	}
@@ -100,14 +108,19 @@ func (value model) helpContexts() map[helpContext]bool {
 }
 
 // helpContextLabel names the leading section. A pending kill outranks the row
-// kind because undoing it is the only thing the user can still do in time. It
-// falls back to a generic label rather than "" whenever any context applies, so
-// a featured row can never end up in a section the renderer suppresses.
+// kind because undoing it is the only thing the user can still do in time.
+// Fullscreen outranks the row kind too: the list (and its row-kind actions)
+// is hidden while fullscreen is open, so the selection underneath it is not
+// what the label should describe. It falls back to a generic label rather
+// than "" whenever any context applies, so a featured row can never end up in
+// a section the renderer suppresses.
 func (value model) helpContextLabel() string {
 	contexts := value.helpContexts()
 	switch {
 	case contexts[helpKillPending]:
 		return "kill pending:"
+	case contexts[helpFullscreen]:
+		return "fullscreen preview:"
 	case contexts[helpGroupRow]:
 		return "on a group header:"
 	case contexts[helpMoreRow]:
@@ -132,7 +145,7 @@ func (value model) featuredHelp() (featured, rest []helpBinding) {
 	bands := [][]helpContext{
 		{helpKillPending},
 		{helpGroupRow, helpSessionRow, helpMoreRow},
-		{helpPreview, helpFilterActive},
+		{helpPreview, helpFullscreen, helpFilterActive},
 	}
 	isFeatured := make(map[string]bool, len(helpBindings))
 	for _, band := range bands {

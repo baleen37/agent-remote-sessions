@@ -128,6 +128,16 @@ func main() {
 					}
 					return ssh.CapturePane(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID)
 				},
+				PreviewHistory: func(ctx context.Context, item session.Session) ([]byte, error) {
+					host, ok := hostsByTarget[item.Host]
+					if !ok {
+						return nil, fmt.Errorf("session host is not selected")
+					}
+					if host.Local {
+						return runtime.CapturePaneHistory(ctx, runtimeRunner, string(item.Provider), item.NativeID)
+					}
+					return ssh.CapturePaneHistory(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID)
+				},
 				Kill: func(ctx context.Context, item session.Session) error {
 					host, ok := hostsByTarget[item.Host]
 					if !ok {

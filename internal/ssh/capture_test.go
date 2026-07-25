@@ -79,6 +79,54 @@ func TestCapturePaneUsesSafeSSHOptions(t *testing.T) {
 	}
 }
 
+func TestCapturePaneHistoryReadsRemoteScrollback(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{run: func(_ context.Context, _ int, _ runnerCall, stdout, _ io.Writer) error {
+		_, _ = io.WriteString(stdout, "remote line\n")
+		return nil
+	}}
+	output, err := CapturePaneHistory(context.Background(), runner, "host", "claude", "123e4567-e89b-42d3-a456-426614174000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "remote line\n" {
+		t.Fatalf("CapturePaneHistory() = %q", output)
+	}
+	name := arsruntime.Key("claude", "123e4567-e89b-42d3-a456-426614174000")
+	if got, want := runner.calls[0].args[len(runner.calls[0].args)-1], remoteShellCommand(capturePaneHistoryCommand(name)); got != want {
+		t.Fatalf("history capture command = %q, want %q", got, want)
+	}
+	script := capturePaneHistoryCommand(name)
+	if !strings.Contains(script, "has-session -t '="+name+"'") {
+		t.Fatalf("script missing has-session gate:\n%s", script)
+	}
+	if !strings.Contains(script, "capture-pane -p -S -500 -t '="+name+":'") {
+		t.Fatalf("script missing history capture-pane:\n%s", script)
+	}
+}
+
+func TestCapturePaneHistoryReportsNoLivePane(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{run: func(_ context.Context, _ int, _ runnerCall, stdout, _ io.Writer) error {
+		_, _ = io.WriteString(stdout, noLivePaneMarker+"\n")
+		return nil
+	}}
+	_, err := CapturePaneHistory(context.Background(), runner, "host", "claude", "123e4567-e89b-42d3-a456-426614174000")
+	if !errors.Is(err, ErrNoLivePane) {
+		t.Fatalf("CapturePaneHistory() error = %v, want ErrNoLivePane", err)
+	}
+}
+
+func TestCapturePaneHistoryRequiresRunner(t *testing.T) {
+	t.Parallel()
+
+	if _, err := CapturePaneHistory(context.Background(), nil, "host", "claude", "id"); err == nil {
+		t.Fatal("CapturePaneHistory() with nil runner did not error")
+	}
+}
+
 func TestKillSessionKillsRemoteSession(t *testing.T) {
 	t.Parallel()
 
