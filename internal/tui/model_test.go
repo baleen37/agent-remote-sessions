@@ -117,6 +117,10 @@ func collectionFrom(command tea.Cmd) collectUpdateMsg {
 	return <-found
 }
 
+// initialCommands drains Init's batch into its collectUpdateMsg. The children
+// run off the calling goroutine because Init also batches tea.Tick commands
+// (spinner, activity) that only deliver after their interval; running those
+// inline would stall every test that builds a ready model.
 func initialCommands(command tea.Cmd) (collected collectUpdateMsg, hasCollection, hasBackgroundQuery bool) {
 	message := command()
 	batch, ok := message.(tea.BatchMsg)
@@ -124,15 +128,22 @@ func initialCommands(command tea.Cmd) (collected collectUpdateMsg, hasCollection
 		return collectUpdateMsg{}, false, false
 	}
 	backgroundQuery := reflect.ValueOf(tea.RequestBackgroundColor).Pointer()
+	found := make(chan collectUpdateMsg, len(batch))
 	for _, child := range batch {
 		if reflect.ValueOf(child).Pointer() == backgroundQuery {
 			hasBackgroundQuery = true
 			continue
 		}
-		if update, ok := child().(collectUpdateMsg); ok {
-			collected = update
-			hasCollection = true
-		}
+		go func(child tea.Cmd) {
+			if update, ok := child().(collectUpdateMsg); ok {
+				found <- update
+			}
+		}(child)
+	}
+	select {
+	case collected = <-found:
+		hasCollection = true
+	case <-time.After(2 * time.Second):
 	}
 	return collected, hasCollection, hasBackgroundQuery
 }

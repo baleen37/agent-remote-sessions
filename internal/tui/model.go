@@ -61,40 +61,42 @@ type attachDoneMsg struct {
 }
 
 type model struct {
-	ctx            context.Context
-	deps           Dependencies
-	result         Result
-	rows           []listRow
-	selected       int
-	selectedRef    rowRef
-	groupMode      map[string]groupMode
-	stateFilter    map[session.RuntimeState]bool
-	query          string
-	matched        int
-	searching      bool
-	composing      bool
-	compose        string
-	composeTarget  session.Session
-	showHelp       bool
-	previewOn      bool
-	previewKey     sessionKey
-	previewContent []string
-	previewErr     string
-	previewPending bool
-	killSeq        uint64
-	killPending    bool
-	killTarget     session.Session
-	collecting     bool
-	spinner        int
-	generation     uint64
-	stale          map[string]struct{}
-	cancelCollect  context.CancelFunc
-	initialCollect tea.Cmd
-	status         string
-	width          int
-	height         int
-	noColor        bool
-	styles         viewStyles
+	ctx             context.Context
+	deps            Dependencies
+	result          Result
+	rows            []listRow
+	selected        int
+	selectedRef     rowRef
+	groupMode       map[string]groupMode
+	stateFilter     map[session.RuntimeState]bool
+	query           string
+	matched         int
+	searching       bool
+	composing       bool
+	compose         string
+	composeTarget   session.Session
+	showHelp        bool
+	previewOn       bool
+	previewKey      sessionKey
+	previewContent  []string
+	previewErr      string
+	previewPending  bool
+	activity        map[sessionKey]activityEntry
+	activityPending map[sessionKey]bool
+	killSeq         uint64
+	killPending     bool
+	killTarget      session.Session
+	collecting      bool
+	spinner         int
+	generation      uint64
+	stale           map[string]struct{}
+	cancelCollect   context.CancelFunc
+	initialCollect  tea.Cmd
+	status          string
+	width           int
+	height          int
+	noColor         bool
+	styles          viewStyles
 }
 
 func newModel(ctx context.Context, deps Dependencies) model {
@@ -121,6 +123,7 @@ func (value model) Init() tea.Cmd {
 	return tea.Batch(
 		value.initialCollect,
 		spinnerTick(value.generation),
+		activityTick(),
 		tea.RequestBackgroundColor,
 	)
 }
@@ -145,11 +148,16 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 			value.collecting = false
 		}
 		value.refreshVisible()
+		value.evictActivity()
 		return value, tea.Batch(waitForUpdate(message.generation, message.channel), value.syncPreview())
 	case previewMsg:
 		return value.updatePreview(message)
 	case previewTickMsg:
 		return value.updatePreviewTick(message)
+	case activityMsg:
+		return value.updateActivity(message)
+	case activityTickMsg:
+		return value.updateActivityTick(message)
 	case killFireMsg:
 		return value.updateKillFire(message)
 	case killDoneMsg:

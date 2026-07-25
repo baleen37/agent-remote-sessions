@@ -132,7 +132,8 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		}
 		lines = append(lines, plain)
 	}
-	lines = append(lines, "", value.mutedText("● attached · ◐ running · ○ saved", width), value.mutedText("? / esc / q to close", width))
+	legend := "● attached · ◐ running · " + activityWaitingSymbol + " needs input · ○ saved"
+	lines = append(lines, "", value.mutedText(legend, width), value.mutedText("? / esc / q to close", width))
 	margin := strings.Repeat(" ", inset)
 	for index, line := range lines {
 		if line != "" {

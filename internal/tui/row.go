@@ -141,7 +141,7 @@ func (value model) renderRow(row listRow, selected bool, layout rowLayout) strin
 		guide = "└─ "
 	}
 	fields := []string{
-		value.stateText(stateSymbol(item.Runtime.State), item.Runtime.State),
+		value.activitySymbol(item),
 		column(sessionTitle(item), layout.title, false),
 	}
 	if layout.showProvider {
