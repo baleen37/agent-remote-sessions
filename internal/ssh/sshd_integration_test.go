@@ -23,11 +23,11 @@ import (
 	"github.com/creack/pty"
 )
 
-const runSSHDIntegration = "ARS_RUN_SSHD_INTEGRATION"
+const runSSHDIntegration = "ARS_TEST_EPHEMERAL_SSHD"
 
 func TestEphemeralSSHDCollectsAndAttaches(t *testing.T) {
 	if os.Getenv(runSSHDIntegration) != "1" {
-		t.Skip("set ARS_RUN_SSHD_INTEGRATION=1 to run the disposable loopback sshd integration")
+		t.Skip("set ARS_TEST_EPHEMERAL_SSHD=1 to run the disposable loopback sshd integration")
 	}
 	t.Setenv("TERM", "xterm-256color")
 	sshd := integrationExecutable(t, "sshd")
@@ -43,25 +43,39 @@ func TestEphemeralSSHDCollectsAndAttaches(t *testing.T) {
 
 	collector := []byte("#!/bin/sh\n" +
 		"nonce=$1\n" +
-		"printf 'ARS/2 BEGIN %s\\n' \"$nonce\"\n" +
+		"printf 'ARS/3 BEGIN %s\\n' \"$nonce\"\n" +
+		`printf '%s\n' '{"type":"snapshot","phase":"recent"}'` + "\n" +
+		`printf '%s\n' '{"type":"session","provider":"claude","native_id":"123e4567-e89b-42d3-a456-426614174000","updated_at":"2026-07-19T01:02:03Z","cwd":"/work/app","title":"Ephemeral SSH","runtime_state":"saved","attached_clients":0}'` + "\n" +
+		`printf '%s\n' '{"type":"runtime","status":"ok"}'` + "\n" +
+		`printf '%s\n' '{"type":"snapshot_end","phase":"recent","sessions":1}'` + "\n" +
+		`printf '%s\n' '{"type":"snapshot","phase":"complete"}'` + "\n" +
 		`printf '%s\n' '{"type":"session","provider":"claude","native_id":"123e4567-e89b-42d3-a456-426614174000","updated_at":"2026-07-19T01:02:03Z","cwd":"/work/app","title":"Ephemeral SSH","runtime_state":"saved","attached_clients":0}'` + "\n" +
 		`printf '%s\n' '{"type":"summary","provider":"claude","status":"ok","seen":1,"skipped":0}'` + "\n" +
 		`printf '%s\n' '{"type":"summary","provider":"codex","status":"absent","seen":0,"skipped":0}'` + "\n" +
 		`printf '%s\n' '{"type":"runtime","status":"ok"}'` + "\n" +
-		"printf 'ARS/2 END %s 1\\n' \"$nonce\"\n")
+		`printf '%s\n' '{"type":"snapshot_end","phase":"complete","sessions":1}'` + "\n" +
+		"printf 'ARS/3 END %s\\n' \"$nonce\"\n")
 
-	discovered, results, _, err := Collect(
+	var recent []session.Discovered
+	discovered, results, _, err := CollectStream(
 		context.Background(),
 		runner,
 		integrationAssets{data: collector},
 		server.target,
 		CollectOptions{},
+		func(discovered []session.Discovered) error {
+			recent = append([]session.Discovered(nil), discovered...)
+			return nil
+		},
 	)
 	if err != nil {
 		t.Fatalf("Collect() through ephemeral sshd: %v", err)
 	}
 	if len(discovered) != 1 || discovered[0].Candidate.NativeID != "123e4567-e89b-42d3-a456-426614174000" || len(results) != 2 {
 		t.Fatalf("decoded collector result = (%#v, %#v), want one Claude session and two summaries", discovered, results)
+	}
+	if len(recent) != 1 || recent[0].Candidate.NativeID != discovered[0].Candidate.NativeID {
+		t.Fatalf("recent callback = %#v, want progressive Claude session", recent)
 	}
 	leftovers, err := filepath.Glob(filepath.Join(server.remoteTemp, "ars-*"))
 	if err != nil {

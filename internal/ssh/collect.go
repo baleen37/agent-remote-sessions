@@ -23,11 +23,12 @@ import (
 )
 
 const (
-	defaultConnectTimeout = 5 * time.Second
-	defaultHostTimeout    = 60 * time.Second
-	cleanupTimeout        = 5 * time.Second
-	probeOutputLimit      = 64 << 10
-	stderrOutputLimit     = 64 << 10
+	defaultConnectTimeout    = 5 * time.Second
+	defaultHostTimeout       = 60 * time.Second
+	cleanupTimeout           = 5 * time.Second
+	probeOutputLimit         = 64 << 10
+	stderrOutputLimit        = 64 << 10
+	temporaryPathPrefixLimit = 4097
 )
 
 type CollectorAssets interface {
@@ -41,6 +42,17 @@ type CollectOptions struct {
 }
 
 func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target string, options CollectOptions) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+	return CollectStream(ctx, runner, assets, target, options, nil)
+}
+
+func CollectStream(
+	ctx context.Context,
+	runner Runner,
+	assets CollectorAssets,
+	target string,
+	options CollectOptions,
+	emitRecent func([]session.Discovered) error,
+) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 	if runner == nil {
 		return nil, nil, runtime.Report{}, fmt.Errorf("SSH runner is nil")
 	}
@@ -77,35 +89,65 @@ func Collect(ctx context.Context, runner Runner, assets CollectorAssets, target 
 		return nil, nil, runtime.Report{}, fmt.Errorf("generate collector nonce: %w", err)
 	}
 
-	collectorOutput := newBoundedBuffer(options.ProtocolLimits.TotalBytes)
+	collectorOutput, collectorInput := io.Pipe()
+	collectorPrefix := newBoundedBuffer(temporaryPathPrefixLimit)
 	collectorError := newBoundedBuffer(stderrOutputLimit)
-	runErr := runner.Run(
-		hostCtx,
-		"ssh",
-		collectionSSHArgs(target, options.ConnectTimeout, remoteShellCommand(collectorCommand(nonce))),
-		bytes.NewReader(collector),
-		collectorOutput,
-		collectorError,
-	)
-	runErr = joinContextError(runErr, hostCtx.Err())
-	tempPath, pathErr := parseTemporaryPath(collectorOutput.Bytes(), nonce)
-	if interrupted(runErr, hostCtx, ctx) && pathErr == nil {
+	runDone := make(chan error, 1)
+	go func() {
+		runErr := runner.Run(
+			hostCtx,
+			"ssh",
+			collectionSSHArgs(target, options.ConnectTimeout, remoteShellCommand(collectorCommand(nonce))),
+			bytes.NewReader(collector),
+			io.MultiWriter(collectorPrefix, collectorInput),
+			collectorError,
+		)
+		_ = collectorInput.Close()
+		runDone <- runErr
+	}()
+
+	var complete protocol.Snapshot
+	decodeErr := protocol.DecodeStream(collectorOutput, nonce, options.ProtocolLimits, func(snapshot protocol.Snapshot) error {
+		if snapshot.Phase == provider.PhaseRecent {
+			if emitRecent != nil {
+				return emitRecent(snapshot.Discovered)
+			}
+			return nil
+		}
+		complete = snapshot
+		return nil
+	})
+	contextErr := hostCtx.Err()
+	if decodeErr != nil {
+		_ = collectorOutput.Close()
+		cancel()
+	}
+	runErr := <-runDone
+	_ = collectorOutput.Close()
+
+	tempPath, pathErr := parseTemporaryPath(collectorPrefix.Bytes(), nonce)
+	if (decodeErr != nil || runErr != nil || contextErr != nil) && pathErr == nil {
 		attemptCleanup(runner, target, options.ConnectTimeout, tempPath)
+	}
+	runErr = joinContextError(runErr, contextErr)
+	if decodeErr != nil {
+		if runErr != nil &&
+			!(contextErr == nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, io.ErrClosedPipe))) {
+			return nil, nil, runtime.Report{}, commandError(
+				"SSH collector stdout/protocol",
+				errors.Join(decodeErr, runErr),
+				collectorError,
+			)
+		}
+		return nil, nil, runtime.Report{}, commandError("SSH collector stdout/protocol", decodeErr, collectorError)
 	}
 	if runErr != nil {
 		return nil, nil, runtime.Report{}, commandError("SSH collector", runErr, collectorError)
 	}
-	if collectorOutput.exceeded {
-		return nil, nil, runtime.Report{}, fmt.Errorf("collector stdout exceeds limit")
-	}
 	if pathErr != nil {
 		return nil, nil, runtime.Report{}, pathErr
 	}
-	discovered, results, report, err := protocol.Decode(bytes.NewReader(collectorOutput.Bytes()), nonce, options.ProtocolLimits)
-	if err != nil {
-		return nil, nil, runtime.Report{}, fmt.Errorf("collector protocol: %w", err)
-	}
-	return discovered, results, report, nil
+	return complete.Discovered, complete.Results, complete.Report, nil
 }
 
 func withDefaults(options CollectOptions) CollectOptions {
@@ -232,10 +274,6 @@ func parseTemporaryPath(output []byte, nonce string) (string, error) {
 		}
 	}
 	return value, nil
-}
-
-func interrupted(runErr error, hostCtx, parentCtx context.Context) bool {
-	return runErr != nil && (hostCtx.Err() != nil || parentCtx.Err() != nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded))
 }
 
 func joinContextError(runErr, contextErr error) error {

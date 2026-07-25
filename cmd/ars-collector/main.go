@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/baleen37/agent-remote-sessions/internal/protocol"
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
@@ -31,20 +32,50 @@ func runWithRuntime(ctx context.Context, args []string, home string, adapters []
 		fmt.Fprintln(stderr, "ars-collector: expected one 128-bit hexadecimal nonce")
 		return 2
 	}
-	candidates, results, err := provider.DiscoverAll(ctx, home, adapters)
+
+	var encoder *protocol.StreamEncoder
+	var encodeErr error
+	err := provider.DiscoverAllStream(
+		ctx,
+		home,
+		adapters,
+		time.Now().Add(-session.RecentWindow),
+		func(snapshot provider.Snapshot) error {
+			states, report := runtime.Inspect(ctx, runtimeRunner, snapshot.Candidates)
+			if encoder == nil {
+				encoder, encodeErr = protocol.NewStreamEncoder(stdout, args[0], protocol.DefaultLimits())
+				if encodeErr != nil {
+					return encodeErr
+				}
+			}
+			encodeErr = encoder.Encode(protocol.Snapshot{
+				Phase:      snapshot.Phase,
+				Discovered: combineRuntime(snapshot.Candidates, states),
+				Results:    snapshot.Results,
+				Report:     report,
+			})
+			if encodeErr != nil {
+				return encodeErr
+			}
+			if snapshot.Phase == provider.PhaseComplete {
+				for _, result := range snapshot.Results {
+					if diagnostic := providerDiagnostic(result); diagnostic != "" {
+						fmt.Fprintln(stderr, diagnostic)
+					}
+				}
+			}
+			return nil
+		},
+	)
 	if err != nil {
-		fmt.Fprintln(stderr, "ars-collector: provider discovery failed")
+		if encodeErr != nil {
+			fmt.Fprintln(stderr, "ars-collector: encode failed")
+		} else {
+			fmt.Fprintln(stderr, "ars-collector: provider discovery failed")
+		}
 		return 1
 	}
-	for _, result := range results {
-		if diagnostic := providerDiagnostic(result); diagnostic != "" {
-			fmt.Fprintln(stderr, diagnostic)
-		}
-	}
-
-	states, report := runtime.Inspect(ctx, runtimeRunner, candidates)
-	discovered := combineRuntime(candidates, states)
-	if err := protocol.Encode(stdout, args[0], discovered, results, report); err != nil {
+	if encoder == nil || encoder.Close() != nil {
 		fmt.Fprintln(stderr, "ars-collector: encode failed")
 		return 1
 	}

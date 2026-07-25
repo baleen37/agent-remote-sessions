@@ -73,6 +73,86 @@ func TestRunDiscoversBothProvidersAndSortsSessions(t *testing.T) {
 	}
 }
 
+func TestRunWritesRecentSnapshotBeforeFullDiscoveryCompletes(t *testing.T) {
+	recentCandidate := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	releaseComplete := make(chan struct{})
+	adapters := []provider.Adapter{
+		&blockingAdapter{
+			name: session.Claude,
+			recent: provider.Result{
+				Provider: session.Claude,
+				Sessions: []session.Candidate{recentCandidate},
+				Status:   provider.OK,
+				Seen:     1,
+			},
+			complete: provider.Result{
+				Provider: session.Claude,
+				Sessions: []session.Candidate{recentCandidate},
+				Status:   provider.OK,
+				Seen:     1,
+			},
+			releaseComplete: releaseComplete,
+		},
+		&fakeAdapter{name: session.Codex, result: provider.Result{Provider: session.Codex, Status: provider.Absent}},
+	}
+
+	reader, writer := io.Pipe()
+	defer func() {
+		select {
+		case <-releaseComplete:
+		default:
+			close(releaseComplete)
+		}
+		_ = reader.Close()
+	}()
+	runDone := make(chan int, 1)
+	go func() {
+		runDone <- run(context.Background(), []string{collectorNonce}, "/remote/home", adapters, writer, io.Discard)
+		_ = writer.Close()
+	}()
+
+	recent := make(chan protocol.Snapshot, 1)
+	decodeDone := make(chan error, 1)
+	go func() {
+		decodeDone <- protocol.DecodeStream(reader, collectorNonce, protocol.DefaultLimits(), func(snapshot protocol.Snapshot) error {
+			if snapshot.Phase == provider.PhaseRecent {
+				recent <- snapshot
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case snapshot := <-recent:
+		if !reflect.DeepEqual(snapshot.Discovered, []session.Discovered{{
+			Candidate: recentCandidate,
+			Runtime:   session.Runtime{State: session.RuntimeSaved},
+		}}) {
+			t.Fatalf("recent discovered = %#v", snapshot.Discovered)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recent snapshot was not written before complete discovery was released")
+	}
+
+	close(releaseComplete)
+	select {
+	case code := <-runDone:
+		if code != 0 {
+			t.Fatalf("run() code = %d", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run() did not finish after complete discovery was released")
+	}
+	select {
+	case err := <-decodeDone:
+		if err != nil {
+			t.Fatalf("DecodeStream() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("DecodeStream() did not finish after complete discovery was released")
+	}
+}
+
 func TestRunEmitsPartialProviderSummaries(t *testing.T) {
 	candidate := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	adapters := []provider.Adapter{
@@ -114,11 +194,11 @@ func TestRunRejectsInvalidCandidateBeforeEncoding(t *testing.T) {
 	if code := run(context.Background(), []string{collectorNonce}, "/remote/home", adapters, &stdout, &stderr); code == 0 {
 		t.Fatal("run() code = 0, want non-zero")
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout = %q, want empty", stdout.String())
+	if _, _, _, err := protocol.Decode(&stdout, collectorNonce, protocol.DefaultLimits()); err == nil {
+		t.Fatal("Decode() error = nil, want incomplete stream rejection")
 	}
-	if strings.Contains(stderr.String(), invalid.CWD) {
-		t.Fatalf("stderr exposed provider path: %q", stderr.String())
+	if strings.Contains(stdout.String(), invalid.CWD) || strings.Contains(stderr.String(), invalid.CWD) {
+		t.Fatalf("collector output exposed provider path: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
@@ -158,6 +238,42 @@ type fakeAdapter struct {
 	result provider.Result
 	calls  int
 	home   string
+}
+
+type blockingAdapter struct {
+	name            session.Provider
+	recent          provider.Result
+	complete        provider.Result
+	releaseComplete <-chan struct{}
+}
+
+func (adapter *blockingAdapter) Name() session.Provider { return adapter.name }
+
+func (adapter *blockingAdapter) Discover(context.Context, string) provider.Result {
+	return adapter.complete
+}
+
+func (adapter *blockingAdapter) DiscoverStream(
+	ctx context.Context,
+	_ string,
+	_ time.Time,
+	emit func(provider.Phase, provider.Result) error,
+) error {
+	if err := emit(provider.PhaseRecent, adapter.recent); err != nil {
+		return err
+	}
+	select {
+	case <-adapter.releaseComplete:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return emit(provider.PhaseComplete, adapter.complete)
+}
+
+func (adapter *blockingAdapter) ValidateID(string) error { return nil }
+
+func (adapter *blockingAdapter) Resume(string) (provider.ResumeSpec, error) {
+	return provider.ResumeSpec{}, nil
 }
 
 func (adapter *fakeAdapter) Name() session.Provider { return adapter.name }
