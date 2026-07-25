@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -12,9 +13,72 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// pressKey applies a key press and, unlike a bare updateModel call, also
+// drains any capture (preview or fullscreen) the key triggered — such as the
+// history capture that opening fullscreen schedules — while skipping
+// tea.Tick children, which would block for the tick interval. This mirrors
+// what the real bubbletea runtime does when it executes the returned command.
 func pressKey(value model, code rune, text string) model {
-	updated, _ := updateModel(value, tea.KeyPressMsg(tea.Key{Code: code, Text: text}))
-	return updated
+	updated, command := updateModel(value, tea.KeyPressMsg(tea.Key{Code: code, Text: text}))
+	return applyCaptureCmd(updated, command)
+}
+
+// applyCaptureCmd runs command (which may be nested tea.Batch commands, as
+// updateModel's KeyPressMsg case produces when it batches syncPreview with
+// syncFullPreview) with each leaf command in its own goroutine — a bare
+// tick command, returned alongside a capture while one is already in
+// flight, would otherwise block the caller for the tick interval — and
+// folds any resulting previewMsg/fullPreviewMsg back into the model, so
+// tests observe the same state a live run would reach after its capture
+// lands.
+func applyCaptureCmd(value model, command tea.Cmd) model {
+	for _, message := range runCmdLeaves(command) {
+		switch message.(type) {
+		case previewMsg, fullPreviewMsg:
+			value = foldCaptureMsg(value, message)
+		}
+	}
+	return value
+}
+
+// runCmdLeaves runs command and, if it yields a tea.BatchMsg, recurses into
+// each child so nested batches (batches whose commands are themselves
+// batches) are fully unpacked. Each leaf command runs in its own goroutine
+// with a timeout, so a tea.Tick child cannot block the caller.
+func runCmdLeaves(command tea.Cmd) []tea.Msg {
+	if command == nil {
+		return nil
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- command() }()
+	var message tea.Msg
+	select {
+	case message = <-done:
+	case <-time.After(200 * time.Millisecond):
+		return nil
+	}
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{message}
+	}
+	var messages []tea.Msg
+	for _, child := range batch {
+		messages = append(messages, runCmdLeaves(child)...)
+	}
+	return messages
+}
+
+func foldCaptureMsg(value model, message tea.Msg) model {
+	switch message := message.(type) {
+	case previewMsg:
+		updated, _ := value.updatePreview(message)
+		return updated
+	case fullPreviewMsg:
+		updated, _ := value.updateFullPreview(message)
+		return updated
+	default:
+		return value
+	}
 }
 
 // loadedFullscreenModel returns a model with the preview visible, a live
@@ -128,6 +192,9 @@ func TestFullscreenOpensHelpOverlay(t *testing.T) {
 	if value.showHelp || value.previewFullscreen {
 		t.Fatalf("closing help left showHelp=%t previewFullscreen=%t, want both false",
 			value.showHelp, value.previewFullscreen)
+	}
+	if value.helpFromFullscreen {
+		t.Fatal("closing help did not clear helpFromFullscreen, would mislabel a later plain-list help open")
 	}
 	if content := ansi.Strip(value.View().Content); !strings.Contains(content, "q quit") {
 		t.Fatalf("split view footer missing after closing help:\n%s", content)
@@ -349,6 +416,10 @@ func TestFullscreenShowsTailWhenContentOverflows(t *testing.T) {
 	}
 }
 
+// TestFullscreenStaysLiveOnPreviewTick covers a PreviewHistory-less setup,
+// where fullscreen falls back to the tail-only Preview capture: its own
+// fullscreen tick (fullPreviewTickMsg), not the side panel's previewTickMsg,
+// is what keeps it live, since the two panels now capture independently.
 func TestFullscreenStaysLiveOnPreviewTick(t *testing.T) {
 	capture := "before tick"
 	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
@@ -363,11 +434,11 @@ func TestFullscreenStaysLiveOnPreviewTick(t *testing.T) {
 
 	selected, _ := value.selectedSession()
 	capture = "after tick"
-	value, command = value.updatePreviewTick(previewTickMsg{key: keyOf(selected)})
+	value, command = value.updateFullPreviewTick(fullPreviewTickMsg{key: keyOf(selected)})
 	if command == nil {
-		t.Fatal("the preview tick stopped rescheduling while fullscreen")
+		t.Fatal("the fullscreen tick stopped rescheduling while fullscreen")
 	}
-	value, _ = updateModel(value, drainPreviewMsg(command))
+	value, _ = updateModel(value, drainFullPreviewMsg(command))
 	content := ansi.Strip(value.View().Content)
 	if !strings.Contains(content, "after tick") {
 		t.Fatalf("fullscreen did not refresh from the tick capture:\n%s", content)
