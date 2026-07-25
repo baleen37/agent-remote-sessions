@@ -33,6 +33,16 @@ func (value model) previewVisible() bool {
 	return value.previewOn && value.deps.Preview != nil && value.contentWidth() >= previewMinWidth
 }
 
+// closePreview clears the capture state the panel renders from, so a reopened
+// pane loads fresh instead of showing a stale capture.
+func (value model) closePreview() model {
+	value.previewKey = sessionKey{}
+	value.previewContent = nil
+	value.previewErr = ""
+	value.previewPending = false
+	return value
+}
+
 // previewWidth splits the content width, giving the list priority and the
 // preview roughly 40%.
 func previewWidth(total int) (list, preview int) {
@@ -205,6 +215,31 @@ func (value model) joinPreview(body []string, listWidth, previewCols, height int
 		joined[index] = line + gutter + right
 	}
 	return joined
+}
+
+// fullscreenPreview renders the preview as an alternate full-screen view,
+// replacing the list: the session title, the tail of the captured pane over the
+// remaining height, and a close hint. Like helpOverlay it owns the whole frame,
+// so the list, details, diagnostics and footer are absent.
+func (value model) fullscreenPreview(inset, width int) tea.View {
+	lines := []string{fitLine(value.header(), width), ""}
+	selected, ok := value.selectedSession()
+	if ok {
+		lines = append(lines, value.previewHeader(sessionTitle(selected), width), "")
+		// The fixed frame the body has to share the screen with: the ars header
+		// and its blank, the title and its blank, then the blank and the close
+		// hint at the foot.
+		const frameLines = 6
+		lines = append(lines, value.previewBody(selected, width, value.height-frameLines)...)
+	}
+	lines = append(lines, "", value.mutedText("f / esc to close", width))
+	margin := strings.Repeat(" ", inset)
+	for index, line := range lines {
+		if line != "" {
+			lines[index] = margin + line
+		}
+	}
+	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
 }
 
 func (value model) padPanel(lines []string, width, height int) []string {

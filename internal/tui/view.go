@@ -27,6 +27,9 @@ func (value model) View() tea.View {
 	if value.showHelp {
 		return value.helpOverlay(inset, width)
 	}
+	if value.previewFullscreen {
+		return value.fullscreenPreview(inset, width)
+	}
 	previewShown := value.previewVisible()
 	listWidth := width
 	previewCols := 0
@@ -511,6 +514,9 @@ func (value model) help(width int) string {
 		}
 		items = append(items, label)
 	}
+	if value.previewVisible() {
+		items = append(items, "f full")
+	}
 	items = append(items, action, "r refresh", "q quit", "? help")
 	return joinFooterItems(items, separator, width)
 }
@@ -520,7 +526,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"P pin", "m msg", "x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
+	droppable := []string{"P pin", "m msg", "x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold", "f full"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {

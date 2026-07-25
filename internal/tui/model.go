@@ -61,44 +61,45 @@ type attachDoneMsg struct {
 }
 
 type model struct {
-	ctx             context.Context
-	deps            Dependencies
-	result          Result
-	rows            []listRow
-	selected        int
-	selectedRef     rowRef
-	groupMode       map[string]groupMode
-	stateFilter     map[session.RuntimeState]bool
-	query           string
-	matched         int
-	searching       bool
-	composing       bool
-	compose         string
-	composeTarget   session.Session
-	showHelp        bool
-	previewOn       bool
-	previewKey      sessionKey
-	previewContent  []string
-	previewErr      string
-	previewPending  bool
-	activity        map[sessionKey]activityEntry
-	activityPending map[sessionKey]bool
-	pins            map[sessionKey]bool
-	killSeq         uint64
-	killPending     bool
-	killTargets     []session.Session
-	killGroup       string
-	collecting      bool
-	spinner         int
-	generation      uint64
-	stale           map[string]struct{}
-	cancelCollect   context.CancelFunc
-	initialCollect  tea.Cmd
-	status          string
-	width           int
-	height          int
-	noColor         bool
-	styles          viewStyles
+	ctx               context.Context
+	deps              Dependencies
+	result            Result
+	rows              []listRow
+	selected          int
+	selectedRef       rowRef
+	groupMode         map[string]groupMode
+	stateFilter       map[session.RuntimeState]bool
+	query             string
+	matched           int
+	searching         bool
+	composing         bool
+	compose           string
+	composeTarget     session.Session
+	showHelp          bool
+	previewOn         bool
+	previewFullscreen bool
+	previewKey        sessionKey
+	previewContent    []string
+	previewErr        string
+	previewPending    bool
+	activity          map[sessionKey]activityEntry
+	activityPending   map[sessionKey]bool
+	pins              map[sessionKey]bool
+	killSeq           uint64
+	killPending       bool
+	killTargets       []session.Session
+	killGroup         string
+	collecting        bool
+	spinner           int
+	generation        uint64
+	stale             map[string]struct{}
+	cancelCollect     context.CancelFunc
+	initialCollect    tea.Cmd
+	status            string
+	width             int
+	height            int
+	noColor           bool
+	styles            viewStyles
 }
 
 func newModel(ctx context.Context, deps Dependencies) model {
@@ -185,6 +186,11 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		value.width = message.Width
 		value.height = message.Height
+		// A terminal narrowed below previewMinWidth leaves nothing to show
+		// fullscreen, so drop back to the list rather than render an empty view.
+		if value.previewFullscreen && !value.previewVisible() {
+			value.previewFullscreen = false
+		}
 		return value, value.syncPreview()
 	case tea.KeyPressMsg:
 		updated, command := value.updateKey(message)
@@ -264,6 +270,36 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		return value, nil
 	}
 
+	// The fullscreen preview hides the list, so it swallows every key but the
+	// ones below — like the help overlay — rather than moving or acting on a
+	// selection the user cannot see. p exits and closes the pane, keeping the
+	// two states consistent.
+	if value.previewFullscreen {
+		switch {
+		case key.Text == "f", key.Code == tea.KeyEscape:
+			value.previewFullscreen = false
+		case key.Text == "p":
+			value.previewFullscreen = false
+			value.previewOn = false
+			value = value.closePreview()
+		case key.Text == "?":
+			// The overlay features the f binding, so it has to stay reachable
+			// from here. Leaving fullscreen means closing the overlay returns to
+			// the split view rather than a mode the user can no longer see.
+			value.showHelp = true
+			value.previewFullscreen = false
+		case key.Code == 'q':
+			// Unlike the help overlay — a transient thing q dismisses —
+			// fullscreen is a regular view, so q quits ars as it does in the
+			// list rather than closing the view.
+			if value.cancelCollect != nil {
+				value.cancelCollect()
+			}
+			return value, tea.Quit
+		}
+		return value, nil
+	}
+
 	switch key.Code {
 	case tea.KeyUp, 'k':
 		value.move(-1)
@@ -323,10 +359,11 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 		value.previewOn = !value.previewOn
 		if !value.previewOn {
-			value.previewKey = sessionKey{}
-			value.previewContent = nil
-			value.previewErr = ""
-			value.previewPending = false
+			value = value.closePreview()
+		}
+	case 'f':
+		if value.previewVisible() {
+			value.previewFullscreen = true
 		}
 	case '?':
 		value.showHelp = true
