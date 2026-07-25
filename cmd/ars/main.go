@@ -37,43 +37,7 @@ func main() {
 		HostTimeout:    60 * time.Second,
 		ProtocolLimits: protocol.DefaultLimits(),
 	}
-	collectHost := func(
-		ctx context.Context,
-		host app.Host,
-		emitRecent func([]session.Discovered) error,
-	) ([]session.Discovered, []provider.Result, runtime.Report, error) {
-		if host.Local {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, nil, runtime.Report{}, err
-			}
-			var finalDiscovered []session.Discovered
-			var finalResults []provider.Result
-			var finalReport runtime.Report
-			err = provider.DiscoverAllStream(
-				ctx,
-				home,
-				provider.Builtin(),
-				time.Now().Add(-session.RecentWindow),
-				func(snapshot provider.Snapshot) error {
-					states, report := runtime.Inspect(ctx, runtimeRunner, snapshot.Candidates)
-					discovered := combineRuntime(snapshot.Candidates, states)
-					if snapshot.Phase == provider.PhaseRecent {
-						return emitRecent(discovered)
-					}
-					finalDiscovered = discovered
-					finalResults = snapshot.Results
-					finalReport = report
-					return nil
-				},
-			)
-			if err != nil {
-				return nil, nil, runtime.Report{}, err
-			}
-			return finalDiscovered, finalResults, finalReport, nil
-		}
-		return ssh.CollectStream(ctx, sshRunner, assets, host.Target, collectOptions, emitRecent)
-	}
+	collectHost := newCollector(os.UserHomeDir, time.Now, runtimeRunner, sshRunner, assets, collectOptions)
 	collectHosts := func(ctx context.Context, hosts []app.Host) app.Result {
 		return app.CollectHosts(ctx, hosts, app.DefaultWorkerLimit, collectHost)
 	}
@@ -179,6 +143,53 @@ func main() {
 	exitCode := app.Run(ctx, os.Args[1:], dependencies)
 	stop()
 	os.Exit(exitCode)
+}
+
+func newCollector(
+	userHomeDir func() (string, error),
+	now func() time.Time,
+	runtimeRunner runtime.Runner,
+	sshRunner ssh.Runner,
+	assets ssh.CollectorAssets,
+	collectOptions ssh.CollectOptions,
+) app.Collector {
+	return func(
+		ctx context.Context,
+		host app.Host,
+		emitRecent func([]session.Discovered) error,
+	) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		if host.Local {
+			home, err := userHomeDir()
+			if err != nil {
+				return nil, nil, runtime.Report{}, err
+			}
+			var finalDiscovered []session.Discovered
+			var finalResults []provider.Result
+			var finalReport runtime.Report
+			err = provider.DiscoverAllStream(
+				ctx,
+				home,
+				provider.Builtin(),
+				now().Add(-session.RecentWindow),
+				func(snapshot provider.Snapshot) error {
+					states, report := runtime.Inspect(ctx, runtimeRunner, snapshot.Candidates)
+					discovered := combineRuntime(snapshot.Candidates, states)
+					if snapshot.Phase == provider.PhaseRecent {
+						return emitRecent(discovered)
+					}
+					finalDiscovered = discovered
+					finalResults = snapshot.Results
+					finalReport = report
+					return nil
+				},
+			)
+			if err != nil {
+				return nil, nil, runtime.Report{}, err
+			}
+			return finalDiscovered, finalResults, finalReport, nil
+		}
+		return ssh.CollectStream(ctx, sshRunner, assets, host.Target, collectOptions, emitRecent)
+	}
 }
 
 func runTUI(ctx context.Context, deps tui.Dependencies, stdin, stdout *os.File, isTerminal func(int) bool) error {
