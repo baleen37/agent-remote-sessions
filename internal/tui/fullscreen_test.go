@@ -190,6 +190,47 @@ func TestFullscreenNoOpWhenPreviewNotVisible(t *testing.T) {
 	}
 }
 
+func TestFullscreenNoOpOnGroupHeader(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value = pressKey(value, 'k', "k") // move up from the session row onto its group header
+	row, ok := value.selectedRow()
+	if !ok || row.kind != rowHeader {
+		t.Fatalf("expected a group header selected: %+v ok=%t", row, ok)
+	}
+	value = pressKey(value, 'f', "f")
+	if value.previewFullscreen {
+		t.Fatal("f opened fullscreen on a group header")
+	}
+}
+
+func TestFullscreenNoOpOnMoreRow(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	sessions := manySessions(3)
+	sessions[1].Runtime.State = session.RuntimeSaved
+	sessions[2].Runtime.State = session.RuntimeSaved
+	value.result.Sessions = sessions
+	value.refreshVisible()
+	index := -1
+	for position, row := range value.rows {
+		if row.kind == rowMore {
+			index = position
+			break
+		}
+	}
+	if index < 0 {
+		t.Fatalf("test setup produced no more row: %+v", value.rows)
+	}
+	value.selectRow(index)
+	value = pressKey(value, 'f', "f")
+	if value.previewFullscreen {
+		t.Fatal("f opened fullscreen on a more row")
+	}
+}
+
 func TestFullscreenKeyLiteralInSearchAndCompose(t *testing.T) {
 	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
 		return []byte("live output"), nil

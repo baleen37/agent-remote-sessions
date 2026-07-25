@@ -364,7 +364,7 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			value = value.closePreview()
 		}
 	case 'f':
-		if value.previewVisible() {
+		if row, ok := value.selectedRow(); ok && row.kind == rowSession && value.previewVisible() {
 			value.previewFullscreen = true
 		}
 	case '?':
