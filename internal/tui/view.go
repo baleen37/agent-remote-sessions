@@ -96,54 +96,6 @@ func (value model) View() tea.View {
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
 }
 
-func (value model) helpOverlay(inset, width int) tea.View {
-	bindings := [][2]string{
-		{"↑↓ / jk", "move"},
-		{"h / l", "fold / unfold group"},
-		{"g / G · Home / End", "jump to top / end"},
-		{"1-9", "jump to group"},
-		{"PgUp / PgDn · Ctrl+U / Ctrl+D", "page up / down"},
-		{"/", "search"},
-		{"! / @ / #", "filter attached / running / saved"},
-		{"p", "toggle preview pane"},
-		{"P", "pin / unpin session"},
-		{"x", "kill session / group (3s grace · u undo)"},
-		{"m", "send a line without attaching"},
-		{"enter", "attach session · toggle group"},
-		{"space", "toggle group"},
-		{"r", "refresh"},
-		{"q", "quit"},
-		{"Ctrl+Q", "detach from an attached session"},
-	}
-	keyWidth := 0
-	for _, binding := range bindings {
-		keyWidth = max(keyWidth, lipgloss.Width(binding[0]))
-	}
-	title := "ars keys"
-	if !value.noColor {
-		title = value.styles.title.Render(title)
-	}
-	lines := []string{fitLine(title, width), ""}
-	for _, binding := range bindings {
-		key := binding[0] + strings.Repeat(" ", max(0, keyWidth-lipgloss.Width(binding[0])))
-		plain := fitLine(key+"  "+binding[1], width)
-		if !value.noColor {
-			description := strings.TrimPrefix(plain, key+"  ")
-			plain = key + "  " + value.styles.muted.Render(description)
-		}
-		lines = append(lines, plain)
-	}
-	legend := "● attached · ◐ running · " + activityWaitingSymbol + " needs input · ○ saved"
-	lines = append(lines, "", value.mutedText(legend, width), value.mutedText("? / esc / q to close", width))
-	margin := strings.Repeat(" ", inset)
-	for index, line := range lines {
-		if line != "" {
-			lines[index] = margin + line
-		}
-	}
-	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
-}
-
 // boundedLayout bounds the detail and diagnostics lines to the terminal
 // height and returns them alongside the height left for the session list.
 // movePage derives its page step from the same computation so paging matches
