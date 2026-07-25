@@ -59,6 +59,7 @@ var helpBindings = []helpBinding{
 		altContext:     helpPreview,
 		featured:       []helpContext{helpPreview},
 	},
+	{key: "f", text: "fullscreen preview", featured: []helpContext{helpPreview}},
 	{key: "P", text: "pin / unpin session", featured: []helpContext{helpSessionRow}},
 	{key: "x", text: "kill session / group (3s grace · u undo)", featured: []helpContext{helpGroupRow, helpSessionRow}},
 	{key: "u", text: "undo the pending kill", featured: []helpContext{helpKillPending}},
