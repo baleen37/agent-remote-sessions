@@ -11,6 +11,7 @@ type viewStyles struct {
 	saved          lipgloss.Style
 	muted          lipgloss.Style
 	failure        lipgloss.Style
+	matched        lipgloss.Style
 }
 
 func newViewStyles(dark bool) viewStyles {
@@ -38,6 +39,10 @@ func newViewStyles(dark bool) viewStyles {
 		failure: lipgloss.NewStyle().Foreground(choose(
 			lipgloss.Color("#B42318"),
 			lipgloss.Color("#F97066"),
+		)),
+		matched: lipgloss.NewStyle().Bold(true).Background(choose(
+			lipgloss.Color("#FFF3B0"),
+			lipgloss.Color("#5B4B00"),
 		)),
 	}
 }

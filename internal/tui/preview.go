@@ -2,8 +2,10 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -152,6 +154,8 @@ func (value model) enterFullscreen() model {
 	value.previewFullContent = nil
 	value.previewFullErr = ""
 	value.previewFullPending = false
+	value = value.clearFullscreenSearch()
+	value.previewSearching = false
 	return value
 }
 
@@ -234,7 +238,27 @@ func (value model) updateFullPreview(message fullPreviewMsg) (model, tea.Cmd) {
 	}
 	value.previewFullContent = lines
 	value.previewScrollOffset = clampScrollOffset(value.previewScrollOffset, len(lines))
+	value.recomputeFullscreenSearch()
 	return value, nil
+}
+
+// recomputeFullscreenSearch keeps an active buffer search alive across a
+// recapture: the query survives, but the match set is recomputed against the
+// new content and re-anchored from the current viewport position, since the
+// old line indices no longer necessarily point at the same text.
+func (value *model) recomputeFullscreenSearch() {
+	if !value.previewSearchActive {
+		return
+	}
+	matches := findMatches(value.previewFullContent, value.previewSearchQuery)
+	if len(matches) == 0 {
+		value.previewSearchActive = false
+		value.previewSearchMatches = nil
+		value.previewSearchNoMatches = true
+		return
+	}
+	value.previewSearchMatches = matches
+	value.previewSearchIndex = nearestMatchIndex(matches, value.currentViewportLine())
 }
 
 func (value model) updateFullPreviewTick(message fullPreviewTickMsg) (model, tea.Cmd) {
@@ -264,6 +288,146 @@ func (value model) updateFullPreviewTick(message fullPreviewTickMsg) (model, tea
 // line reachable while still showing at least one line.
 func (value *model) scrollFullscreen(delta int) {
 	value.previewScrollOffset = clampScrollOffset(value.previewScrollOffset+delta, len(value.previewFullContent))
+}
+
+// updateFullscreenSearchInput handles a key press while the fullscreen buffer
+// search input is open: enter confirms (finding matches and jumping to the
+// nearest one), esc cancels back to whatever search state existed before
+// (matching the esc hierarchy — this only ever cancels the input, never the
+// fullscreen view itself), and any other printable key is appended literally,
+// exactly like the list search and compose inputs.
+func (value model) updateFullscreenSearchInput(key tea.Key) model {
+	switch key.Code {
+	case tea.KeyEnter:
+		return value.confirmFullscreenSearch()
+	case tea.KeyEscape:
+		value.previewSearching = false
+		value.previewSearchQuery = ""
+		return value
+	case tea.KeyBackspace:
+		_, size := utf8.DecodeLastRuneInString(value.previewSearchQuery)
+		if size > 0 {
+			value.previewSearchQuery = value.previewSearchQuery[:len(value.previewSearchQuery)-size]
+		}
+		return value
+	}
+	if key.Code == 'u' && key.Mod&tea.ModCtrl != 0 {
+		value.previewSearchQuery = ""
+		return value
+	}
+	if printable(key.Text) {
+		value.previewSearchQuery += key.Text
+	}
+	return value
+}
+
+// confirmFullscreenSearch closes the input and, for a non-empty query,
+// searches the whole buffer case-insensitively. A match jumps the viewport to
+// the nearest match at or after the current position (wrapping if none is);
+// zero matches leaves the viewport untouched and previewSearchActive false,
+// with previewSearchNoMatches set so the view can render "no matches"
+// feedback instead of silently doing nothing.
+func (value model) confirmFullscreenSearch() model {
+	value.previewSearching = false
+	query := value.previewSearchQuery
+	value.previewSearchNoMatches = false
+	if query == "" {
+		value.previewSearchActive = false
+		value.previewSearchMatches = nil
+		return value
+	}
+	matches := findMatches(value.previewFullContent, query)
+	if len(matches) == 0 {
+		value.previewSearchActive = false
+		value.previewSearchMatches = nil
+		value.previewSearchNoMatches = true
+		return value
+	}
+	value.previewSearchActive = true
+	value.previewSearchMatches = matches
+	value.previewSearchIndex = nearestMatchIndex(matches, value.currentViewportLine())
+	value.jumpToCurrentMatch()
+	return value
+}
+
+// clearFullscreenSearch drops the active search — its matches, highlight and
+// count — without touching the scrollback viewport, so esc from an active
+// search returns the plain scrollback view at the position search left it.
+func (value model) clearFullscreenSearch() model {
+	value.previewSearchActive = false
+	value.previewSearchNoMatches = false
+	value.previewSearchQuery = ""
+	value.previewSearchMatches = nil
+	value.previewSearchIndex = 0
+	return value
+}
+
+// advanceFullscreenSearch moves the current match by delta (1 for n, -1 for
+// N), wrapping around both ends, and scrolls the viewport to it.
+func (value *model) advanceFullscreenSearch(delta int) {
+	if len(value.previewSearchMatches) == 0 {
+		return
+	}
+	count := len(value.previewSearchMatches)
+	value.previewSearchIndex = ((value.previewSearchIndex+delta)%count + count) % count
+	value.jumpToCurrentMatch()
+}
+
+// jumpToCurrentMatch scrolls the viewport so the current match line is
+// visible, anchoring it at the top of the viewport like the rest of
+// fullscreen's offset scheme (offset 0 = tail).
+func (value *model) jumpToCurrentMatch() {
+	if value.previewSearchIndex < 0 || value.previewSearchIndex >= len(value.previewSearchMatches) {
+		return
+	}
+	line := value.previewSearchMatches[value.previewSearchIndex]
+	value.previewScrollOffset = clampScrollOffset(len(value.previewFullContent)-1-line, len(value.previewFullContent))
+}
+
+// currentViewportLine reports the buffer line the viewport is anchored at —
+// the same line clampScrollOffset's inverse of previewScrollOffset resolves
+// to — so a fresh confirm searches forward from what the user is looking at
+// rather than always from the top or bottom of the whole buffer.
+func (value model) currentViewportLine() int {
+	total := len(value.previewFullContent)
+	if total == 0 {
+		return 0
+	}
+	line := total - 1 - value.previewScrollOffset
+	if line < 0 {
+		return 0
+	}
+	if line >= total {
+		return total - 1
+	}
+	return line
+}
+
+// findMatches returns the indices of every line in lines containing query as
+// a case-insensitive substring.
+func findMatches(lines []string, query string) []int {
+	if query == "" {
+		return nil
+	}
+	needle := strings.ToLower(query)
+	var matches []int
+	for index, line := range lines {
+		if strings.Contains(strings.ToLower(line), needle) {
+			matches = append(matches, index)
+		}
+	}
+	return matches
+}
+
+// nearestMatchIndex returns the index into matches of the first match at or
+// after anchorLine, wrapping to the first match overall if none qualifies.
+func nearestMatchIndex(matches []int, anchorLine int) int {
+	for index, line := range matches {
+		if line >= anchorLine {
+			return index
+		}
+	}
+	return 0
 }
 
 func clampScrollOffset(offset, lineCount int) int {
@@ -389,11 +553,19 @@ func (value model) fullscreenPreview(inset, width int) tea.View {
 	selected, ok := value.selectedSession()
 	if ok {
 		lines = append(lines, value.previewHeader(sessionTitle(selected), width), "")
+		searchLine := value.fullscreenSearchLine(width)
 		// The fixed frame the body has to share the screen with: the ars header
 		// and its blank, the title and its blank, then the blank and the close
-		// hint at the foot.
-		const frameLines = 6
+		// hint at the foot, plus one row when the search input or an active
+		// search's match count is showing.
+		frameLines := 6
+		if searchLine != "" {
+			frameLines++
+		}
 		lines = append(lines, value.fullscreenBody(selected, width, value.height-frameLines)...)
+		if searchLine != "" {
+			lines = append(lines, searchLine)
+		}
 	}
 	lines = append(lines, "", value.mutedText("f / esc to close", width))
 	margin := strings.Repeat(" ", inset)
@@ -403,6 +575,32 @@ func (value model) fullscreenPreview(inset, width int) tea.View {
 		}
 	}
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
+}
+
+// fullscreenSearchLine renders the bottom-of-frame search line: the live
+// "/query" input while typing, the "i/n" match position once a search is
+// active, or "no matches" feedback after a query with zero hits — empty when
+// none of those apply, so callers can tell whether the line claims a row in
+// the height budget.
+func (value model) fullscreenSearchLine(width int) string {
+	switch {
+	case value.previewSearching:
+		prefix := "/"
+		if !value.noColor {
+			prefix = value.styles.selectedCursor.Render(prefix)
+		}
+		return fitLine(prefix+value.previewSearchQuery, width)
+	case value.previewSearchActive:
+		count := fmt.Sprintf("%d/%d match", value.previewSearchIndex+1, len(value.previewSearchMatches))
+		if len(value.previewSearchMatches) != 1 {
+			count += "es"
+		}
+		return value.mutedText(count, width)
+	case value.previewSearchNoMatches:
+		return value.mutedText(fmt.Sprintf("no matches for %q", value.previewSearchQuery), width)
+	default:
+		return ""
+	}
 }
 
 // fullscreenBody renders the fullscreen scrollback body: a saved session's
@@ -425,17 +623,65 @@ func (value model) fullscreenBody(selected session.Session, width, height int) [
 	}
 	lines := value.previewFullContent
 	start, rows, topInd, botInd := fullscreenWindow(len(lines), value.previewScrollOffset, height)
+	matchSet := value.searchMatchSet()
 	fitted := make([]string, 0, height)
 	if topInd {
 		fitted = append(fitted, value.scrollIndicator("↑", start, width))
 	}
-	for _, line := range lines[start : start+rows] {
-		fitted = append(fitted, fitLine(ansi.Strip(line), width))
+	for offset, line := range lines[start : start+rows] {
+		lineIndex := start + offset
+		plain := ansi.Strip(line)
+		if matchSet[lineIndex] {
+			fitted = append(fitted, value.highlightMatches(fitLine(plain, width), value.previewSearchQuery))
+		} else {
+			fitted = append(fitted, fitLine(plain, width))
+		}
 	}
 	if botInd {
 		fitted = append(fitted, value.scrollIndicator("↓", len(lines)-(start+rows), width))
 	}
 	return fitted
+}
+
+// searchMatchSet returns the set of buffer line indices an active search
+// matched, or nil when no search is active, so fullscreenBody can decide
+// per-line whether to highlight without a linear scan of the match slice for
+// every visible row.
+func (value model) searchMatchSet() map[int]bool {
+	if !value.previewSearchActive || len(value.previewSearchMatches) == 0 {
+		return nil
+	}
+	set := make(map[int]bool, len(value.previewSearchMatches))
+	for _, line := range value.previewSearchMatches {
+		set[line] = true
+	}
+	return set
+}
+
+// highlightMatches wraps every case-insensitive occurrence of query in line
+// with the same emphasis style row selection uses, falling back to plain text
+// under NO_COLOR. The line has already been through fitLine/ansi.Strip, so
+// this only ever sees plain text.
+func (value model) highlightMatches(line, query string) string {
+	if query == "" || value.noColor {
+		return line
+	}
+	needle := strings.ToLower(query)
+	var builder strings.Builder
+	rest := line
+	restLower := strings.ToLower(line)
+	for {
+		index := strings.Index(restLower, needle)
+		if index < 0 {
+			builder.WriteString(rest)
+			break
+		}
+		builder.WriteString(rest[:index])
+		builder.WriteString(value.styles.matched.Render(rest[index : index+len(needle)]))
+		rest = rest[index+len(needle):]
+		restLower = restLower[index+len(needle):]
+	}
+	return builder.String()
 }
 
 // fullscreenWindow resolves the visible line range [start, start+rows) for a
