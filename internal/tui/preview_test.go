@@ -256,8 +256,14 @@ func TestPreviewHelpAdvertisesToggle(t *testing.T) {
 	}
 	value.showHelp = true
 	overlay := ansi.Strip(value.View().Content)
-	if !strings.Contains(overlay, "toggle preview pane") {
+	// With the pane open the overlay features the p row as "close preview
+	// pane"; closed it reads "toggle preview pane".
+	if !strings.Contains(overlay, "close preview pane") {
 		t.Fatalf("help overlay missing preview binding:\n%s", overlay)
+	}
+	value.previewOn = false
+	if closed := ansi.Strip(value.View().Content); !strings.Contains(closed, "toggle preview pane") {
+		t.Fatalf("help overlay missing preview binding with the pane closed:\n%s", closed)
 	}
 }
 
