@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -92,6 +93,9 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 		if !started || harness.collections != 2 || harness.sshRunner.uploadCount() != 2 {
 			t.Fatalf("started/collections/uploads = %v/%d/%d", started, harness.collections, harness.sshRunner.uploadCount())
 		}
+		if got := harness.earlyCounts(); !reflect.DeepEqual(got, map[string]int{app.LocalhostTarget: 2, "healthy": 2}) {
+			t.Fatalf("early callbacks = %#v, want local and remote once per collection", got)
+		}
 		if want := []string{"has-session", "bind-key", "set-option", "set-option", "attach-session"}; !slices.Equal(harness.runtimeRunner.attachCommands(), want) {
 			t.Fatalf("local attach commands = %v, want %v", harness.runtimeRunner.attachCommands(), want)
 		}
@@ -120,6 +124,9 @@ func TestEndToEndRoutesCommonTopologyThroughInteractiveAndJSONModes(t *testing.T
 		if document.SchemaVersion != 1 || harness.collections != 1 || harness.sshRunner.uploadCount() != 1 {
 			t.Fatalf("schema/collections/uploads = %d/%d/%d", document.SchemaVersion, harness.collections, harness.sshRunner.uploadCount())
 		}
+		if got := harness.earlyCounts(); !reflect.DeepEqual(got, map[string]int{app.LocalhostTarget: 1, "healthy": 1}) {
+			t.Fatalf("early callbacks = %#v, want local and remote once", got)
+		}
 		assertJSONV1Shape(t, stdout.Bytes())
 		wantSessions := []e2eSession{
 			{Host: "healthy", Provider: "codex", NativeID: e2eRemoteCodexID, UpdatedAt: "2026-07-19T02:00:00Z", CWD: "/work/remote"},
@@ -146,27 +153,56 @@ type e2eHarness struct {
 	sshRunner     *e2eRunner
 	runtimeRunner *e2eRuntimeRunner
 	collections   int
+	earlyMu       sync.Mutex
+	earlyByTarget map[string]int
 }
 
 func newE2EHarness(localHome, remoteHome string) *e2eHarness {
 	harness := &e2eHarness{
 		sshRunner:     &e2eRunner{remoteHome: remoteHome, collectorAsset: []byte("synthetic collector")},
 		runtimeRunner: &e2eRuntimeRunner{},
+		earlyByTarget: make(map[string]int),
 	}
 	assets := e2eAssets{data: harness.sshRunner.collectorAsset}
-	collector := func(ctx context.Context, host app.Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+	collector := func(
+		ctx context.Context,
+		host app.Host,
+		emitRecent func([]session.Discovered) error,
+	) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 		if host.Local {
-			candidates, results, err := provider.DiscoverAll(ctx, localHome, provider.Builtin())
+			var finalDiscovered []session.Discovered
+			var finalResults []provider.Result
+			var finalReport runtime.Report
+			err := provider.DiscoverAllStream(
+				ctx,
+				localHome,
+				provider.Builtin(),
+				time.Now().Add(-session.RecentWindow),
+				func(snapshot provider.Snapshot) error {
+					states, report := runtime.Inspect(ctx, harness.runtimeRunner, snapshot.Candidates)
+					discovered := combineE2ERuntime(snapshot.Candidates, states)
+					if snapshot.Phase == provider.PhaseRecent {
+						harness.recordEarly(host.Target)
+						return emitRecent(discovered)
+					}
+					finalDiscovered = discovered
+					finalResults = snapshot.Results
+					finalReport = report
+					return nil
+				},
+			)
 			if err != nil {
 				return nil, nil, runtime.Report{}, err
 			}
-			states, report := runtime.Inspect(ctx, harness.runtimeRunner, candidates)
-			return combineE2ERuntime(candidates, states), results, report, nil
+			return finalDiscovered, finalResults, finalReport, nil
 		}
-		return arsSSH.Collect(ctx, harness.sshRunner, assets, host.Target, arsSSH.CollectOptions{
+		return arsSSH.CollectStream(ctx, harness.sshRunner, assets, host.Target, arsSSH.CollectOptions{
 			ConnectTimeout: 5 * time.Second,
 			HostTimeout:    60 * time.Second,
 			ProtocolLimits: protocol.DefaultLimits(),
+		}, func(discovered []session.Discovered) error {
+			harness.recordEarly(host.Target)
+			return emitRecent(discovered)
 		})
 	}
 	harness.collect = func(ctx context.Context, hosts []app.Host) app.Result {
@@ -198,6 +234,22 @@ func newE2EHarness(localHome, remoteHome string) *e2eHarness {
 		Stderr:       io.Discard,
 	}
 	return harness
+}
+
+func (harness *e2eHarness) recordEarly(target string) {
+	harness.earlyMu.Lock()
+	defer harness.earlyMu.Unlock()
+	harness.earlyByTarget[target]++
+}
+
+func (harness *e2eHarness) earlyCounts() map[string]int {
+	harness.earlyMu.Lock()
+	defer harness.earlyMu.Unlock()
+	counts := make(map[string]int, len(harness.earlyByTarget))
+	for target, count := range harness.earlyByTarget {
+		counts[target] = count
+	}
+	return counts
 }
 
 func findHost(hosts []app.Host, target string) (app.Host, bool) {
@@ -456,9 +508,22 @@ func (runner *e2eRunner) Run(ctx context.Context, name string, args []string, st
 	if _, err := fmt.Fprintf(&encoded, "/tmp/ars-%s\n", nonce); err != nil {
 		return err
 	}
-	if err := protocol.Encode(&encoded, nonce, discovered, results, runtime.Report{
-		Status: runtime.StatusUnavailable, ErrorCode: "tmux_unavailable",
+	report := runtime.Report{Status: runtime.StatusUnavailable, ErrorCode: "tmux_unavailable"}
+	encoder, err := protocol.NewStreamEncoder(&encoded, nonce, protocol.DefaultLimits())
+	if err != nil {
+		return err
+	}
+	if err := encoder.Encode(protocol.Snapshot{
+		Phase: provider.PhaseRecent, Discovered: discovered, Report: report,
 	}); err != nil {
+		return err
+	}
+	if err := encoder.Encode(protocol.Snapshot{
+		Phase: provider.PhaseComplete, Discovered: discovered, Results: results, Report: report,
+	}); err != nil {
+		return err
+	}
+	if err := encoder.Close(); err != nil {
 		return err
 	}
 	if strings.Contains(encoded.String(), e2eSecret) || strings.Contains(encoded.String(), runner.remoteHome) {

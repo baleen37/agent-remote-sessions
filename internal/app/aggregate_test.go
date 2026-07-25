@@ -22,7 +22,7 @@ func TestCollectHostsKeepsSessionsBesideRuntimeWarning(t *testing.T) {
 		{Status: runtime.StatusFailed, ErrorCode: "tmux_failed"},
 	} {
 		t.Run(string(report.Status), func(t *testing.T) {
-			collector := func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			collector := func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 				return []session.Discovered{{
 					Candidate: aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Unix(10, 0).UTC()),
 					Runtime:   session.Runtime{State: session.RuntimeSaved},
@@ -38,7 +38,7 @@ func TestCollectHostsKeepsSessionsBesideRuntimeWarning(t *testing.T) {
 
 func TestCollectHostsKeepsSessionsBesideProviderWarnings(t *testing.T) {
 	candidate := aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Unix(10, 0).UTC())
-	collector := func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+	collector := func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 		return aggregateDiscovered(candidate), []provider.Result{
 			{
 				Provider: session.Claude, Status: provider.Partial,
@@ -61,9 +61,38 @@ func TestCollectHostsKeepsSessionsBesideProviderWarnings(t *testing.T) {
 	}
 }
 
+func TestCollectHostsReturnsAuthoritativeFinalStateOnly(t *testing.T) {
+	early := aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Unix(20, 0).UTC())
+	final := aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174001", time.Unix(10, 0).UTC())
+	callbacks := 0
+	collector := func(
+		_ context.Context,
+		_ Host,
+		emitRecent func([]session.Discovered) error,
+	) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		callbacks++
+		if err := emitRecent(aggregateDiscovered(early)); err != nil {
+			return nil, nil, runtime.Report{}, err
+		}
+		return aggregateDiscovered(final), nil, runtime.Report{Status: runtime.StatusOK}, nil
+	}
+
+	got := CollectHosts(context.Background(), []Host{{Target: "macbook", Local: true}}, 1, collector)
+
+	if callbacks != 1 {
+		t.Fatalf("collector calls = %d, want 1", callbacks)
+	}
+	wantSessions := []session.Session{{
+		Host: "macbook", Candidate: final, Runtime: session.Runtime{State: session.RuntimeSaved},
+	}}
+	if !reflect.DeepEqual(got.Sessions, wantSessions) {
+		t.Fatalf("sessions = %#v, want final-only %#v", got.Sessions, wantSessions)
+	}
+}
+
 func TestCollectHostsRejectsLiveSessionWithNonOKRuntimeReport(t *testing.T) {
 	started := time.Unix(20, 0).UTC()
-	collector := func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+	collector := func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 		return []session.Discovered{{
 			Candidate: aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Unix(10, 0).UTC()),
 			Runtime:   session.Runtime{State: session.RuntimeAttached, AttachedClients: 1, StartedAt: started},
@@ -89,7 +118,7 @@ func TestCollectHostsLimitsConcurrencyAndAttemptsEveryHostOnce(t *testing.T) {
 	var maximum atomic.Int32
 	var mu sync.Mutex
 	calls := make(map[string]int)
-	collector := func(_ context.Context, host Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+	collector := func(_ context.Context, host Host, _ func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 		mu.Lock()
 		calls[host.Target]++
 		mu.Unlock()
@@ -146,7 +175,7 @@ func TestCollectHostsPropagatesContextAndClassifiesTimeout(t *testing.T) {
 	defer cancel()
 
 	result := CollectHosts(ctx, []Host{{Target: "slow-host"}}, 4,
-		func(got context.Context, _ Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		func(got context.Context, _ Host, _ func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 			if got.Value(key) != "value" {
 				t.Error("collector context lost request value")
 			}
@@ -172,7 +201,7 @@ func TestCollectHostsKeepsHealthyEmptyPartialAndPeerSessions(t *testing.T) {
 	candidate := aggregateCandidate(session.Claude, "123e4567-e89b-42d3-a456-426614174000", time.Date(2026, 7, 19, 1, 2, 3, 4, time.UTC))
 
 	result := CollectHosts(context.Background(), hosts, 4,
-		func(_ context.Context, host Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		func(_ context.Context, host Host, _ func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 			switch host.Target {
 			case "empty":
 				return nil, []provider.Result{{Provider: session.Claude, Status: provider.Absent}}, runtime.Report{Status: runtime.StatusOK}, nil
@@ -207,7 +236,7 @@ func TestCollectHostsKeepsHealthyEmptyPartialAndPeerSessions(t *testing.T) {
 func TestCollectHostsReportsAllHostFailure(t *testing.T) {
 	hosts := []Host{{Target: "one"}, {Target: "two"}}
 	result := CollectHosts(context.Background(), hosts, 4,
-		func(_ context.Context, _ Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		func(_ context.Context, _ Host, _ func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 			return nil, nil, runtime.Report{}, errors.New("connection refused")
 		})
 
@@ -233,7 +262,7 @@ func TestCollectHostsDeduplicatesAndSortsSessionsDeterministically(t *testing.T)
 	hosts := []Host{{Target: "z-host"}, {Target: "a-host"}}
 
 	result := CollectHosts(context.Background(), hosts, 4,
-		func(_ context.Context, host Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+		func(_ context.Context, host Host, _ func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 			if host.Target == "z-host" {
 				olderDuplicate := aggregateCandidate(session.Claude, idA, oldest)
 				newerDuplicate := aggregateCandidate(session.Claude, idA, newest)
@@ -269,35 +298,35 @@ func TestCollectHostsRejectsInvalidCollectorOutputAndNormalizesErrors(t *testing
 	}{
 		{
 			name: "invalid candidate is protocol error",
-			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			collector: func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 				return []session.Discovered{{Candidate: session.Candidate{Provider: "unknown"}}}, nil, runtime.Report{Status: runtime.StatusOK}, nil
 			},
 			wantCode: "protocol_error", wantError: "Collector protocol failed",
 		},
 		{
 			name: "joined host deadline",
-			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			collector: func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 				return nil, nil, runtime.Report{}, errors.Join(errors.New("process exit"), context.DeadlineExceeded)
 			},
 			wantCode: "ssh_timeout", wantError: "SSH collection timed out",
 		},
 		{
 			name: "unsupported target",
-			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			collector: func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 				return nil, nil, runtime.Report{}, errors.New("unsupported SSH target FreeBSD/raw")
 			},
 			wantCode: "unsupported_target", wantError: "SSH target is unsupported",
 		},
 		{
 			name: "resource limit",
-			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			collector: func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 				return nil, nil, runtime.Report{}, errors.New("collector stdout exceeds limit: /secret/source")
 			},
 			wantCode: "resource_limit", wantError: "Collector resource limit exceeded",
 		},
 		{
 			name: "protocol decode",
-			collector: func(context.Context, Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+			collector: func(context.Context, Host, func([]session.Discovered) error) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 				return nil, nil, runtime.Report{}, errors.New("collector protocol: malformed /private/transcript")
 			},
 			wantCode: "protocol_error", wantError: "Collector protocol failed",
