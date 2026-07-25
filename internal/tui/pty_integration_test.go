@@ -41,6 +41,173 @@ func TestPTYAttachDetachRestoresTUI(t *testing.T) {
 	}
 }
 
+func TestPTYProgressiveUpdatesStayStableDuringNavigation(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "1")
+
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 120}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = terminal.Close()
+	})
+
+	var capture ptyCapture
+	readDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&capture, master)
+		close(readDone)
+	}()
+
+	collection := make(chan Update)
+	attached := make(chan session.Session, 1)
+	previewed := make(chan session.Session, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	dependencies := Dependencies{
+		Collect: func(context.Context) <-chan Update { return collection },
+		Attach: func(_ context.Context, item session.Session) (ExecCommand, error) {
+			attached <- item
+			return nil, errors.New("fixture attach stopped")
+		},
+		Preview: func(_ context.Context, item session.Session) ([]byte, error) {
+			previewed <- item
+			return []byte("fixture preview"), nil
+		},
+		LocalTarget: "localhost",
+		Now:         func() time.Time { return time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC) },
+		NoColor:     true,
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- Run(ctx, dependencies, terminal, terminal) }()
+
+	cache := progressivePTYResult("initial")
+	collection <- Update{Result: cache, Loading: []string{"cached"}}
+	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
+		return strings.Contains(value, "initial session 01") &&
+			strings.Contains(value, "refreshing")
+	}, "initial progressive snapshot")
+	waitForPTYPreview(t, previewed, cache.Sessions[0].NativeID, "initial selected session")
+	for _, forbidden := range []string{"cached", "recent-first", "complete", "loading server"} {
+		if strings.Contains(capture.String(), forbidden) {
+			t.Fatalf("initial PTY output exposed phase %q: %q", forbidden, capture.String())
+		}
+	}
+
+	if _, err := master.Write([]byte{'j'}); err != nil {
+		t.Fatalf("write first navigation: %v", err)
+	}
+	waitForPTYPreview(t, previewed, cache.Sessions[1].NativeID, "navigated second session")
+	navigationStart := len(capture.String())
+	collection <- Update{Result: progressivePTYResult("early"), Loading: []string{"recent-first"}}
+	collection <- Update{Result: progressivePTYResult("final"), Loading: []string{"complete"}, Done: true}
+	close(collection)
+	if _, err := master.Write([]byte{'k', 'j'}); err != nil {
+		t.Fatalf("write navigation reset: %v", err)
+	}
+	seen := make(map[string]bool)
+	for range 2 {
+		item := waitForAnyPTYPreview(t, previewed, "navigation while updates are pending")
+		if !strings.HasPrefix(item.Title, "initial") {
+			t.Fatalf("previewed staged title during navigation: %#v", item)
+		}
+		seen[item.NativeID] = true
+	}
+	for _, want := range []string{cache.Sessions[0].NativeID, cache.Sessions[1].NativeID} {
+		if !seen[want] {
+			t.Fatalf("navigation previews = %v, missing %s", seen, want)
+		}
+	}
+	beforeIdle := capture.String()[navigationStart:]
+	if strings.Contains(beforeIdle, "early") || strings.Contains(beforeIdle, "final") {
+		t.Fatalf("PTY applied staged snapshot during navigation: %q", beforeIdle)
+	}
+
+	finalStart := len(capture.String())
+	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
+		return strings.Contains(value[finalStart:], "final session 01")
+	}, "final snapshot after interaction idle")
+	finalDelta := capture.String()[finalStart:]
+	for _, forbidden := range []string{"recent-first", "complete", "loading server"} {
+		if strings.Contains(finalDelta, forbidden) {
+			t.Fatalf("final PTY output exposed phase %q: %q", forbidden, finalDelta)
+		}
+	}
+
+	if _, err := master.Write([]byte{'\r'}); err != nil {
+		t.Fatalf("write Enter after final snapshot: %v", err)
+	}
+	select {
+	case item := <-attached:
+		if item.NativeID != cache.Sessions[1].NativeID || item.Title != "final session 01" {
+			t.Fatalf("attached selection = %#v, want final canonical second session", item)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for selected attach; output: %q", capture.String())
+	}
+
+	if _, err := master.Write([]byte{'q'}); err != nil {
+		t.Fatalf("write q: %v", err)
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("TUI exit: %v; output: %q", err, capture.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("TUI did not exit after q; output: %q", capture.String())
+	}
+	_ = terminal.Close()
+	_ = master.Close()
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("PTY reader did not terminate")
+	}
+}
+
+func waitForPTYPreview(t *testing.T, previewed <-chan session.Session, nativeID, label string) session.Session {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case item := <-previewed:
+			if item.NativeID == nativeID {
+				return item
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s (%s)", label, nativeID)
+		}
+	}
+}
+
+func waitForAnyPTYPreview(t *testing.T, previewed <-chan session.Session, label string) session.Session {
+	t.Helper()
+	select {
+	case item := <-previewed:
+		return item
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+		return session.Session{}
+	}
+}
+
+func progressivePTYResult(stage string) Result {
+	items := manySessions(3)
+	for index := range items {
+		items[index].Title = fmt.Sprintf("%s session %02d", stage, index)
+	}
+	return Result{
+		Hosts:    []output.HostResult{{Target: "server", Status: output.HostOK}},
+		Sessions: items,
+	}
+}
+
 func TestPTYTmuxCleanupReportsKillError(t *testing.T) {
 	want := errors.New("kill failed")
 	err := cleanupPTYTmux(context.Background(), func(context.Context) error { return want }, "unused", 0)

@@ -1010,8 +1010,8 @@ func TestHeaderShowsSpinnerFrameWhileCollecting(t *testing.T) {
 	if !strings.Contains(content, spinnerFrames[0]) {
 		t.Fatalf("header missing spinner frame while collecting: %q", content)
 	}
-	if strings.Contains(content, "refreshing") {
-		t.Fatalf("header still shows static refreshing text: %q", content)
+	if !strings.Contains(content, "refreshing") {
+		t.Fatalf("header missing generic refreshing text: %q", content)
 	}
 }
 
@@ -1111,40 +1111,86 @@ func TestHelpOffersExpandOnMoreRow(t *testing.T) {
 	}
 }
 
-func TestHeaderNamesLoadingHostsAndDropsCompletedOnes(t *testing.T) {
+func TestHeaderUsesOnlyGenericRefreshingCopy(t *testing.T) {
 	model := readyModel()
 	model.width, model.noColor = 120, true
 	model.collecting = true
-	model.loading = []string{"localhost", "server"}
-	content := ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "loading localhost, server") {
-		t.Fatalf("header missing loading hosts: %q", content)
+	model.loading = []string{"localhost", "server", "cached", "recent-first", "complete"}
+	header := strings.Split(ansi.Strip(model.View().Content), "\n")[0]
+	if !strings.Contains(header, "refreshing") {
+		t.Fatalf("header missing generic refreshing copy: %q", header)
 	}
-
-	model.loading = []string{"server"}
-	content = ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "loading server") || strings.Contains(content, "localhost,") {
-		t.Fatalf("header kept a completed host: %q", content)
-	}
-
-	model.collecting = false
-	model.loading = nil
-	content = ansi.Strip(model.View().Content)
-	if strings.Contains(content, "loading") {
-		t.Fatalf("header shows loading segment when idle: %q", content)
+	for _, forbidden := range []string{
+		"cached", "cache", "recent-first", "refreshing recent",
+		"finishing history", "exhaustive", "complete",
+		"loading localhost", "loading server",
+	} {
+		if strings.Contains(header, forbidden) {
+			t.Fatalf("header exposed %q: %q", forbidden, header)
+		}
 	}
 }
 
-func TestHeaderCollapsesThreeOrMoreLoadingHostsIntoCount(t *testing.T) {
+func TestActiveInitialEmptyShowsGenericLoadingSessions(t *testing.T) {
 	model := readyModel()
 	model.width, model.noColor = 120, true
+	model.result = Result{}
+	model.refreshVisible()
 	model.collecting = true
-	model.loading = []string{"localhost", "server", "backup"}
 	content := ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "loading 3 hosts") {
-		t.Fatalf("header missing loading count: %q", content)
+	if !strings.Contains(content, "loading sessions…") {
+		t.Fatalf("active empty view missing loading copy: %q", content)
 	}
-	if strings.Contains(content, "loading localhost") {
-		t.Fatalf("header lists hosts instead of the count: %q", content)
+	if strings.Contains(content, "no sessions yet") {
+		t.Fatalf("active empty view showed completed guidance: %q", content)
 	}
+}
+
+func TestCompletedHealthyEmptyGuidanceUnchanged(t *testing.T) {
+	model := readyModel()
+	model.width, model.noColor = 120, true
+	model.result = Result{}
+	model.refreshVisible()
+	model.collecting = false
+	content := ansi.Strip(model.View().Content)
+	for _, want := range []string{
+		"no sessions yet",
+		"start a claude/codex session, or add a remote with: ars remote add <host>",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("completed empty view missing %q: %q", want, content)
+		}
+	}
+	if strings.Contains(content, "loading sessions…") {
+		t.Fatalf("completed empty view kept loading copy: %q", content)
+	}
+}
+
+func TestActiveQueryAndFilterEmptyGuidanceUnchanged(t *testing.T) {
+	t.Run("query", func(t *testing.T) {
+		model := readyModel()
+		model.width, model.noColor = 120, true
+		model.collecting = true
+		model.query = "missing"
+		model.refreshVisible()
+		content := ansi.Strip(model.View().Content)
+		if !strings.Contains(content, `no matches for "missing" · esc to clear`) ||
+			strings.Contains(content, "loading sessions…") {
+			t.Fatalf("active query empty guidance: %q", content)
+		}
+	})
+
+	t.Run("filter", func(t *testing.T) {
+		model := readyModel()
+		model.width, model.noColor = 120, true
+		model.collecting = true
+		model.stateFilter = map[session.RuntimeState]bool{session.RuntimeSaved: true}
+		model.result = Result{Sessions: []session.Session{twoSessions()[0]}}
+		model.refreshVisible()
+		content := ansi.Strip(model.View().Content)
+		if !strings.Contains(content, "no saved sessions · esc to clear") ||
+			strings.Contains(content, "loading sessions…") {
+			t.Fatalf("active filter empty guidance: %q", content)
+		}
+	})
 }
