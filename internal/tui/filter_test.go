@@ -57,3 +57,90 @@ func TestFilterSessionsDoesNotExposeLocalTarget(t *testing.T) {
 		}
 	}
 }
+
+func staleFilterSession(id string, state session.RuntimeState, updated time.Time) session.Session {
+	return session.Session{
+		Host: "localhost",
+		Candidate: session.Candidate{
+			Provider:  session.Claude,
+			NativeID:  id,
+			UpdatedAt: updated,
+			CWD:       "/work/ars",
+			Title:     id,
+		},
+		Runtime: session.Runtime{State: state},
+	}
+}
+
+// filterByStale hides saved sessions whose latest activity is older than
+// staleAfter, unless showAll is on or the session is pinned. Live sessions
+// (running/attached) are never hidden regardless of age.
+func TestFilterByStaleHidesOldSavedSessionsByDefault(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	fresh := staleFilterSession("fresh", session.RuntimeSaved, now.Add(-6*24*time.Hour))
+	old := staleFilterSession("old", session.RuntimeSaved, now.Add(-8*24*time.Hour))
+	items := []session.Session{fresh, old}
+
+	visible, hidden := filterByStale(items, now, false, nil)
+	if len(visible) != 1 || visible[0].NativeID != "fresh" {
+		t.Fatalf("filterByStale visible = %+v, want only the fresh session", visible)
+	}
+	if hidden != 1 {
+		t.Fatalf("filterByStale hidden = %d, want 1", hidden)
+	}
+}
+
+func TestFilterByStaleKeepsLiveSessionsRegardlessOfAge(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	oldRunning := staleFilterSession("old-running", session.RuntimeRunning, now.Add(-30*24*time.Hour))
+	oldAttached := staleFilterSession("old-attached", session.RuntimeAttached, now.Add(-30*24*time.Hour))
+	items := []session.Session{oldRunning, oldAttached}
+
+	visible, hidden := filterByStale(items, now, false, nil)
+	if len(visible) != 2 {
+		t.Fatalf("filterByStale visible = %+v, want both live sessions kept", visible)
+	}
+	if hidden != 0 {
+		t.Fatalf("filterByStale hidden = %d, want 0", hidden)
+	}
+}
+
+func TestFilterByStaleKeepsPinnedSessionsRegardlessOfAge(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	old := staleFilterSession("old", session.RuntimeSaved, now.Add(-30*24*time.Hour))
+	pins := map[sessionKey]bool{keyOf(old): true}
+
+	visible, hidden := filterByStale([]session.Session{old}, now, false, pins)
+	if len(visible) != 1 {
+		t.Fatalf("filterByStale visible = %+v, want the pinned session kept", visible)
+	}
+	if hidden != 0 {
+		t.Fatalf("filterByStale hidden = %d, want 0", hidden)
+	}
+}
+
+func TestFilterByStaleShowAllRevealsEverything(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	old := staleFilterSession("old", session.RuntimeSaved, now.Add(-30*24*time.Hour))
+
+	visible, hidden := filterByStale([]session.Session{old}, now, true, nil)
+	if len(visible) != 1 {
+		t.Fatalf("filterByStale showAll visible = %+v, want the old session shown", visible)
+	}
+	if hidden != 0 {
+		t.Fatalf("filterByStale showAll hidden = %d, want 0", hidden)
+	}
+}
+
+func TestFilterByStaleBoundaryAtExactlySevenDaysIsNotHidden(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	boundary := staleFilterSession("boundary", session.RuntimeSaved, now.Add(-staleAfter))
+
+	visible, hidden := filterByStale([]session.Session{boundary}, now, false, nil)
+	if len(visible) != 1 {
+		t.Fatalf("filterByStale at exact boundary visible = %+v, want kept", visible)
+	}
+	if hidden != 0 {
+		t.Fatalf("filterByStale at exact boundary hidden = %d, want 0", hidden)
+	}
+}

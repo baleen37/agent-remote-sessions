@@ -52,6 +52,7 @@ var helpBindings = []helpBinding{
 	{key: "PgUp / PgDn · Ctrl+U / Ctrl+D", text: "page up / down"},
 	{key: "/", text: "search"},
 	{key: "! / @ / # / $", text: "filter attached / running / saved / needs input", featured: []helpContext{helpFilterActive}},
+	{key: "a", text: "show / hide sessions older than 7d"},
 	{
 		key:            "p",
 		text:           "toggle preview pane",

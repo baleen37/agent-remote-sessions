@@ -282,8 +282,12 @@ func (value model) contentWidth() int {
 }
 
 func (value model) header() string {
+	counted := value.result.Sessions
+	if value.query == "" {
+		counted, _ = filterByStale(counted, value.deps.Now(), value.showAll, value.pins)
+	}
 	active := 0
-	for _, item := range value.result.Sessions {
+	for _, item := range counted {
 		if item.Runtime.State != session.RuntimeSaved {
 			active++
 		}
@@ -294,7 +298,12 @@ func (value model) header() string {
 			peers++
 		}
 	}
-	stats := fmt.Sprintf("  %d active · %d recent", active, len(value.result.Sessions)-active)
+	stats := fmt.Sprintf("  %d active · %d recent", active, len(counted)-active)
+	if value.showAll {
+		stats += " · showing all"
+	} else if value.staleHidden > 0 {
+		stats += fmt.Sprintf(" · %d older hidden", value.staleHidden)
+	}
 	switch peers {
 	case 0:
 	case 1:
@@ -525,7 +534,7 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@#$ filter", "x kill", "m msg", "P pin")
+		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@#$ filter", "a older", "x kill", "m msg", "P pin")
 	}
 	items = append(items, "/ search")
 	if value.query != "" || value.filterActive() {
@@ -550,7 +559,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"P pin", "m msg", "x kill", "!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "f full"}
+	droppable := []string{"a older", "P pin", "m msg", "x kill", "!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "f full"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {
