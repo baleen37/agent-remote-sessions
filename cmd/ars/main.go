@@ -186,15 +186,9 @@ func maybeUpdate(ctx context.Context, stdin, stdout *os.File) error {
 			return command.Run()
 		},
 		Exec: syscall.Exec,
-		MakeRaw: func() (func(), error) {
-			state, err := term.MakeRaw(int(stdin.Fd()))
-			if err != nil {
-				return nil, err
-			}
-			return func() { term.Restore(int(stdin.Fd()), state) }, nil
+		Choose: func(current, latest string) bool {
+			return tui.ChooseUpdate(ctx, stdin, stdout, current, latest)
 		},
-		Input:        stdin,
-		Output:       stdout,
 		Args:         os.Args,
 		Environ:      os.Environ(),
 		CheckTimeout: 1500 * time.Millisecond,

@@ -51,11 +51,12 @@ must not be committed.
 
 Interactive runs check GitHub Releases for a newer version with a 1.5
 second budget; any failure is ignored and ars starts normally. When a
-newer release exists, ars offers it before the TUI starts: press Enter to
-update and continue on the new version, or any other key to skip. npm
-installs update through `npm install -g @baleen37/ars`; standalone
-binaries are verified against `SHA256SUMS` and replaced in place. Source
-builds skip the check.
+newer release exists, ars shows two numbered choices before the session TUI:
+update to the new version or continue with the current one. Use Up/Down and
+Enter, or press `1`/`2` directly; `q`, Escape, and Ctrl+C continue with the
+current version. npm installs update through
+`npm install -g @baleen37/ars`; standalone binaries are verified against
+`SHA256SUMS` and replaced in place. Source builds skip the check.
 
 ## Localhost and remote inventory
 

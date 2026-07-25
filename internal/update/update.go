@@ -3,7 +3,6 @@ package update
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -18,9 +17,7 @@ type Dependencies struct {
 	Executable     func() (string, error)
 	RunCommand     CommandRunner
 	Exec           func(argv0 string, argv, env []string) error
-	MakeRaw        func() (restore func(), err error)
-	Input          io.Reader
-	Output         io.Writer
+	Choose         func(current, latest string) bool
 	Args           []string
 	Environ        []string
 	CheckTimeout   time.Duration
@@ -40,7 +37,7 @@ func Maybe(ctx context.Context, deps Dependencies) error {
 	if err != nil || !IsNewer(latest, deps.CurrentVersion) {
 		return nil
 	}
-	if !Confirm(deps.Input, deps.Output, deps.CurrentVersion, latest, deps.MakeRaw) {
+	if !deps.Choose(deps.CurrentVersion, latest) {
 		return nil
 	}
 	executable, err := deps.Executable()
