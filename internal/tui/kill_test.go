@@ -149,7 +149,7 @@ func TestModelKillFireInvokesDepsKillAndSucceeds(t *testing.T) {
 	if command == nil {
 		t.Fatal("killDoneMsg did not restart collection")
 	}
-	want := "killed " + sessionTitle(row.session)
+	want := "killed " + sessionTitle(row.session) + " · enter to resume"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -482,7 +482,7 @@ func TestModelGroupKillFireKillsEveryMember(t *testing.T) {
 	if command == nil {
 		t.Fatal("group killDoneMsg did not restart collection")
 	}
-	want := "killed 2 sessions in " + row.project
+	want := "killed 2 sessions in " + row.project + " · enter to resume"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -786,5 +786,39 @@ func TestHelpOverlayAndFooterAdvertiseKill(t *testing.T) {
 	overlay := ansi.Strip(model.View().Content)
 	if !strings.Contains(overlay, "kill session / group (3s grace · u undo)") {
 		t.Fatalf("help overlay missing kill binding:\n%s", overlay)
+	}
+}
+
+// A completed kill drops the session to saved/recent, where enter resumes it.
+// The success status is the only place that recovery is discoverable once the
+// 3s undo window has passed, so both kill paths have to advertise it.
+func TestKilledStatusHintsResume(t *testing.T) {
+	single := killedStatus(killDoneMsg{title: "connection check", total: 1})
+	if single != "killed connection check · enter to resume" {
+		t.Fatalf("single kill status = %q, want the resume hint appended", single)
+	}
+	group := killedStatus(killDoneMsg{group: "ars", total: 2})
+	if group != "killed 2 sessions in ars · enter to resume" {
+		t.Fatalf("group kill status = %q, want the resume hint appended", group)
+	}
+}
+
+// The hint belongs to success only: a failed or canceled kill leaves nothing to
+// resume, so pointing at enter there would be wrong.
+func TestFailedAndCanceledKillStatusesOmitResumeHint(t *testing.T) {
+	failed := killFailedStatus(killDoneMsg{title: "connection check", total: 1, failed: 1, err: errors.New("boom")})
+	if strings.Contains(failed, "enter to resume") {
+		t.Fatalf("single failure status = %q, want no resume hint", failed)
+	}
+	batch := killFailedStatus(killDoneMsg{group: "ars", total: 2, failed: 1, err: errors.New("boom")})
+	if strings.Contains(batch, "enter to resume") {
+		t.Fatalf("batch failure status = %q, want no resume hint", batch)
+	}
+
+	model := readyModel()
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'u', Text: "u"}))
+	if strings.Contains(model.status, "enter to resume") {
+		t.Fatalf("canceled kill status = %q, want no resume hint", model.status)
 	}
 }

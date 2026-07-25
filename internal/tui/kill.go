@@ -9,7 +9,10 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
-const killGracePeriod = 3 * time.Second
+const (
+	killGracePeriod = 3 * time.Second
+	killResumeHint  = " · enter to resume"
+)
 
 type killFireMsg struct {
 	seq uint64
@@ -160,11 +163,14 @@ func killFailedStatus(message killDoneMsg) string {
 		" sessions in " + message.group + ": " + message.err.Error()
 }
 
+// killedStatus names what died and points at the recovery. A killed session
+// drops to saved, where enter resumes it, and once the grace period is over that
+// is the only recovery left — so the success status is where it has to be said.
 func killedStatus(message killDoneMsg) string {
 	if message.group == "" {
-		return "killed " + message.title
+		return "killed " + message.title + killResumeHint
 	}
-	return "killed " + strconv.Itoa(message.total) + " sessions in " + message.group
+	return "killed " + strconv.Itoa(message.total) + " sessions in " + message.group + killResumeHint
 }
 
 // restartCollectionKeepingPending restarts collection for a stale kill
