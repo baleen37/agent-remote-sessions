@@ -81,7 +81,7 @@ func column(value string, width int, right bool) string {
 	return value + padding
 }
 
-func newRowLayout(items []session.Session, stale map[string]struct{}, width int, now time.Time, localTarget string) rowLayout {
+func newRowLayout(items []session.Session, stale map[string]struct{}, width int, now time.Time, localTarget string, pins map[sessionKey]bool) rowLayout {
 	layout := rowLayout{
 		width:        width,
 		showProvider: width >= providerColumnWidth,
@@ -93,7 +93,7 @@ func newRowLayout(items []session.Session, stale map[string]struct{}, width int,
 		if _, ok := stale[item.Host]; ok {
 			layout.showCached = true
 		}
-		layout.title = max(layout.title, lipgloss.Width(sessionTitle(item)))
+		layout.title = max(layout.title, lipgloss.Width(pinnedTitle(item, pins)))
 		layout.location = max(layout.location, lipgloss.Width(location(item, localTarget)))
 		layout.runtime = max(layout.runtime, lipgloss.Width(runtimeLabel(item, layout.showClients)))
 		layout.activity = max(layout.activity, lipgloss.Width(activityAge(now, item.UpdatedAt)))
@@ -142,7 +142,7 @@ func (value model) renderRow(row listRow, selected bool, layout rowLayout) strin
 	}
 	fields := []string{
 		value.activitySymbol(item),
-		column(sessionTitle(item), layout.title, false),
+		column(value.pinnedTitleCell(item), layout.title, false),
 	}
 	if layout.showProvider {
 		fields = append(fields, column(string(item.Provider), layout.provider, false))

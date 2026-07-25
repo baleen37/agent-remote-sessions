@@ -106,6 +106,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		{"/", "search"},
 		{"! / @ / #", "filter attached / running / saved"},
 		{"p", "toggle preview pane"},
+		{"P", "pin / unpin session"},
 		{"x", "kill session (3s grace · u undo)"},
 		{"m", "send a line without attaching"},
 		{"enter", "attach session · toggle group"},
@@ -188,7 +189,7 @@ func (value model) sessionLines(width int) ([]string, int) {
 		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
 		return []string{"  no sessions yet", "", hint}, 0
 	}
-	layout := newRowLayout(value.result.Sessions, value.stale, width, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(value.result.Sessions, value.stale, width, value.deps.Now(), value.deps.LocalTarget, value.pins)
 	lines := make([]string, 0, len(value.rows))
 	for index, row := range value.rows {
 		selected := index == value.selected
@@ -545,7 +546,7 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter", "x kill", "m msg")
+		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter", "x kill", "m msg", "P pin")
 	}
 	items = append(items, "/ search")
 	if value.query != "" || value.filterActive() {
@@ -567,7 +568,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"m msg", "x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
+	droppable := []string{"P pin", "m msg", "x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {

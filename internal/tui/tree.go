@@ -51,9 +51,9 @@ type sessionGroup struct {
 	sessions []session.Session
 }
 
-func buildRows(items []session.Session, modes map[string]groupMode, searchActive bool) []listRow {
+func buildRows(items []session.Session, modes map[string]groupMode, searchActive bool, pins map[sessionKey]bool) []listRow {
 	var rows []listRow
-	for _, group := range groupSessions(items) {
+	for _, group := range groupSessions(items, pins) {
 		mode := modes[group.project]
 		if searchActive {
 			mode = groupModeOpen
@@ -61,7 +61,7 @@ func buildRows(items []session.Session, modes map[string]groupMode, searchActive
 		visible := group.sessions
 		hidden := 0
 		if mode == groupModeAuto {
-			active := activeSessions(group.sessions)
+			active := activeSessions(group.sessions, pins)
 			if len(active) == 0 {
 				mode = groupModeClosed
 			} else {
@@ -94,17 +94,24 @@ func buildRows(items []session.Session, modes map[string]groupMode, searchActive
 	return rows
 }
 
-func activeSessions(items []session.Session) []session.Session {
+// activeSessions returns the sessions auto mode keeps on screen: the live ones,
+// plus pinned sessions whatever their state — a pin that auto mode folded away
+// behind the more row would do nothing.
+func activeSessions(items []session.Session, pins map[sessionKey]bool) []session.Session {
 	var active []session.Session
 	for _, item := range items {
-		if item.Runtime.State != session.RuntimeSaved {
+		if item.Runtime.State != session.RuntimeSaved || pins[keyOf(item)] {
 			active = append(active, item)
 		}
 	}
 	return active
 }
 
-func groupSessions(items []session.Session) []sessionGroup {
+// groupSessions buckets sessions by project and orders both tiers. Pins are
+// the outermost key at each tier — a pinned session leads its group and a group
+// holding one leads the list — and the existing state-then-recency ordering
+// decides the rest within each tier, so unpinning restores the previous order.
+func groupSessions(items []session.Session, pins map[sessionKey]bool) []sessionGroup {
 	positions := make(map[string]int)
 	var groups []sessionGroup
 	for _, item := range items {
@@ -120,6 +127,11 @@ func groupSessions(items []session.Session) []sessionGroup {
 	for _, group := range groups {
 		members := group.sessions
 		sort.SliceStable(members, func(left, right int) bool {
+			leftPinned := pins[keyOf(members[left])]
+			rightPinned := pins[keyOf(members[right])]
+			if leftPinned != rightPinned {
+				return leftPinned
+			}
 			leftSaved := members[left].Runtime.State == session.RuntimeSaved
 			rightSaved := members[right].Runtime.State == session.RuntimeSaved
 			if leftSaved != rightSaved {
@@ -129,6 +141,11 @@ func groupSessions(items []session.Session) []sessionGroup {
 		})
 	}
 	sort.SliceStable(groups, func(left, right int) bool {
+		leftPinned := hasPinned(groups[left].sessions, pins)
+		rightPinned := hasPinned(groups[right].sessions, pins)
+		if leftPinned != rightPinned {
+			return leftPinned
+		}
 		leftActive := groupState(groups[left].sessions) != session.RuntimeSaved
 		rightActive := groupState(groups[right].sessions) != session.RuntimeSaved
 		if leftActive != rightActive {
@@ -137,6 +154,15 @@ func groupSessions(items []session.Session) []sessionGroup {
 		return latestActivity(groups[left].sessions).After(latestActivity(groups[right].sessions))
 	})
 	return groups
+}
+
+func hasPinned(items []session.Session, pins map[sessionKey]bool) bool {
+	for _, item := range items {
+		if pins[keyOf(item)] {
+			return true
+		}
+	}
+	return false
 }
 
 func groupState(items []session.Session) session.RuntimeState {
