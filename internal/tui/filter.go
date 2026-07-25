@@ -2,10 +2,15 @@ package tui
 
 import (
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
+
+// staleAfter is the age past which a saved (non-live) session is hidden by
+// default; the a key toggles showing it.
+const staleAfter = 7 * 24 * time.Hour
 
 type sessionKey struct {
 	host     string
@@ -44,6 +49,26 @@ func filterByWaiting(items []session.Session, activity map[sessionKey]activityEn
 		}
 	}
 	return filtered
+}
+
+// filterByStale hides saved sessions whose latest activity is older than
+// staleAfter, returning the visible sessions and how many were hidden. Live
+// sessions (running/attached) and pinned sessions are always kept regardless
+// of age; showAll disables the cutoff entirely.
+func filterByStale(items []session.Session, now time.Time, showAll bool, pins map[sessionKey]bool) ([]session.Session, int) {
+	if showAll {
+		return append([]session.Session(nil), items...), 0
+	}
+	visible := make([]session.Session, 0, len(items))
+	hidden := 0
+	for _, item := range items {
+		if item.Runtime.State != session.RuntimeSaved || pins[keyOf(item)] || now.Sub(item.UpdatedAt) <= staleAfter {
+			visible = append(visible, item)
+			continue
+		}
+		hidden++
+	}
+	return visible, hidden
 }
 
 func filterSessions(items []session.Session, query, localTarget string) []session.Session {

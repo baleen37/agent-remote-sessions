@@ -70,6 +70,8 @@ type model struct {
 	groupMode         map[string]groupMode
 	stateFilter       map[session.RuntimeState]bool
 	waitingFilter     bool
+	showAll           bool
+	staleHidden       int
 	query             string
 	matched           int
 	searching         bool
@@ -369,6 +371,9 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 	case '?':
 		value.showHelp = true
+	case 'a':
+		value.showAll = !value.showAll
+		value.refreshVisible()
 	case 'r':
 		if value.collecting {
 			return value, nil
@@ -479,6 +484,10 @@ func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 }
 
 func (value *model) refreshVisible() {
+	value.staleHidden = 0
+	if value.query == "" {
+		_, value.staleHidden = filterByStale(value.result.Sessions, value.deps.Now(), value.showAll, value.pins)
+	}
 	filtered := value.visibleSessions()
 	value.matched = len(filtered)
 	value.rows = buildRows(filtered, value.groupMode, value.query != "", value.pins)
@@ -486,11 +495,17 @@ func (value *model) refreshVisible() {
 }
 
 // visibleSessions is the inventory the rows are built from: everything the
-// active state filter and search query admit, folded or not. The state filters
-// and $ form one union — each admits its own sessions — and the query then
-// narrows whatever that union produced.
+// stale cutoff, active state filter and search query admit, folded or not.
+// The cutoff applies first and is bypassed entirely once a search query is
+// active, since search is the recovery path for finding an old session. The
+// state filters and $ form one union — each admits its own sessions — and the
+// query then narrows whatever that union produced.
 func (value model) visibleSessions() []session.Session {
-	filtered := value.filterByActiveStates(value.result.Sessions)
+	items := value.result.Sessions
+	if value.query == "" {
+		items, _ = filterByStale(items, value.deps.Now(), value.showAll, value.pins)
+	}
+	filtered := value.filterByActiveStates(items)
 	return filterSessions(filtered, value.query, value.deps.LocalTarget)
 }
 
