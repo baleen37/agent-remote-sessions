@@ -180,7 +180,7 @@ func TestHeaderOmitsOlderHiddenWhenNoneHidden(t *testing.T) {
 
 func TestHelpOverlayAndFooterAdvertiseStaleToggle(t *testing.T) {
 	value := staleModel()
-	value.width = 170
+	value.width = 140
 	content := ansi.Strip(value.help(value.contentWidth()))
 	if !strings.Contains(content, "a older") {
 		t.Fatalf("footer help missing the stale-toggle hint: %q", content)
@@ -190,5 +190,97 @@ func TestHelpOverlayAndFooterAdvertiseStaleToggle(t *testing.T) {
 	overlay := ansi.Strip(value.View().Content)
 	if !strings.Contains(overlay, "show / hide sessions older than 7d") {
 		t.Fatalf("help overlay missing the stale-toggle binding:\n%s", overlay)
+	}
+}
+
+// allStaleModel builds a model whose entire inventory is stale-hidden: every
+// session is a saved session older than the cutoff, no filter or search is
+// active, so sessionLines has zero rows purely from the cutoff.
+func allStaleModel() model {
+	items := []session.Session{
+		staleModelSession("ars", "old-saved-1", session.RuntimeSaved, staleModelNow.Add(-8*24*time.Hour)),
+		staleModelSession("ars", "old-saved-2", session.RuntimeSaved, staleModelNow.Add(-30*24*time.Hour)),
+	}
+	result := Result{Sessions: items}
+	deps := Dependencies{
+		Collect:     staticCollect(result),
+		Attach:      func(context.Context, session.Session) (ExecCommand, error) { return &fakeExecCommand{}, nil },
+		Kill:        func(context.Context, session.Session) error { return nil },
+		LocalTarget: "localhost",
+		Now:         func() time.Time { return staleModelNow },
+		NoColor:     true,
+	}
+	value := newModel(context.Background(), deps)
+	message, hasCollection, _ := initialCommands(value.Init())
+	if !hasCollection {
+		panic("allStaleModel: Init did not produce collectUpdateMsg")
+	}
+	value, _ = updateModel(value, message)
+	value.width, value.height = 120, 40
+	return value
+}
+
+// TestAllStaleInventoryExplainsWhyTheListIsEmpty covers I-1: with every
+// session stale-hidden and no filter/search active, the empty state must say
+// so instead of falling through to the new-user "no sessions yet" hint.
+func TestAllStaleInventoryExplainsWhyTheListIsEmpty(t *testing.T) {
+	value := allStaleModel()
+	content := ansi.Strip(value.View().Content)
+	if !strings.Contains(content, "all 2 sessions are older than 7d · a to show") {
+		t.Fatalf("all-stale empty view missing the stale explanation: %q", content)
+	}
+	if strings.Contains(content, "no sessions yet") {
+		t.Fatalf("all-stale empty view still shows the new-user hint: %q", content)
+	}
+	if strings.Contains(content, "ars remote add <host>") {
+		t.Fatalf("all-stale empty view still shows the remote-add hint: %q", content)
+	}
+}
+
+// TestTrulyEmptyInventoryKeepsNewUserHint is the control for I-1: with zero
+// sessions in the inventory (nothing hidden by the cutoff either), the
+// original new-user hint must still show.
+func TestTrulyEmptyInventoryKeepsNewUserHint(t *testing.T) {
+	value := readyModel()
+	value.width = 120
+	value.result.Sessions = nil
+	value.refreshVisible()
+	content := ansi.Strip(value.View().Content)
+	if !strings.Contains(content, "no sessions yet") {
+		t.Fatalf("truly empty view missing the new-user hint: %q", content)
+	}
+	if !strings.Contains(content, "ars remote add <host>") {
+		t.Fatalf("truly empty view missing the remote-add hint: %q", content)
+	}
+}
+
+// TestFilterEmptyMessageMentionsStaleHiddenSessions covers I-2: when a
+// state/needs-input filter yields zero rows and sessions are also
+// stale-hidden, the empty message must mention the a-to-show recovery path
+// alongside esc to clear.
+func TestFilterEmptyMessageMentionsStaleHiddenSessions(t *testing.T) {
+	value := allStaleModel()
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Text: "#"}))
+	content := ansi.Strip(value.View().Content)
+	if !strings.Contains(content, "no saved sessions · esc to clear · a to show older") {
+		t.Fatalf("filter-empty view missing the stale-hidden suffix: %q", content)
+	}
+}
+
+// TestFilterEmptyMessageOmitsStaleSuffixWhenNothingHidden is the control for
+// I-2: the same filter-empty path with no stale-hidden sessions must keep the
+// original message, unchanged.
+func TestFilterEmptyMessageOmitsStaleSuffixWhenNothingHidden(t *testing.T) {
+	value := readyModel()
+	value.width = 120
+	value.result.Sessions = nil
+	value.stateFilter = map[session.RuntimeState]bool{session.RuntimeSaved: true}
+	value.refreshVisible()
+	content := ansi.Strip(value.View().Content)
+	if !strings.Contains(content, "no saved sessions · esc to clear") {
+		t.Fatalf("filter-empty view missing base message: %q", content)
+	}
+	if strings.Contains(content, "a to show older") {
+		t.Fatalf("filter-empty view shows stale suffix with nothing stale-hidden: %q", content)
 	}
 }

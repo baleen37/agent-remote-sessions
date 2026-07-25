@@ -997,9 +997,9 @@ func TestFooterHelpIncludesHelpHint(t *testing.T) {
 
 func TestFooterAtWideWidthShowsAllHints(t *testing.T) {
 	model := readyModel()
-	model.width = 140
+	model.width = 170
 	content := ansi.Strip(model.View().Content)
-	for _, want := range []string{"!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "? help"} {
+	for _, want := range []string{"!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "a older", "? help"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("wide footer missing %q: %q", want, content)
 		}

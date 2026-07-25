@@ -141,6 +141,10 @@ func (value model) sessionLines(width int) ([]string, int) {
 		if value.filterActive() {
 			return []string{fitLine("  "+value.emptyFilterMessage(), width)}, 0
 		}
+		if value.staleHidden > 0 {
+			message := fmt.Sprintf("  all %d sessions are older than 7d · a to show", value.staleHidden)
+			return []string{fitLine(message, width)}, 0
+		}
 		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
 		return []string{"  no sessions yet", "", hint}, 0
 	}
@@ -559,7 +563,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"a older", "P pin", "m msg", "x kill", "!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "f full"}
+	droppable := []string{"g/G top/end", "P pin", "m msg", "x kill", "!@#$ filter", "a older", "1-9 group", "h/l fold", "f full"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {
