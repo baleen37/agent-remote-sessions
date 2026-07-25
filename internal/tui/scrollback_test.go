@@ -249,6 +249,64 @@ func TestFullscreenNoScrollIndicatorAtBottom(t *testing.T) {
 	}
 }
 
+// TestFullscreenScrollIndicatorAtBottomShowsHiddenLinesBelow guards the
+// meaning of the bottom indicator: scrolled up by one line from the tail,
+// exactly one line is hidden below the viewport, so the footer must read
+// "↓ 1 more" (not the count of lines hidden above, which the list's "↑ N
+// more" convention would otherwise suggest at a glance).
+func TestFullscreenScrollIndicatorAtBottomShowsHiddenLinesBelow(t *testing.T) {
+	value := openFullscreenWithHistory(t, numberedLines(600))
+	value = pressKey(value, 'k', "k")
+	content := ansi.Strip(value.View().Content)
+	if !strings.Contains(content, "↓ 1 more") {
+		t.Fatalf("scrolled up by 1 line should show \"↓ 1 more\" (lines hidden below), got:\n%s", content)
+	}
+}
+
+// TestFullscreenScrollIndicatorAtTopShowsNoTopIndicator guards the opposite
+// end: scrolled all the way to the oldest line, nothing remains hidden above,
+// so the top indicator must be absent, while the bottom indicator must report
+// exactly how many lines are hidden below (everything but what's on screen).
+func TestFullscreenScrollIndicatorAtTopShowsNoTopIndicator(t *testing.T) {
+	lines := numberedLines(50)
+	value := openFullscreenWithHistory(t, lines)
+	for range 100 {
+		value = pressKey(value, 'k', "k")
+	}
+	if value.previewScrollOffset != len(lines)-1 {
+		t.Fatalf("previewScrollOffset = %d, want clamped at %d (top)", value.previewScrollOffset, len(lines)-1)
+	}
+	content := ansi.Strip(value.View().Content)
+	if strings.Contains(content, "↑") {
+		t.Fatalf("scrolled to the very top should show no top indicator (nothing hidden above):\n%s", content)
+	}
+	if !strings.Contains(content, "↓") {
+		t.Fatalf("scrolled to the very top should show a bottom indicator (lines hidden below):\n%s", content)
+	}
+}
+
+// TestFullscreenScrollIndicatorsBothShowAtMidpoint covers the case where
+// content is hidden on both sides of the viewport: both indicators must
+// appear, each with its own independent count.
+func TestFullscreenScrollIndicatorsBothShowAtMidpoint(t *testing.T) {
+	value := openFullscreenWithHistory(t, numberedLines(600))
+	// Scroll up enough to clear at least a full page, so lines remain
+	// hidden on both sides of the viewport regardless of terminal height.
+	for range 50 {
+		value = pressKey(value, 'k', "k")
+	}
+	if value.previewScrollOffset != 50 {
+		t.Fatalf("previewScrollOffset = %d, want 50", value.previewScrollOffset)
+	}
+	content := ansi.Strip(value.View().Content)
+	if !strings.Contains(content, "↑") {
+		t.Fatalf("midpoint scroll should show a top indicator (lines hidden above):\n%s", content)
+	}
+	if !strings.Contains(content, "↓ 50 more") {
+		t.Fatalf("midpoint scroll 50 lines up should show \"↓ 50 more\" (lines hidden below):\n%s", content)
+	}
+}
+
 func TestFullscreenHelpOverlayListsScrollKeys(t *testing.T) {
 	value := loadedFullscreenModel(t, "live output\n")
 	value = pressKey(value, '?', "?")

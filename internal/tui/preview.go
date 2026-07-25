@@ -395,8 +395,9 @@ func (value model) fullscreenPreview(inset, width int) tea.View {
 
 // fullscreenBody renders the fullscreen scrollback body: a saved session's
 // placeholder, an error notice, a loading notice while the first capture is
-// in flight, or the captured lines windowed at previewScrollOffset with a
-// leading position indicator when scrolled up from the tail.
+// in flight, or the captured lines windowed at previewScrollOffset with
+// scrollIndicator rows — the same "↑/↓ N more" convention the list uses —
+// for whichever side(s) of the viewport have hidden lines.
 func (value model) fullscreenBody(selected session.Session, width, height int) []string {
 	if height <= 0 {
 		return nil
@@ -411,32 +412,69 @@ func (value model) fullscreenBody(selected session.Session, width, height int) [
 		return []string{value.mutedText("loading preview…", width)}
 	}
 	lines := value.previewFullContent
-	rows := height
-	indicator := ""
-	if value.previewScrollOffset > 0 {
-		indicator = value.scrollIndicator("↑", value.previewScrollOffset, width)
-		rows--
+	start, rows, topInd, botInd := fullscreenWindow(len(lines), value.previewScrollOffset, height)
+	fitted := make([]string, 0, height)
+	if topInd {
+		fitted = append(fitted, value.scrollIndicator("↑", start, width))
 	}
-	if rows < 0 {
-		rows = 0
+	for _, line := range lines[start : start+rows] {
+		fitted = append(fitted, fitLine(ansi.Strip(line), width))
 	}
-	end := len(lines) - value.previewScrollOffset
-	start := end - rows
+	if botInd {
+		fitted = append(fitted, value.scrollIndicator("↓", len(lines)-(start+rows), width))
+	}
+	return fitted
+}
+
+// fullscreenWindow resolves the visible line range [start, start+rows) for a
+// scrollback of lineCount lines viewed through a height-tall viewport
+// anchored offset lines up from the tail (offset 0 = bottom), together with
+// whether the top and/or bottom indicator is needed. It mirrors
+// scrolledBody's iteration: claiming an indicator shrinks the content rows
+// available, which can in turn reveal (or remove the need for) the other
+// indicator, so the counts are resolved by iterating to a fixed point.
+// Indicators may claim at most height-1 rows so at least one content line
+// survives.
+func fullscreenWindow(lineCount, offset, height int) (start, rows int, topInd, botInd bool) {
+	if height <= 0 || lineCount <= 0 {
+		return 0, 0, false, false
+	}
+	if height >= lineCount {
+		return 0, lineCount, false, false
+	}
+	budget := min(2, height-1)
+	end := lineCount - offset
+	if end > lineCount {
+		end = lineCount
+	}
+	claimedTop, claimedBot := 0, 0
+	for range 3 {
+		rows = height - claimedTop - claimedBot
+		start = end - rows
+		if start < 0 {
+			start = 0
+		}
+		newTop, newBot := 0, 0
+		if start > 0 && budget >= 1 {
+			newTop = 1
+		}
+		if start+rows < lineCount && newTop < budget {
+			newBot = 1
+		}
+		if newTop == claimedTop && newBot == claimedBot {
+			break
+		}
+		claimedTop, claimedBot = newTop, newBot
+	}
+	rows = height - claimedTop - claimedBot
+	start = end - rows
 	if start < 0 {
 		start = 0
 	}
-	if end > len(lines) {
-		end = len(lines)
+	if start+rows > lineCount {
+		rows = lineCount - start
 	}
-	window := lines[start:end]
-	fitted := make([]string, 0, len(window)+1)
-	if indicator != "" {
-		fitted = append(fitted, indicator)
-	}
-	for _, line := range window {
-		fitted = append(fitted, fitLine(ansi.Strip(line), width))
-	}
-	return fitted
+	return start, rows, claimedTop == 1, claimedBot == 1
 }
 
 func (value model) padPanel(lines []string, width, height int) []string {
