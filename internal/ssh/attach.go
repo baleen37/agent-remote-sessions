@@ -64,7 +64,7 @@ func NewAttachCommand(
 
 func remoteAttachScript(name, cwd string, prov session.Provider, spec provider.ResumeSpec) string {
 	command := tmuxShellPrefix()
-	execCommand := "TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp exec tmux -L " + arsruntime.SocketName + " -f /dev/null"
+	execCommand := "TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp exec tmux -L " + arsruntime.SocketName() + " -f /dev/null"
 	target := quotePOSIX("=" + name)
 	createArgs := []string{
 		"new-session", "-d", "-s", quotePOSIX(name), "-c", quotePOSIX(cwd),
@@ -95,7 +95,7 @@ func remoteAttachScript(name, cwd string, prov session.Provider, spec provider.R
 		"  fi",
 		"fi",
 		command + " bind-key -n C-q detach-client",
-		command + " set-option -g status-right " + quotePOSIX(arsruntime.DetachHint),
+		command + " set-option -g status-right " + quotePOSIX(arsruntime.DetachHint()),
 		command + " set-option -g status-interval 5",
 		execCommand + " attach-session -d -t " + target,
 	}, "\n")
@@ -137,7 +137,7 @@ func darwinKeychainGuard() string {
 }
 
 func tmuxShellPrefix() string {
-	return "TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp tmux -L " + arsruntime.SocketName + " -f /dev/null"
+	return "TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp tmux -L " + arsruntime.SocketName() + " -f /dev/null"
 }
 
 func quotePOSIX(value string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -14,7 +15,17 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
-const SocketName = "ars-v1"
+const defaultSocketName = "ars-v1"
+
+// SocketName is the tmux server socket ars uses for its managed sessions.
+// ARS_TMUX_SOCKET overrides the default, primarily so tests can run against
+// a private socket instead of colliding with a live server.
+func SocketName() string {
+	if name := os.Getenv("ARS_TMUX_SOCKET"); name != "" {
+		return name
+	}
+	return defaultSocketName
+}
 
 type Status string
 
@@ -72,7 +83,7 @@ func Inspect(ctx context.Context, runner Runner, candidates []session.Candidate)
 func inspectCommand() Command {
 	return Command{
 		Name: "tmux",
-		Args: []string{"-L", SocketName, "-f", "/dev/null", "list-sessions", "-F",
+		Args: []string{"-L", SocketName(), "-f", "/dev/null", "list-sessions", "-F",
 			"#{session_name}\t#{session_attached}\t#{session_created}"},
 		Env: []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
 	}

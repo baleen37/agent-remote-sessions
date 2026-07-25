@@ -64,7 +64,7 @@ func TestInspectMapsExactRuntimeRows(t *testing.T) {
 	}
 	wantCommand := Command{
 		Name: "tmux",
-		Args: []string{"-L", SocketName, "-f", "/dev/null", "list-sessions", "-F",
+		Args: []string{"-L", SocketName(), "-f", "/dev/null", "list-sessions", "-F",
 			"#{session_name}\t#{session_attached}\t#{session_created}"},
 		Env: []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
 	}

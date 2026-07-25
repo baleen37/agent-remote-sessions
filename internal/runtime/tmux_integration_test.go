@@ -41,8 +41,8 @@ func TestDisposableTmuxSetsStatusOptionsWhileAttached(t *testing.T) {
 
 	statusRight, statusInterval := fixture.attachAndReadStatusOptions(t)
 
-	if statusRight != DetachHint {
-		t.Fatalf("status-right = %q, want %q", statusRight, DetachHint)
+	if statusRight != DetachHint() {
+		t.Fatalf("status-right = %q, want %q", statusRight, DetachHint())
 	}
 	if statusInterval != "5" {
 		t.Fatalf("status-interval = %q, want %q", statusInterval, "5")
@@ -125,7 +125,7 @@ func newDisposableTmuxFixture(t *testing.T) *disposableTmuxFixture {
 		runner:      tempTmuxRunner{tempDir: tmuxTemp},
 		item:        item,
 		pidPath:     pidPath,
-		arsSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), SocketName),
+		arsSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), SocketName()),
 		defaultTmux: newDefaultTmuxSentinel(t, tmux, tmuxTemp),
 	}
 	if fixture.arsSocket == fixture.defaultTmux.socket {

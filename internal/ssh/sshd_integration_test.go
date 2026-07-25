@@ -100,7 +100,7 @@ func TestIntegrationTmuxCleanupReportsKillError(t *testing.T) {
 }
 
 func TestIntegrationTmuxCleanupReportsLeaks(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), arsruntime.SocketName)
+	socket := filepath.Join(t.TempDir(), arsruntime.SocketName())
 	if err := os.WriteFile(socket, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *epheme
 		providerPID:  providerPID,
 		root:         root,
 		tmux:         tmux,
-		tmuxSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName),
+		tmuxSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName()),
 		command:      command,
 		done:         done,
 		logFile:      logFile,
@@ -436,7 +436,7 @@ func (sentinel *integrationDefaultTmuxSentinel) output(t *testing.T, args ...str
 func integrationTmuxCommand(ctx context.Context, tmux, tempDir string, ars bool, args ...string) *exec.Cmd {
 	prefix := []string{"-f", "/dev/null"}
 	if ars {
-		prefix = []string{"-L", arsruntime.SocketName, "-f", "/dev/null"}
+		prefix = []string{"-L", arsruntime.SocketName(), "-f", "/dev/null"}
 	}
 	command := exec.CommandContext(ctx, tmux, append(prefix, args...)...)
 	command.Env = integrationTmuxEnv(tempDir)
@@ -730,7 +730,7 @@ func waitRemoteClients(t *testing.T, server *ephemeralSSHD, want int) {
 }
 
 func remoteAttachedClients(server *ephemeralSSHD) (int, bool) {
-	command := exec.Command("tmux", "-L", arsruntime.SocketName, "-f", "/dev/null", "list-sessions", "-F", "#{session_attached}")
+	command := exec.Command("tmux", "-L", arsruntime.SocketName(), "-f", "/dev/null", "list-sessions", "-F", "#{session_attached}")
 	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+server.tmuxTemp)
 	output, err := command.Output()
 	if err != nil {
@@ -742,7 +742,7 @@ func remoteAttachedClients(server *ephemeralSSHD) (int, bool) {
 
 func remoteSessionCount(t *testing.T, server *ephemeralSSHD) int {
 	t.Helper()
-	command := exec.Command("tmux", "-L", arsruntime.SocketName, "-f", "/dev/null", "list-sessions", "-F", "#{session_name}")
+	command := exec.Command("tmux", "-L", arsruntime.SocketName(), "-f", "/dev/null", "list-sessions", "-F", "#{session_name}")
 	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+server.tmuxTemp)
 	output, err := command.Output()
 	if err != nil {
