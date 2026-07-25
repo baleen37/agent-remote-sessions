@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,103 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
+
+func TestCodexDiscoverStreamEmitsRecentBeforeOpeningOldHistory(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "codex")
+	recentPath := filepath.Join(home, ".codex", "sessions", "recent.jsonl")
+	oldPath := filepath.Join(home, ".codex", "sessions", "old.jsonl")
+	addedPath := filepath.Join(home, ".codex", "sessions", "added.jsonl")
+	recentID := "11111111-1111-1111-1111-111111111111"
+	oldID := "22222222-2222-2222-2222-222222222222"
+	replacementID := "33333333-3333-3333-3333-333333333333"
+	addedID := "44444444-4444-4444-4444-444444444444"
+	writeFile(t, recentPath, codexMeta(recentID, "/synthetic/codex/recent", "cli", "user"))
+	writeFile(t, oldPath, codexMeta(oldID, "/synthetic/codex/old", "cli", "user"))
+	cutoff := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	setHistoryTime(t, recentPath, cutoff)
+	setHistoryTime(t, oldPath, cutoff.Add(-time.Nanosecond))
+
+	var phases []Phase
+	var final Result
+	err := (codexAdapter{}).DiscoverStream(context.Background(), home, cutoff, func(phase Phase, result Result) error {
+		phases = append(phases, phase)
+		if phase == PhaseRecent {
+			if got := candidateIDs(result.Sessions); !slices.Equal(got, []string{recentID}) {
+				t.Fatalf("recent session IDs = %v, want [%s]", got, recentID)
+			}
+			writeFile(t, oldPath, codexMeta(replacementID, "/synthetic/codex/replaced", "cli", "user"))
+			writeFile(t, addedPath, codexMeta(addedID, "/synthetic/codex/added", "cli", "user"))
+		} else {
+			final = result
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(phases, []Phase{PhaseRecent, PhaseComplete}) {
+		t.Fatalf("phases = %v, want recent then complete", phases)
+	}
+	if got := candidateIDs(final.Sessions); !slices.Equal(got, []string{recentID, replacementID}) {
+		t.Fatalf("final session IDs = %v, want inventory files only with deferred old read", got)
+	}
+}
+
+func TestCodexDiscoverStreamEmitsEmptyRecentBeforeAbsentFinal(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "codex")
+	var phases []Phase
+	var results []Result
+	err := (codexAdapter{}).DiscoverStream(context.Background(), home, time.Unix(100, 0), func(phase Phase, result Result) error {
+		phases = append(phases, phase)
+		results = append(results, result)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(phases, []Phase{PhaseRecent, PhaseComplete}) || len(results[0].Sessions) != 0 {
+		t.Fatalf("stream = %v/%#v, want empty recent then complete", phases, results)
+	}
+	assertAbsentResult(t, results[1], session.Codex)
+}
+
+func TestCodexDiscoverStreamFinalLimitKeepsOriginalTraversalOrder(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "codex")
+	directory := filepath.Join(home, ".codex", "sessions")
+	firstPath := filepath.Join(directory, "first.jsonl")
+	secondPath := filepath.Join(directory, "second.jsonl")
+	firstID := "11111111-1111-1111-1111-111111111111"
+	secondID := "22222222-2222-2222-2222-222222222222"
+	writeFile(t, firstPath, codexMeta(firstID, "/synthetic/codex/first", "cli", "user"))
+	writeFile(t, secondPath, codexMeta(secondID, "/synthetic/codex/second", "cli", "user"))
+	order := directHistoryOrder(t, directory)
+	ids := map[string]string{firstPath: firstID, secondPath: secondID}
+	cutoff := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	setHistoryTime(t, order[0], cutoff.Add(-time.Nanosecond))
+	setHistoryTime(t, order[1], cutoff)
+
+	var recent, final Result
+	err := (codexAdapter{}).discoverStream(context.Background(), home, cutoff, 1, func(phase Phase, result Result) error {
+		if phase == PhaseRecent {
+			recent = result
+		} else {
+			final = result
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := candidateIDs(recent.Sessions); !slices.Equal(got, []string{ids[order[1]]}) {
+		t.Fatalf("recent session IDs = %v, want later traversal file", got)
+	}
+	if got := candidateIDs(final.Sessions); !slices.Equal(got, []string{ids[order[0]]}) {
+		t.Fatalf("final session IDs = %v, want original traversal winner", got)
+	}
+}
 
 func TestCodexDiscoverRecursesAndFiltersSessionMeta(t *testing.T) {
 	home := fixtureHome(t, "codex")

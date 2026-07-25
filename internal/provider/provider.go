@@ -55,6 +55,7 @@ func ValidResumeSpec(name session.Provider, id string, spec ResumeSpec) bool {
 type Adapter interface {
 	Name() session.Provider
 	Discover(context.Context, string) Result
+	DiscoverStream(context.Context, string, time.Time, func(Phase, Result) error) error
 	ValidateID(string) error
 	Resume(string) (ResumeSpec, error)
 }
@@ -73,39 +74,17 @@ func Lookup(name session.Provider) (Adapter, bool) {
 }
 
 func DiscoverAll(ctx context.Context, home string, adapters []Adapter) ([]session.Candidate, []Result, error) {
-	if !validRegistry(adapters) {
-		return nil, nil, fmt.Errorf("invalid provider registry")
-	}
-
-	results := make([]Result, 0, len(adapters))
-	candidates := make([]session.Candidate, 0)
-	for _, adapter := range adapters {
-		result := adapter.Discover(ctx, home)
-		if result.Provider != adapter.Name() {
-			return nil, nil, fmt.Errorf("invalid provider result")
+	var final Snapshot
+	err := DiscoverAllStream(ctx, home, adapters, time.Time{}, func(snapshot Snapshot) error {
+		if snapshot.Phase == PhaseComplete {
+			final = snapshot
 		}
-		for _, candidate := range result.Sessions {
-			if candidate.Provider != result.Provider || session.ValidateCandidate(candidate) != nil {
-				return nil, nil, fmt.Errorf("invalid provider candidate")
-			}
-			if len(candidates) >= maxDiscoveredSessions {
-				return nil, nil, fmt.Errorf("combined session count exceeds limit")
-			}
-			candidates = append(candidates, candidate)
-		}
-		results = append(results, result)
-	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Provider != candidates[j].Provider {
-			return providerOrder(candidates[i].Provider) < providerOrder(candidates[j].Provider)
-		}
-		return candidates[i].NativeID < candidates[j].NativeID
+		return nil
 	})
-	sort.Slice(results, func(i, j int) bool {
-		return providerOrder(results[i].Provider) < providerOrder(results[j].Provider)
-	})
-	return candidates, results, nil
+	if err != nil {
+		return nil, nil, err
+	}
+	return final.Candidates, final.Results, nil
 }
 
 func validRegistry(adapters []Adapter) bool {
@@ -232,9 +211,17 @@ func readDirBatches(ctx context.Context, directory string, visit func(os.DirEntr
 }
 
 func isRegularFile(path string, entry os.DirEntry) bool {
+	_, ok := historyFileForEntry(path, entry)
+	return ok
+}
+
+func historyFileForEntry(path string, entry os.DirEntry) (historyFile, bool) {
 	if entry.Type()&os.ModeSymlink != 0 {
-		return false
+		return historyFile{}, false
 	}
 	info, err := os.Lstat(path)
-	return err == nil && info.Mode().IsRegular()
+	if err != nil || !info.Mode().IsRegular() {
+		return historyFile{}, false
+	}
+	return historyFile{path: path, modified: info.ModTime().UTC()}, true
 }

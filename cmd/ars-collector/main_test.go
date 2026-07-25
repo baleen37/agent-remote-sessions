@@ -168,6 +168,20 @@ func (adapter *fakeAdapter) Discover(_ context.Context, home string) provider.Re
 	return adapter.result
 }
 
+func (adapter *fakeAdapter) DiscoverStream(
+	_ context.Context,
+	home string,
+	_ time.Time,
+	emit func(provider.Phase, provider.Result) error,
+) error {
+	adapter.calls++
+	adapter.home = home
+	if err := emit(provider.PhaseRecent, provider.Result{Provider: adapter.name}); err != nil {
+		return err
+	}
+	return emit(provider.PhaseComplete, adapter.result)
+}
+
 func (adapter *fakeAdapter) ValidateID(string) error { return nil }
 
 func (adapter *fakeAdapter) Resume(string) (provider.ResumeSpec, error) {

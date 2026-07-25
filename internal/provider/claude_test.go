@@ -4,11 +4,109 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
+
+func TestClaudeDiscoverStreamEmitsRecentBeforeOpeningOldHistory(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	recentPath := filepath.Join(home, ".claude", "projects", "project", "recent.jsonl")
+	oldPath := filepath.Join(home, ".claude", "projects", "project", "old.jsonl")
+	addedPath := filepath.Join(home, ".claude", "projects", "project", "added.jsonl")
+	recentID := "11111111-1111-1111-1111-111111111111"
+	oldID := "22222222-2222-2222-2222-222222222222"
+	replacementID := "33333333-3333-3333-3333-333333333333"
+	addedID := "44444444-4444-4444-4444-444444444444"
+	writeFile(t, recentPath, claudeHistory(recentID, "/synthetic/claude/recent"))
+	writeFile(t, oldPath, claudeHistory(oldID, "/synthetic/claude/old"))
+	cutoff := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	setHistoryTime(t, recentPath, cutoff)
+	setHistoryTime(t, oldPath, cutoff.Add(-time.Nanosecond))
+
+	var phases []Phase
+	var final Result
+	err := (claudeAdapter{}).DiscoverStream(context.Background(), home, cutoff, func(phase Phase, result Result) error {
+		phases = append(phases, phase)
+		if phase == PhaseRecent {
+			if got := candidateIDs(result.Sessions); !slices.Equal(got, []string{recentID}) {
+				t.Fatalf("recent session IDs = %v, want [%s]", got, recentID)
+			}
+			writeFile(t, oldPath, claudeHistory(replacementID, "/synthetic/claude/replaced"))
+			writeFile(t, addedPath, claudeHistory(addedID, "/synthetic/claude/added"))
+		} else {
+			final = result
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(phases, []Phase{PhaseRecent, PhaseComplete}) {
+		t.Fatalf("phases = %v, want recent then complete", phases)
+	}
+	if got := candidateIDs(final.Sessions); !slices.Equal(got, []string{recentID, replacementID}) {
+		t.Fatalf("final session IDs = %v, want inventory files only with deferred old read", got)
+	}
+}
+
+func TestClaudeDiscoverStreamEmitsEmptyRecentBeforeAbsentFinal(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	var phases []Phase
+	var results []Result
+	err := (claudeAdapter{}).DiscoverStream(context.Background(), home, time.Unix(100, 0), func(phase Phase, result Result) error {
+		phases = append(phases, phase)
+		results = append(results, result)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(phases, []Phase{PhaseRecent, PhaseComplete}) || len(results[0].Sessions) != 0 {
+		t.Fatalf("stream = %v/%#v, want empty recent then complete", phases, results)
+	}
+	assertAbsentResult(t, results[1], session.Claude)
+}
+
+func TestClaudeDiscoverStreamFinalLimitKeepsOriginalTraversalOrder(t *testing.T) {
+	home := t.TempDir()
+	installExecutable(t, "claude")
+	directory := filepath.Join(home, ".claude", "projects", "project")
+	firstPath := filepath.Join(directory, "first.jsonl")
+	secondPath := filepath.Join(directory, "second.jsonl")
+	firstID := "11111111-1111-1111-1111-111111111111"
+	secondID := "22222222-2222-2222-2222-222222222222"
+	writeFile(t, firstPath, claudeHistory(firstID, "/synthetic/claude/first"))
+	writeFile(t, secondPath, claudeHistory(secondID, "/synthetic/claude/second"))
+	order := directHistoryOrder(t, directory)
+	ids := map[string]string{firstPath: firstID, secondPath: secondID}
+	cutoff := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	setHistoryTime(t, order[0], cutoff.Add(-time.Nanosecond))
+	setHistoryTime(t, order[1], cutoff)
+
+	var recent, final Result
+	err := (claudeAdapter{}).discoverStream(context.Background(), home, cutoff, 1, func(phase Phase, result Result) error {
+		if phase == PhaseRecent {
+			recent = result
+		} else {
+			final = result
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := candidateIDs(recent.Sessions); !slices.Equal(got, []string{ids[order[1]]}) {
+		t.Fatalf("recent session IDs = %v, want later traversal file", got)
+	}
+	if got := candidateIDs(final.Sessions); !slices.Equal(got, []string{ids[order[0]]}) {
+		t.Fatalf("final session IDs = %v, want original traversal winner", got)
+	}
+}
 
 func TestClaudeDiscoverStreamsDirectProjectHistories(t *testing.T) {
 	home := fixtureHome(t, "claude")
@@ -43,6 +141,10 @@ func TestClaudeDiscoverStreamsDirectProjectHistories(t *testing.T) {
 	if err := session.ValidateCandidate(result.Sessions[0]); err != nil {
 		t.Fatalf("discovered candidate is invalid: %v", err)
 	}
+}
+
+func claudeHistory(id, cwd string) string {
+	return "{\"type\":\"user\",\"sessionId\":\"" + id + "\",\"cwd\":\"" + cwd + "\"}\n"
 }
 
 func TestClaudeDiscoverLeavesTitleEmptyWithoutNativeTitle(t *testing.T) {

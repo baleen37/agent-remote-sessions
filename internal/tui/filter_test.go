@@ -134,7 +134,7 @@ func TestFilterByStaleShowAllRevealsEverything(t *testing.T) {
 
 func TestFilterByStaleBoundaryAtExactlySevenDaysIsNotHidden(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	boundary := staleFilterSession("boundary", session.RuntimeSaved, now.Add(-staleAfter))
+	boundary := staleFilterSession("boundary", session.RuntimeSaved, now.Add(-session.RecentWindow))
 
 	visible, hidden := filterByStale([]session.Session{boundary}, now, false, nil)
 	if len(visible) != 1 {
@@ -142,5 +142,11 @@ func TestFilterByStaleBoundaryAtExactlySevenDaysIsNotHidden(t *testing.T) {
 	}
 	if hidden != 0 {
 		t.Fatalf("filterByStale at exact boundary hidden = %d, want 0", hidden)
+	}
+
+	older := staleFilterSession("older", session.RuntimeSaved, now.Add(-session.RecentWindow-time.Nanosecond))
+	visible, hidden = filterByStale([]session.Session{older}, now, false, nil)
+	if len(visible) != 0 || hidden != 1 {
+		t.Fatalf("filterByStale one nanosecond past boundary = %+v/%d, want hidden", visible, hidden)
 	}
 }

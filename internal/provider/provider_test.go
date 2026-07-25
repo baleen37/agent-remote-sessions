@@ -208,6 +208,18 @@ func (adapter *discoveryAdapter) Name() session.Provider { return adapter.name }
 
 func (adapter *discoveryAdapter) Discover(context.Context, string) Result { return adapter.result }
 
+func (adapter *discoveryAdapter) DiscoverStream(
+	_ context.Context,
+	_ string,
+	_ time.Time,
+	emit func(Phase, Result) error,
+) error {
+	if err := emit(PhaseRecent, adapter.result); err != nil {
+		return err
+	}
+	return emit(PhaseComplete, adapter.result)
+}
+
 func (adapter *discoveryAdapter) ValidateID(string) error { return nil }
 
 func (adapter *discoveryAdapter) Resume(string) (ResumeSpec, error) { return ResumeSpec{}, nil }

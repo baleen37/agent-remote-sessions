@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -61,6 +62,40 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func setHistoryTime(t *testing.T, path string, modified time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, modified, modified); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func candidateIDs(candidates []session.Candidate) []string {
+	ids := make([]string, len(candidates))
+	for index, candidate := range candidates {
+		ids[index] = candidate.NativeID
+	}
+	return ids
+}
+
+func directHistoryOrder(t *testing.T, directory string) []string {
+	t.Helper()
+	var paths []string
+	err := readDirBatches(context.Background(), directory, func(entry os.DirEntry) error {
+		path := filepath.Join(directory, entry.Name())
+		if filepath.Ext(entry.Name()) == ".jsonl" && isRegularFile(path, entry) {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("history traversal paths = %v, want two", paths)
+	}
+	return paths
 }
 
 func assertAbsentResult(t *testing.T, result Result, provider session.Provider) {

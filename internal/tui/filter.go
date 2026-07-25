@@ -10,7 +10,7 @@ import (
 
 // staleAfter is the age past which a saved (non-live) session is hidden by
 // default; the a key toggles showing it.
-const staleAfter = 7 * 24 * time.Hour
+const staleAfter = session.RecentWindow
 
 type sessionKey struct {
 	host     string

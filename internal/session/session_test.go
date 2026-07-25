@@ -171,3 +171,9 @@ func TestProjectReturnsCleanCWDBasename(t *testing.T) {
 		})
 	}
 }
+
+func TestRecentWindowMatchesTUIBoundaryContract(t *testing.T) {
+	if RecentWindow != 7*24*time.Hour {
+		t.Fatalf("RecentWindow = %v, want seven days", RecentWindow)
+	}
+}

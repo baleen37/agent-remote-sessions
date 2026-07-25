@@ -37,22 +37,65 @@ func (adapter claudeAdapter) Discover(ctx context.Context, home string) Result {
 	return adapter.discover(ctx, home, maxDiscoveredSessions)
 }
 
+func (adapter claudeAdapter) DiscoverStream(
+	ctx context.Context,
+	home string,
+	recentAfter time.Time,
+	emit func(Phase, Result) error,
+) error {
+	return adapter.discoverStream(ctx, home, recentAfter, maxDiscoveredSessions, emit)
+}
+
 func (adapter claudeAdapter) discover(ctx context.Context, home string, sessionLimit int) Result {
-	result := Result{Provider: adapter.Name()}
+	var final Result
+	err := adapter.discoverStream(ctx, home, time.Time{}, sessionLimit, func(phase Phase, result Result) error {
+		if phase == PhaseComplete {
+			final = result
+		}
+		return nil
+	})
+	if err != nil {
+		return finishResult(Result{Provider: adapter.Name()}, nil, "unavailable")
+	}
+	return final
+}
+
+func (adapter claudeAdapter) discoverStream(
+	ctx context.Context,
+	home string,
+	recentAfter time.Time,
+	sessionLimit int,
+	emit func(Phase, Result) error,
+) error {
+	files, inventoryIssue, err := adapter.historyFiles(ctx, home)
+	if err != nil {
+		return err
+	}
+	return discoverHistoryStream(
+		ctx,
+		adapter.Name(),
+		files,
+		inventoryIssue,
+		recentAfter,
+		sessionLimit,
+		adapter.readHistory,
+		emit,
+	)
+}
+
+func (adapter claudeAdapter) historyFiles(ctx context.Context, home string) ([]historyFile, string, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
-		result.Status = Absent
-		return result
+		return nil, "", nil
 	}
 
 	root := filepath.Join(home, ".claude", "projects")
 	if info, err := os.Lstat(root); os.IsNotExist(err) {
-		result.Status = Absent
-		return result
+		return nil, "", nil
 	} else if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return finishResult(result, nil, "unavailable")
+		return nil, "unavailable", nil
 	}
 
-	candidates := make(map[string]session.Candidate)
+	var files []historyFile
 	errorCode := ""
 	err := readDirBatches(ctx, root, func(project os.DirEntry) error {
 		if !project.IsDir() || project.Type()&os.ModeSymlink != 0 {
@@ -64,41 +107,31 @@ func (adapter claudeAdapter) discover(ctx context.Context, home string, sessionL
 				return nil
 			}
 			historyPath := filepath.Join(projectDirectory, entry.Name())
-			if !isRegularFile(historyPath, entry) {
+			file, ok := historyFileForEntry(historyPath, entry)
+			if !ok {
 				return nil
 			}
-
-			result.Seen++
-			candidate, include, issue := adapter.readHistory(historyPath)
-			if issue != "" {
-				errorCode = strongerError(errorCode, issue)
-			}
-			if !include {
-				result.Skipped++
-				return nil
-			}
-			if !newerCandidate(candidates, candidate, sessionLimit) {
-				result.Skipped++
-				errorCode = strongerError(errorCode, "resource_limit")
-			}
+			files = append(files, file)
 			return nil
 		})
 		if err != nil {
-			errorCode = strongerError(errorCode, "unavailable")
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			errorCode = strongerError(errorCode, "unavailable")
 		}
 		return nil
 	})
 	if os.IsNotExist(err) {
-		result.Status = Absent
-		return result
+		return nil, "", nil
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
 		errorCode = strongerError(errorCode, "unavailable")
 	}
-	return finishResult(result, candidates, errorCode)
+	return files, errorCode, nil
 }
 
 type claudeRecord struct {
