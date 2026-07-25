@@ -218,7 +218,7 @@ func TestHelpOverlayAndFooterAdvertiseWaitingFilter(t *testing.T) {
 	value.showHelp = true
 	overlay := ansi.Strip(value.View().Content)
 	if !strings.Contains(overlay, "! / @ / # / $") ||
-		!strings.Contains(overlay, "filter attached / running / saved / needs input") {
+		!strings.Contains(overlay, "filter attached / running / idle / needs input") {
 		t.Fatalf("help overlay missing the needs-input filter binding:\n%s", overlay)
 	}
 }
