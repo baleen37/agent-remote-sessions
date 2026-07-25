@@ -137,6 +137,11 @@ func (value model) updateActivity(message activityMsg) (model, tea.Cmd) {
 		value.activity = make(map[sessionKey]activityEntry)
 	}
 	value.activity[message.key] = activityEntry{state: message.state, at: value.deps.Now()}
+	// The $ filter reads the activity map, so a probe result can add or remove a
+	// visible session without any keypress.
+	if value.waitingFilter {
+		value.refreshVisible()
+	}
 	return value, nil
 }
 

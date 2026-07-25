@@ -69,6 +69,7 @@ type model struct {
 	selectedRef       rowRef
 	groupMode         map[string]groupMode
 	stateFilter       map[session.RuntimeState]bool
+	waitingFilter     bool
 	query             string
 	matched           int
 	searching         bool
@@ -346,6 +347,7 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			value.refreshVisible()
 		} else if value.filterActive() {
 			value.stateFilter = nil
+			value.waitingFilter = false
 			value.refreshVisible()
 		}
 	case '/':
@@ -418,6 +420,9 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			value.toggleStateFilter(session.RuntimeRunning)
 		case "#":
 			value.toggleStateFilter(session.RuntimeSaved)
+		case "$":
+			value.waitingFilter = !value.waitingFilter
+			value.refreshVisible()
 		}
 	}
 	return value, nil
@@ -481,10 +486,37 @@ func (value *model) refreshVisible() {
 }
 
 // visibleSessions is the inventory the rows are built from: everything the
-// active state filter and search query admit, folded or not.
+// active state filter and search query admit, folded or not. The state filters
+// and $ form one union — each admits its own sessions — and the query then
+// narrows whatever that union produced.
 func (value model) visibleSessions() []session.Session {
-	filtered := filterByState(value.result.Sessions, value.stateFilter)
+	filtered := value.filterByActiveStates(value.result.Sessions)
 	return filterSessions(filtered, value.query, value.deps.LocalTarget)
+}
+
+// filterByActiveStates applies the state and needs-input filters as a union. It
+// dedupes on the way out: a waiting session whose runtime state is also filtered
+// on matches both halves and must still appear once.
+func (value model) filterByActiveStates(items []session.Session) []session.Session {
+	if !value.waitingFilter {
+		return filterByState(items, value.stateFilter)
+	}
+	admitted := make(map[sessionKey]struct{}, len(items))
+	for _, item := range filterByWaiting(items, value.activity) {
+		admitted[keyOf(item)] = struct{}{}
+	}
+	for _, item := range items {
+		if value.stateFilter[item.Runtime.State] {
+			admitted[keyOf(item)] = struct{}{}
+		}
+	}
+	filtered := make([]session.Session, 0, len(admitted))
+	for _, item := range items {
+		if _, ok := admitted[keyOf(item)]; ok {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 // toggleStateFilter flips the given runtime state in the active filter set.
@@ -501,7 +533,7 @@ func (value *model) toggleStateFilter(state session.RuntimeState) {
 }
 
 func (value model) filterActive() bool {
-	return len(value.stateFilter) > 0
+	return len(value.stateFilter) > 0 || value.waitingFilter
 }
 
 func (value *model) restoreSelection() {

@@ -51,7 +51,7 @@ var helpBindings = []helpBinding{
 	{key: "1-9", text: "jump to group", featured: []helpContext{helpGroupRow}},
 	{key: "PgUp / PgDn · Ctrl+U / Ctrl+D", text: "page up / down"},
 	{key: "/", text: "search"},
-	{key: "! / @ / #", text: "filter attached / running / saved", featured: []helpContext{helpFilterActive}},
+	{key: "! / @ / # / $", text: "filter attached / running / saved / needs input", featured: []helpContext{helpFilterActive}},
 	{
 		key:            "p",
 		text:           "toggle preview pane",
