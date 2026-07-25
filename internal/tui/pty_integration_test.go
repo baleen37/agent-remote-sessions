@@ -357,7 +357,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 	go func() { runDone <- Run(ctx, dependencies, terminal, terminal) }()
 
 	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
-		return strings.Contains(value, "ars  0 active") && strings.Contains(value, "▸")
+		return strings.Contains(value, "ars  ○ 1 idle") && strings.Contains(value, "▸")
 	}, "initial ARS TUI with collapsed saved group")
 	if _, err := master.Write([]byte{'\r'}); err != nil {
 		t.Fatalf("write Enter to expand group: %v", err)
