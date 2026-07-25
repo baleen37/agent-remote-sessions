@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -270,6 +271,64 @@ func TestClaudeDiscoverDerivesTitleFromFirstUserPrompt(t *testing.T) {
 	}
 }
 
+func TestClaudeReadHistoryKeepsLaterMetadataAfterSubstantialPrompt(t *testing.T) {
+	const firstID = "56565656-5656-5656-5656-565656565656"
+	const secondID = "57575757-5757-5757-5757-575757575757"
+	substantialPrompt := `{"type":"user","sessionId":"` + firstID +
+		`","cwd":"/synthetic/claude/prompt","message":{"content":"Fix the flaky discovery test"}}`
+
+	t.Run("native title", func(t *testing.T) {
+		path := writeClaudeHistory(t,
+			substantialPrompt,
+			`{"type":"user","sessionId":"`+firstID+`","message":{"content":{"large":"ignored"}}}`,
+			`{"type":"custom-title","sessionId":"`+firstID+`","customTitle":"Synthetic native title"}`,
+		)
+
+		candidate, include, issue := (claudeAdapter{}).readHistory(path)
+		if !include || issue != "" || candidate.Title != "Synthetic native title" {
+			t.Fatalf("readHistory() = %#v include %t issue %q, want later native title", candidate, include, issue)
+		}
+	})
+
+	t.Run("mixed ID", func(t *testing.T) {
+		path := writeClaudeHistory(t,
+			substantialPrompt,
+			`{"type":"custom-title","sessionId":"`+secondID+`","customTitle":"Different session"}`,
+		)
+
+		_, include, issue := (claudeAdapter{}).readHistory(path)
+		if include || issue != "incompatible" {
+			t.Fatalf("readHistory() = include %t issue %q, want later mixed ID rejected", include, issue)
+		}
+	})
+}
+
+func TestClaudeReadHistoryReportsCorruptIrrelevantLine(t *testing.T) {
+	id := fixtureID(1)
+	path := writeClaudeHistory(t,
+		`{"type":"user","sessionId":"`+id+`","cwd":"/synthetic/claude"}`,
+		`{"type":"irrelevant","message":`,
+	)
+
+	candidate, include, issue := (claudeAdapter{}).readHistory(path)
+	if !include || issue != "corrupt" || candidate.NativeID != id {
+		t.Fatalf("readHistory() = %#v include %t issue %q, want included metadata with corrupt diagnostic", candidate, include, issue)
+	}
+}
+
+func TestClaudeReadHistoryMalformedEligibleMessageKeepsFallback(t *testing.T) {
+	id := fixtureID(1)
+	path := writeClaudeHistory(t,
+		`{"type":"user","sessionId":"`+id+`","cwd":"/synthetic/claude","message":"malformed"}`,
+		`{"type":"user","sessionId":"`+id+`","message":{"content":"Fix the flaky discovery test"}}`,
+	)
+
+	candidate, include, issue := (claudeAdapter{}).readHistory(path)
+	if !include || issue != "" || candidate.Title != "Fix the flaky discovery test" {
+		t.Fatalf("readHistory() = %#v include %t issue %q, want later prompt fallback", candidate, include, issue)
+	}
+}
+
 func TestClaudeDiscoverExcludesMarkedHistoryDespiteUserPrompt(t *testing.T) {
 	const id = "56565656-5656-5656-5656-565656565656"
 	for _, testCase := range []struct {
@@ -469,4 +528,11 @@ func TestClaudeDiscoverSkipsFIFOHistoryWithoutOpeningIt(t *testing.T) {
 		return (claudeAdapter{}).Discover(context.Background(), home)
 	})
 	assertAbsentResult(t, result, session.Claude)
+}
+
+func writeClaudeHistory(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	writeFile(t, path, strings.Join(lines, "\n")+"\n")
+	return path
 }

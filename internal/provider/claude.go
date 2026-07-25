@@ -134,18 +134,21 @@ func (adapter claudeAdapter) historyFiles(ctx context.Context, home string) ([]h
 	return files, errorCode, nil
 }
 
-type claudeRecord struct {
-	Type        string          `json:"type"`
-	SessionID   string          `json:"sessionId"`
-	CWD         string          `json:"cwd"`
-	Title       string          `json:"title"`
-	CustomTitle string          `json:"customTitle"`
-	AgentName   string          `json:"agentName"`
-	AgentID     string          `json:"agentId"`
-	IsInternal  bool            `json:"isInternal"`
-	IsMeta      bool            `json:"isMeta"`
-	IsSidechain bool            `json:"isSidechain"`
-	Message     json.RawMessage `json:"message"`
+type claudeHeader struct {
+	Type        string `json:"type"`
+	SessionID   string `json:"sessionId"`
+	CWD         string `json:"cwd"`
+	Title       string `json:"title"`
+	CustomTitle string `json:"customTitle"`
+	AgentName   string `json:"agentName"`
+	AgentID     string `json:"agentId"`
+	IsInternal  bool   `json:"isInternal"`
+	IsMeta      bool   `json:"isMeta"`
+	IsSidechain bool   `json:"isSidechain"`
+}
+
+type claudeMessage struct {
+	Message json.RawMessage `json:"message"`
 }
 
 func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, string) {
@@ -171,46 +174,50 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxProviderLineBytes)
 	for scanner.Scan() {
-		var record claudeRecord
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+		line := scanner.Bytes()
+		var header claudeHeader
+		if err := json.Unmarshal(line, &header); err != nil {
 			errorCode = strongerError(errorCode, "corrupt")
 			continue
 		}
-		if record.IsInternal || record.IsSidechain || record.AgentID != "" || record.Type == "internal" {
+		if header.IsInternal || header.IsSidechain || header.AgentID != "" || header.Type == "internal" {
 			excluded = true
 		}
-		if record.SessionID != "" {
-			if err := adapter.ValidateID(record.SessionID); err != nil {
+		if header.SessionID != "" {
+			if err := adapter.ValidateID(header.SessionID); err != nil {
 				errorCode = strongerError(errorCode, "incompatible")
 				continue
 			} else if id == "" {
-				id = record.SessionID
-			} else if id != record.SessionID {
+				id = header.SessionID
+			} else if id != header.SessionID {
 				mixedIDs = true
 				errorCode = strongerError(errorCode, "incompatible")
 				continue
 			}
 		}
-		if record.CWD != "" {
-			if validClaudeCandidateText(record.CWD, "") {
-				cwd = record.CWD
+		if header.CWD != "" {
+			if validClaudeCandidateText(header.CWD, "") {
+				cwd = header.CWD
 			} else {
 				errorCode = strongerError(errorCode, "incompatible")
 			}
 		}
-		value, rank := claudeNativeTitle(record)
+		value, rank := claudeNativeTitle(header)
 		if rank >= titleRank && value != "" && validClaudeCandidateText("/", value) {
 			title = value
 			titleRank = rank
 		}
-		if substantialPromptTitle == "" {
-			if candidate := claudePromptTitle(record); candidate != "" {
-				if isWeakPromptTitle(candidate) {
-					if weakPromptTitle == "" {
-						weakPromptTitle = candidate
+		if substantialPromptTitle == "" && header.Type == "user" && !header.IsMeta {
+			var message claudeMessage
+			if json.Unmarshal(line, &message) == nil {
+				if candidate := claudePromptTitle(message.Message); candidate != "" {
+					if isWeakPromptTitle(candidate) {
+						if weakPromptTitle == "" {
+							weakPromptTitle = candidate
+						}
+					} else {
+						substantialPromptTitle = candidate
 					}
-				} else {
-					substantialPromptTitle = candidate
 				}
 			}
 		}
@@ -249,17 +256,17 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 	return candidate, true, errorCode
 }
 
-func claudeNativeTitle(record claudeRecord) (string, int) {
-	if record.CustomTitle != "" {
-		return record.CustomTitle, 3
+func claudeNativeTitle(header claudeHeader) (string, int) {
+	if header.CustomTitle != "" {
+		return header.CustomTitle, 3
 	}
-	switch record.Type {
+	switch header.Type {
 	case "custom-title":
-		return record.Title, 3
+		return header.Title, 3
 	case "ai-title":
-		return record.Title, 2
+		return header.Title, 2
 	case "agent-name":
-		return firstNonEmpty(record.AgentName, record.Title), 1
+		return firstNonEmpty(header.AgentName, header.Title), 1
 	default:
 		return "", 0
 	}
@@ -269,14 +276,14 @@ func claudeNativeTitle(record claudeRecord) (string, int) {
 // without a native title record still show something other than their UUID. Meta
 // records, slash-command wrappers, and tool-result-only content carry no prompt the
 // user typed, so they yield "" and the caller keeps looking at later records.
-func claudePromptTitle(record claudeRecord) string {
-	if record.Type != "user" || record.IsMeta || len(record.Message) == 0 {
+func claudePromptTitle(rawMessage json.RawMessage) string {
+	if len(rawMessage) == 0 {
 		return ""
 	}
 	var message struct {
 		Content json.RawMessage `json:"content"`
 	}
-	if json.Unmarshal(record.Message, &message) != nil {
+	if json.Unmarshal(rawMessage, &message) != nil {
 		return ""
 	}
 	text := claudeMessageText(message.Content)

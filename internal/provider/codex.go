@@ -144,6 +144,10 @@ type codexEnvelope struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+type codexHeader struct {
+	Type string `json:"type"`
+}
+
 type codexSessionMeta struct {
 	ID           string `json:"id"`
 	CWD          string `json:"cwd"`
@@ -178,19 +182,30 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxProviderLineBytes)
 	for scanner.Scan() {
-		var envelope codexEnvelope
-		if err := json.Unmarshal(scanner.Bytes(), &envelope); err != nil {
+		line := scanner.Bytes()
+		var header codexHeader
+		if err := json.Unmarshal(line, &header); err != nil {
 			errorCode = strongerError(errorCode, "corrupt")
 			continue
 		}
-		if envelope.Type == "event_msg" && title == "" && len(envelope.Payload) > 0 {
+		if header.Type == "event_msg" && title == "" {
+			var envelope codexEnvelope
+			if json.Unmarshal(line, &envelope) != nil {
+				errorCode = strongerError(errorCode, "corrupt")
+				continue
+			}
 			var event codexEventMsg
-			if json.Unmarshal(envelope.Payload, &event) == nil && event.Type == "user_message" {
+			if len(envelope.Payload) > 0 && json.Unmarshal(envelope.Payload, &event) == nil && event.Type == "user_message" {
 				title = codexTitle(event.Message)
 			}
 			continue
 		}
-		if envelope.Type != "session_meta" {
+		if header.Type != "session_meta" {
+			continue
+		}
+		var envelope codexEnvelope
+		if json.Unmarshal(line, &envelope) != nil {
+			errorCode = strongerError(errorCode, "corrupt")
 			continue
 		}
 		var decoded codexSessionMeta

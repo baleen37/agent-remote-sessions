@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -212,6 +213,57 @@ func TestCodexDiscoverRejectsMultipleValidSessionMeta(t *testing.T) {
 	}
 }
 
+func TestCodexReadHistoryRecognizesEscapedSessionMetaType(t *testing.T) {
+	id := "123e4567-e89b-42d3-a456-426614174000"
+	path := writeCodexHistory(t,
+		`{"type":"session\u005fmeta","payload":{"id":"`+id+`","cwd":"/work","source":"cli","thread_source":"user"}}`,
+		`{"type":"session_meta","payload":{"id":"`+id+`","cwd":"/work","source":"cli","thread_source":"user"}}`,
+	)
+
+	_, include, issue := (codexAdapter{}).readHistory(path)
+	if include || issue != "incompatible" {
+		t.Fatalf("readHistory() = include %t issue %q, want duplicate metadata rejected as incompatible", include, issue)
+	}
+}
+
+func TestCodexReadHistoryReportsCorruptIrrelevantLine(t *testing.T) {
+	id := fixtureID(1)
+	path := writeCodexHistory(t,
+		strings.TrimSpace(codexMeta(id, "/synthetic/codex", "cli", "user")),
+		`{"type":"irrelevant","payload":`,
+	)
+
+	candidate, include, issue := (codexAdapter{}).readHistory(path)
+	if !include || issue != "corrupt" || candidate.NativeID != id {
+		t.Fatalf("readHistory() = %#v include %t issue %q, want included metadata with corrupt diagnostic", candidate, include, issue)
+	}
+}
+
+func TestCodexReadHistoryDoesNotCopyLargeIrrelevantPayloads(t *testing.T) {
+	const records = 4
+	id := fixtureID(1)
+	base := codexMeta(id, "/synthetic/codex", "cli", "user") + codexUserMessage("chosen title")
+	largeValue := strings.Repeat("x", 256*1024)
+	irrelevant := `{"type":"irrelevant","payload":{"large":"` + largeValue + `"}}`
+	largePath := writeCodexHistory(t,
+		append(strings.Split(strings.TrimSuffix(base, "\n"), "\n"),
+			slices.Repeat([]string{irrelevant}, records)...)...,
+	)
+
+	candidate, include, issue := (codexAdapter{}).readHistory(largePath)
+	if !include || issue != "" || candidate.NativeID != id || candidate.CWD != "/synthetic/codex" || candidate.Title != "chosen title" {
+		t.Fatalf("readHistory() = %#v include %t issue %q, want unchanged metadata and title", candidate, include, issue)
+	}
+
+	allocated := totalAllocatedPerRun(5, func() {
+		(codexAdapter{}).readHistory(largePath)
+	})
+	payloadBytes := uint64(records * len(largeValue))
+	if allocated >= payloadBytes {
+		t.Fatalf("readHistory() allocated %d bytes for %d irrelevant payload bytes, want no full payload copies", allocated, payloadBytes)
+	}
+}
+
 func TestCodexDiscoverIsAbsentWithoutExecutableOrMetadata(t *testing.T) {
 	t.Run("executable", func(t *testing.T) {
 		home := t.TempDir()
@@ -367,4 +419,22 @@ func codexUserMessage(message string) string {
 		panic(err)
 	}
 	return `{"type":"event_msg","payload":` + string(payload) + "}\n"
+}
+
+func writeCodexHistory(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	writeFile(t, path, strings.Join(lines, "\n")+"\n")
+	return path
+}
+
+func totalAllocatedPerRun(runs int, run func()) uint64 {
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range runs {
+		run()
+	}
+	runtime.ReadMemStats(&after)
+	return (after.TotalAlloc - before.TotalAlloc) / uint64(runs)
 }
