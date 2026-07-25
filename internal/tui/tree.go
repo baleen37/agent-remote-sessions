@@ -26,6 +26,7 @@ const (
 type listRow struct {
 	kind      rowKind
 	project   string
+	host      string
 	count     int
 	state     session.RuntimeState
 	collapsed bool
@@ -36,25 +37,34 @@ type listRow struct {
 type rowRef struct {
 	kind    rowKind
 	project string
+	host    string
 	key     sessionKey
 }
 
 func refOf(row listRow) rowRef {
 	if row.kind == rowSession {
-		return rowRef{kind: rowSession, project: row.project, key: keyOf(row.session)}
+		return rowRef{kind: rowSession, project: row.project, host: row.host, key: keyOf(row.session)}
 	}
-	return rowRef{kind: row.kind, project: row.project}
+	return rowRef{kind: row.kind, project: row.project, host: row.host}
 }
 
 type sessionGroup struct {
 	project  string
+	host     string
 	sessions []session.Session
+}
+
+// groupKey identifies a group by (host, project) as a single collision-proof
+// string: NUL cannot appear in either part, so distinct pairs never map to the
+// same key. It is the fold-state map key and the row/rowRef group identity.
+func groupKey(host, project string) string {
+	return host + "\x00" + project
 }
 
 func buildRows(items []session.Session, modes map[string]groupMode, searchActive bool, pins map[sessionKey]bool) []listRow {
 	var rows []listRow
 	for _, group := range groupSessions(items, pins) {
-		mode := modes[group.project]
+		mode := modes[groupKey(group.host, group.project)]
 		if searchActive {
 			mode = groupModeOpen
 		}
@@ -72,6 +82,7 @@ func buildRows(items []session.Session, modes map[string]groupMode, searchActive
 		rows = append(rows, listRow{
 			kind:      rowHeader,
 			project:   group.project,
+			host:      group.host,
 			count:     len(group.sessions),
 			state:     groupState(group.sessions),
 			collapsed: mode == groupModeClosed,
@@ -83,12 +94,13 @@ func buildRows(items []session.Session, modes map[string]groupMode, searchActive
 			rows = append(rows, listRow{
 				kind:    rowSession,
 				project: group.project,
+				host:    group.host,
 				session: item,
 				last:    position == len(visible)-1 && hidden == 0,
 			})
 		}
 		if hidden > 0 {
-			rows = append(rows, listRow{kind: rowMore, project: group.project, count: hidden, last: true})
+			rows = append(rows, listRow{kind: rowMore, project: group.project, host: group.host, count: hidden, last: true})
 		}
 	}
 	return rows
@@ -107,20 +119,23 @@ func activeSessions(items []session.Session, pins map[sessionKey]bool) []session
 	return active
 }
 
-// groupSessions buckets sessions by project and orders both tiers. Pins are
-// the outermost key at each tier — a pinned session leads its group and a group
-// holding one leads the list — and the existing state-then-recency ordering
-// decides the rest within each tier, so unpinning restores the previous order.
+// groupSessions buckets sessions by (host, project) and orders both tiers.
+// Splitting on host keeps a local and a remote checkout of the same basename
+// (e.g. "infra") from merging into one group. Pins are the outermost key at
+// each tier — a pinned session leads its group and a group holding one leads
+// the list — and the existing state-then-recency ordering decides the rest
+// within each tier, so unpinning restores the previous order.
 func groupSessions(items []session.Session, pins map[sessionKey]bool) []sessionGroup {
 	positions := make(map[string]int)
 	var groups []sessionGroup
 	for _, item := range items {
 		project := session.Project(item.CWD)
-		position, seen := positions[project]
+		key := groupKey(item.Host, project)
+		position, seen := positions[key]
 		if !seen {
 			position = len(groups)
-			positions[project] = position
-			groups = append(groups, sessionGroup{project: project})
+			positions[key] = position
+			groups = append(groups, sessionGroup{project: project, host: item.Host})
 		}
 		groups[position].sessions = append(groups[position].sessions, item)
 	}
