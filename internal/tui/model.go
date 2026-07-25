@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -549,6 +550,27 @@ func (value *model) toggleStateFilter(state session.RuntimeState) {
 
 func (value model) filterActive() bool {
 	return len(value.stateFilter) > 0 || value.waitingFilter
+}
+
+// emptyFilterMessage names the active state/needs-input filters so the empty
+// list explains why, e.g. "no attached / running sessions · esc to clear".
+// A needs-input-only filter reads as "no sessions need input" instead, since
+// "no needs-input sessions" doesn't scan as English; combined with a state
+// filter it folds into the joined list as "needs-input".
+func (value model) emptyFilterMessage() string {
+	var names []string
+	for _, state := range []session.RuntimeState{session.RuntimeAttached, session.RuntimeRunning, session.RuntimeSaved} {
+		if value.stateFilter[state] {
+			names = append(names, string(state))
+		}
+	}
+	if len(names) == 0 && value.waitingFilter {
+		return "no sessions need input · esc to clear"
+	}
+	if value.waitingFilter {
+		names = append(names, "needs-input")
+	}
+	return "no " + strings.Join(names, " / ") + " sessions · esc to clear"
 }
 
 func (value *model) restoreSelection() {
