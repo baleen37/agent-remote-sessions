@@ -1,12 +1,12 @@
 # startup-update-choice: choose update or current version before the session TUI
 
 **What this covers**: The numbered startup menu, real Up/Down input, explicit
-confirmation, standalone update replacement, and re-exec from
-`feat/improve-entry-tui`.
+confirmation, standalone update replacement, and re-exec from the current
+worktree build under test.
 
 ## Pre-state
 
-- Run from the repository worktree under test on a supported release target.
+- Run from the repository worktree under test on macOS arm64.
 - `go`, `tmux`, `trash`, and network access to GitHub Releases are available.
 - The tmux sessions `ars-e2e-update-continue` and `ars-e2e-update-apply` do not
   exist. If either exists, stop rather than touching it.
@@ -71,6 +71,8 @@ shasum -a 256 "$ARS_E2E_TMP/ars-continue" "$ARS_E2E_TMP/ars-update" >"$ARS_E2E_T
 - The initial pane has a cursor on `1. Update`, two numbered rows, and the
   `↑/↓ move · 1/2 choose · enter confirm` hint. Missing numbering, a cursor on
   row 2, or absence of the key hint fails the scenario.
+- With `NO_COLOR=1`, `tmux capture-pane -e -p` contains no ANSI SGR sequence.
+  Styled title, row, or hint output fails the scenario.
 - Down + Enter reaches the main session TUI and `ars-continue` keeps its exact
   pre-run SHA-256. A changed checksum, an update command, or a remaining menu
   fails the continue path.
@@ -89,7 +91,7 @@ system Trash:
 ```bash
 tmux has-session -t ars-e2e-update-continue 2>/dev/null && tmux kill-session -t ars-e2e-update-continue
 tmux has-session -t ars-e2e-update-apply 2>/dev/null && tmux kill-session -t ars-e2e-update-apply
-trash "$ARS_E2E_TMP"
+[[ -d "$ARS_E2E_TMP" ]] && trash "$ARS_E2E_TMP"
 ```
 
 ## Sharp edges
