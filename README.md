@@ -8,7 +8,8 @@ and returns to the same refreshed TUI.
 
 ARS is one local Go binary. Peers need no `ars` install, daemon, database,
 cache, index, or background helper. Collection uses a private, one-shot,
-version-matched ARS/2 helper over the user's existing OpenSSH configuration.
+version-matched ARS/3 streaming helper over the user's existing OpenSSH
+configuration.
 
 ## Install
 
@@ -147,13 +148,15 @@ footer key help follows the cursor: it offers `enter toggle` on a group
 header and `enter attach` on a session.
 
 The screen collects at startup, on `r`, and after attach returns. Rows appear
-immediately from the last collection, cached per host under
-`${XDG_CACHE_HOME:-~/.cache}/ars/hosts/`, marked `cached` until that host's
-live refresh lands; each host updates independently, so a slow peer does not
-hold up the others (hosts are collected up to four at a time). It does not
-poll, watch, or collect in the background, and
-peers still store nothing. Canonical host/provider/native-ID data, never
-rendered row text, determines the attach command.
+immediately from the last successful result for each host, stored under
+`${XDG_CACHE_HOME:-~/.cache}/ars/hosts/`, while a generic `refreshing` indicator
+shows that fresher data is being collected. Histories most likely to be visible
+refresh first while exhaustive history discovery continues silently. Each host
+updates independently, so a slow peer does not hold up the others (hosts are
+collected up to four at a time). It does not poll, watch, or collect in the
+background, and peers still store nothing. Only the exhaustive successful
+result replaces a host's stored result. Canonical host/provider/native-ID data,
+never rendered row text, determines the attach command.
 
 ## Session inclusion
 
@@ -256,7 +259,7 @@ discarding valid sessions.
 
 Collection is bounded and fail-closed:
 
-- 64 KiB startup noise and 64 KiB per ARS/2 protocol line
+- 64 KiB startup noise and 64 KiB per ARS/3 protocol line
 - 16 MiB total collector stdout and 64 KiB diagnostic stderr
 - 10,000 sessions total; provider traversal also caps discovered sessions at
   10,000
@@ -273,7 +276,7 @@ that exact leftover.
 
 ## Privacy
 
-The private ARS/2 collector returns validated metadata only: provider, native
+The private ARS/3 collector streams validated metadata only: provider, native
 UUID, modification time, saved CWD, native title, runtime state, attached-client
 count, and runtime start time. Prompts, responses, tool input or output,
 credentials, raw transcript lines, provider source paths, filenames, pane
