@@ -461,14 +461,14 @@ func TestModelRefreshCoalescesAndRejectsStaleGenerations(t *testing.T) {
 func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 	model := readyModel()
 	selected := twoSessions()[1]
-	model.selectedRef = rowRef{kind: rowSession, project: session.Project(selected.CWD), key: keyOf(selected)}
+	model.selectedRef = rowRef{kind: rowSession, project: session.Project(selected.CWD), host: selected.Host, key: keyOf(selected)}
 	model.selected = 3
 
 	changed := selected
 	changed.Title = "renamed row"
 	changed.CWD = "/renamed/project"
 	result := Result{Sessions: []session.Session{changed, twoSessions()[0]}}
-	model.groupMode = map[string]groupMode{"project": groupModeOpen}
+	model.groupMode = map[string]groupMode{groupKey(changed.Host, "project"): groupModeOpen}
 	model.collecting = true
 	model.generation = 2
 	model, _ = updateModel(model, collectUpdateMsg{generation: 2, update: Update{Result: result, Done: true}})
@@ -554,15 +554,19 @@ func TestModelSelectionFallsBackToHeaderWhenRowVanishes(t *testing.T) {
 	if header := value.rows[0]; header.project != "ars" {
 		t.Fatalf("unexpected first group: %+v", header)
 	}
-	value.toggle("ars")
+	value.toggle("localhost", "ars")
 	if row, _ := value.selectedRow(); row.kind != rowHeader || row.project != "ars" {
 		t.Fatalf("selection did not fall back to header: %+v", row)
 	}
 }
 
+// mixedProjectSessions puts both sessions in the same (host, project) group
+// — same CWD and host — so the group carries one active and one saved
+// session, letting auto-fold hide the saved one behind a more row.
 func mixedProjectSessions() []session.Session {
 	items := twoSessions()
 	items[1].CWD = items[0].CWD
+	items[1].Host = items[0].Host
 	return items
 }
 

@@ -37,7 +37,7 @@ func TestModelShiftPTogglesPinOnSelectedSession(t *testing.T) {
 
 func TestModelShiftPOnGroupHeaderIsNoOp(t *testing.T) {
 	value := readyModel()
-	value.selectHeader("ars")
+	value.selectHeader("localhost", "ars")
 	row, ok := value.selectedRow()
 	if !ok || row.kind != rowHeader {
 		t.Fatalf("selected row = %+v, want a header row", row)
@@ -87,7 +87,7 @@ func TestBuildRowsSortsPinnedSessionFirstWithinGroup(t *testing.T) {
 	newest := treeSession("ars", "ars-newest", session.RuntimeRunning, base)
 	older := treeSession("ars", "ars-older", session.RuntimeRunning, base.Add(-time.Hour))
 	items := []session.Session{newest, older}
-	modes := map[string]groupMode{"ars": groupModeOpen}
+	modes := map[string]groupMode{groupKey("localhost", "ars"): groupModeOpen}
 
 	rows := buildRows(items, modes, false, nil)
 	if ids := sessionIDs(rows); ids[0] != "ars-newest" || ids[1] != "ars-older" {
@@ -111,7 +111,7 @@ func TestBuildRowsSortsGroupWithPinnedSessionBeforeOtherGroups(t *testing.T) {
 	fresh := treeSession("ars", "ars-live", session.RuntimeRunning, base)
 	stale := treeSession("blog", "blog-live", session.RuntimeRunning, base.Add(-3*time.Hour))
 	items := []session.Session{fresh, stale}
-	modes := map[string]groupMode{"ars": groupModeOpen, "blog": groupModeOpen}
+	modes := map[string]groupMode{groupKey("localhost", "ars"): groupModeOpen, groupKey("localhost", "blog"): groupModeOpen}
 
 	rows := buildRows(items, modes, false, nil)
 	if projects := headerProjects(rows); projects[0] != "ars" || projects[1] != "blog" {
@@ -139,7 +139,11 @@ func TestBuildRowsPinnedGroupsKeepRecencyOrderAmongThemselves(t *testing.T) {
 	second := treeSession("blog", "blog-live", session.RuntimeRunning, base.Add(-time.Hour))
 	third := treeSession("api", "api-live", session.RuntimeRunning, base.Add(-2*time.Hour))
 	items := []session.Session{first, second, third}
-	modes := map[string]groupMode{"ars": groupModeOpen, "blog": groupModeOpen, "api": groupModeOpen}
+	modes := map[string]groupMode{
+		groupKey("localhost", "ars"):  groupModeOpen,
+		groupKey("localhost", "blog"): groupModeOpen,
+		groupKey("localhost", "api"):  groupModeOpen,
+	}
 
 	pins := map[sessionKey]bool{keyOf(second): true, keyOf(third): true}
 	rows := buildRows(items, modes, false, pins)

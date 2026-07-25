@@ -186,7 +186,11 @@ func (value model) renderHeader(row listRow, selected bool, width int) string {
 	if row.collapsed {
 		symbol = "▸"
 	}
-	text := fmt.Sprintf("%s %s (%d)", symbol, row.project, row.count)
+	label := row.project
+	if row.host != value.deps.LocalTarget {
+		label += " · " + row.host
+	}
+	text := fmt.Sprintf("%s %s (%d)", symbol, label, row.count)
 	if row.collapsed && row.state != session.RuntimeSaved {
 		text += " " + value.stateText(stateSymbol(row.state), row.state)
 	}
