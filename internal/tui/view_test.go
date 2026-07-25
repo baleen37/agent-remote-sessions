@@ -334,7 +334,7 @@ func TestViewShowsSelectedCanonicalDetailsAndBoundedDiagnostics(t *testing.T) {
 	content := ansi.Strip(model.View().Content)
 	for _, want := range []string{
 		"/work/ars", "123e4567-e89b-42d3-a456-426614174000", "1d ago",
-		"✕ server: failed", "Claude discovery partial (corrupt)", "status",
+		"✕ server: failed", "Claude discovery partial · unreadable session data skipped", "status",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("missing %q: %q", want, content)
@@ -348,6 +348,67 @@ func TestViewShowsSelectedCanonicalDetailsAndBoundedDiagnostics(t *testing.T) {
 	warning := lineContaining(t, strippedLines(strings.Split(content, "\n")), "Claude discovery partial")
 	if strings.HasPrefix(strings.TrimSpace(strings.Split(content, "\n")[warning]), "✕") {
 		t.Fatalf("warning line should not carry the error prefix: %q", content)
+	}
+}
+
+func TestDiagnosticLineExplainsKnownCodes(t *testing.T) {
+	cases := []struct {
+		name  string
+		value output.HostError
+		want  string
+	}{
+		{
+			name:  "resource limit",
+			value: hostError("localhost", "resource_limit", "Claude discovery partial"),
+			want:  "Claude discovery partial · session limit reached, oldest hidden",
+		},
+		{
+			name:  "incompatible",
+			value: hostError("localhost", "incompatible", "Claude discovery partial"),
+			want:  "Claude discovery partial · unrecognized session data skipped",
+		},
+		{
+			name:  "corrupt",
+			value: hostError("localhost", "corrupt", "Claude discovery partial"),
+			want:  "Claude discovery partial · unreadable session data skipped",
+		},
+		{
+			name:  "unavailable",
+			value: hostError("localhost", "unavailable", "Claude discovery failed"),
+			want:  "Claude discovery failed · some session files could not be read",
+		},
+		{
+			name:  "remote host keeps its prefix",
+			value: hostError("baleen@host", "corrupt", "Codex discovery partial"),
+			want:  "baleen@host: Codex discovery partial · unreadable session data skipped",
+		},
+		{
+			name:  "unknown code falls back to the raw code",
+			value: hostError("localhost", "tmux_failed", "Runtime inspection failed"),
+			want:  "Runtime inspection failed (tmux_failed)",
+		},
+		{
+			name:  "unknown remote code falls back to the raw code",
+			value: hostError("server", "ssh_failed", "SSH collection failed"),
+			want:  "server: SSH collection failed (ssh_failed)",
+		},
+		{
+			name:  "empty code keeps the message alone",
+			value: hostError("localhost", "", "Claude discovery partial"),
+			want:  "Claude discovery partial",
+		},
+		{
+			name:  "empty remote code keeps the prefixed message alone",
+			value: hostError("server", "", "SSH collection failed"),
+			want:  "server: SSH collection failed",
+		},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := diagnosticLine(item.value, "localhost"); got != item.want {
+				t.Fatalf("diagnosticLine() = %q, want %q", got, item.want)
+			}
+		})
 	}
 }
 
@@ -389,7 +450,7 @@ func TestViewHidesLocalhostPresentation(t *testing.T) {
 	if !strings.Contains(content, "1 peer") || strings.Contains(content, "localhost: Claude") {
 		t.Fatalf("local presentation leaked: %q", content)
 	}
-	if !strings.Contains(content, "Claude discovery partial (corrupt)") {
+	if !strings.Contains(content, "Claude discovery partial · unreadable session data skipped") {
 		t.Fatalf("local diagnostic missing: %q", content)
 	}
 }

@@ -429,10 +429,30 @@ func (value model) diagnostics(width int) []string {
 }
 
 func diagnosticLine(value output.HostError, localTarget string) string {
+	message := value.Message + diagnosticHint(value.Code)
 	if value.Host == localTarget {
-		return fmt.Sprintf("%s (%s)", value.Message, value.Code)
+		return message
 	}
-	return fmt.Sprintf("%s: %s (%s)", value.Host, value.Message, value.Code)
+	return value.Host + ": " + message
+}
+
+// diagnosticHint turns a provider discovery code into a hint the reader can act
+// on. Codes without a hint keep the raw suffix so unexpected ones stay visible.
+func diagnosticHint(code string) string {
+	switch code {
+	case "":
+		return ""
+	case "resource_limit":
+		return " · session limit reached, oldest hidden"
+	case "incompatible":
+		return " · unrecognized session data skipped"
+	case "corrupt":
+		return " · unreadable session data skipped"
+	case "unavailable":
+		return " · some session files could not be read"
+	default:
+		return fmt.Sprintf(" (%s)", code)
+	}
 }
 
 func stateSymbol(state session.RuntimeState) string {
