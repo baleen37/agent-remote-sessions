@@ -71,11 +71,14 @@ func TestCollectHostsStreamEmitsCacheFirstThenPerHostLiveUpdates(t *testing.T) {
 	if first.Done || len(first.Result.Sessions) != 1 || first.Result.Sessions[0].Title != "cached local" {
 		t.Fatalf("initial snapshot = %#v", first)
 	}
-	if len(first.Stale) != 1 || first.Stale[0] != "localhost" {
-		t.Fatalf("initial stale = %#v", first.Stale)
+	if len(first.Loading) != 2 || first.Loading[0] != "localhost" || first.Loading[1] != "server" {
+		t.Fatalf("initial loading = %#v", first.Loading)
+	}
+	if middle := snapshots[1]; len(middle.Loading) != 1 || middle.Loading[0] != "server" {
+		t.Fatalf("loading after first completion = %#v", middle.Loading)
 	}
 	last := snapshots[2]
-	if !last.Done || len(last.Result.Sessions) != 2 || len(last.Stale) != 0 {
+	if !last.Done || len(last.Result.Sessions) != 2 || len(last.Loading) != 0 {
 		t.Fatalf("final snapshot = %#v", last)
 	}
 	if len(saved["localhost"]) != 1 || saved["localhost"][0].Title != "live local" {
@@ -86,7 +89,7 @@ func TestCollectHostsStreamEmitsCacheFirstThenPerHostLiveUpdates(t *testing.T) {
 	}
 }
 
-func TestCollectHostsStreamKeepsCachedRowsAndStaleMarkOnFailure(t *testing.T) {
+func TestCollectHostsStreamKeepsCachedRowsAndClearsLoadingOnFailure(t *testing.T) {
 	hosts := []Host{{Target: "server"}}
 	cached := streamSession("server", "123e4567-e89b-42d3-a456-426614174000", "cached row")
 	saves := 0
@@ -101,6 +104,9 @@ func TestCollectHostsStreamKeepsCachedRowsAndStaleMarkOnFailure(t *testing.T) {
 		snapshots = append(snapshots, snapshot)
 	})
 
+	if first := snapshots[0]; len(first.Loading) != 1 || first.Loading[0] != "server" {
+		t.Fatalf("initial loading = %#v", first.Loading)
+	}
 	last := snapshots[len(snapshots)-1]
 	if !last.Done {
 		t.Fatalf("final snapshot not done: %#v", last)
@@ -108,8 +114,8 @@ func TestCollectHostsStreamKeepsCachedRowsAndStaleMarkOnFailure(t *testing.T) {
 	if len(last.Result.Sessions) != 1 || last.Result.Sessions[0].Title != "cached row" {
 		t.Fatalf("cached rows dropped on failure: %#v", last.Result.Sessions)
 	}
-	if len(last.Stale) != 1 || last.Stale[0] != "server" {
-		t.Fatalf("failed host lost stale mark: %#v", last.Stale)
+	if len(last.Loading) != 0 {
+		t.Fatalf("failed host still loading: %#v", last.Loading)
 	}
 	if len(last.Result.Errors) != 1 || last.Result.Errors[0].Code != "ssh_failed" {
 		t.Fatalf("failure not reported: %#v", last.Result.Errors)
@@ -135,8 +141,11 @@ func TestCollectHostsStreamWithoutCacheOmitsPendingHosts(t *testing.T) {
 	if len(snapshots) != 2 {
 		t.Fatalf("snapshot count = %d, want 2", len(snapshots))
 	}
-	if len(snapshots[0].Result.Hosts) != 0 || len(snapshots[0].Stale) != 0 || snapshots[0].Done {
+	if len(snapshots[0].Result.Hosts) != 0 || snapshots[0].Done {
 		t.Fatalf("initial snapshot leaked pending host: %#v", snapshots[0])
+	}
+	if len(snapshots[0].Loading) != 1 || snapshots[0].Loading[0] != "server" {
+		t.Fatalf("initial loading = %#v", snapshots[0].Loading)
 	}
 	if !snapshots[1].Done || len(snapshots[1].Result.Sessions) != 1 {
 		t.Fatalf("final snapshot = %#v", snapshots[1])

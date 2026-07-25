@@ -24,9 +24,9 @@ type Result struct {
 }
 
 type Update struct {
-	Result Result
-	Stale  []string
-	Done   bool
+	Result  Result
+	Loading []string
+	Done    bool
 }
 
 type ExecCommand interface {
@@ -96,7 +96,7 @@ type model struct {
 	collecting        bool
 	spinner           int
 	generation        uint64
-	stale             map[string]struct{}
+	loading           []string
 	cancelCollect     context.CancelFunc
 	initialCollect    tea.Cmd
 	status            string
@@ -147,10 +147,7 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 			return value, nil
 		}
 		value.result = message.update.Result
-		value.stale = make(map[string]struct{}, len(message.update.Stale))
-		for _, target := range message.update.Stale {
-			value.stale[target] = struct{}{}
-		}
+		value.loading = message.update.Loading
 		if message.update.Done {
 			value.collecting = false
 		}
@@ -458,6 +455,7 @@ func (value model) restartCollection() (model, tea.Cmd) {
 	value.cancelCollect = cancel
 	value.generation++
 	value.collecting = true
+	value.loading = nil
 	value.spinner = 0
 	value.killPending = false
 	value.killTargets = nil

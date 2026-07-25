@@ -8,10 +8,13 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
+// DefaultWorkerLimit bounds concurrent host collections.
+const DefaultWorkerLimit = 8
+
 type Snapshot struct {
-	Result Result
-	Stale  []string
-	Done   bool
+	Result  Result
+	Loading []string
+	Done    bool
 }
 
 type HostCache struct {
@@ -22,13 +25,17 @@ type HostCache struct {
 func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, collector Collector, cache HostCache, emit func(Snapshot)) {
 	collections := make([]hostCollection, len(hosts))
 	hasData := make([]bool, len(hosts))
-	stale := make([]bool, len(hosts))
+	fromCache := make([]bool, len(hosts))
+	pending := make([]bool, len(hosts))
+	for index := range pending {
+		pending[index] = true
+	}
 
 	if workerLimit <= 0 || collector == nil {
 		for index, host := range hosts {
 			collections[index] = failedCollection(host.Target, "resource_limit", "Collector resource limit exceeded")
 		}
-		emit(Snapshot{Result: mergeCollections(collections), Stale: []string{}, Done: true})
+		emit(Snapshot{Result: mergeCollections(collections), Loading: []string{}, Done: true})
 		return
 	}
 
@@ -45,22 +52,22 @@ func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, coll
 			sessions: sessions,
 		}
 		hasData[index] = true
-		stale[index] = true
+		fromCache[index] = true
 	}
 
 	snapshot := func(done bool) Snapshot {
 		present := make([]hostCollection, 0, len(collections))
-		staleTargets := make([]string, 0, len(hosts))
+		loading := make([]string, 0, len(hosts))
 		for index := range collections {
+			if pending[index] {
+				loading = append(loading, hosts[index].Target)
+			}
 			if !hasData[index] {
 				continue
 			}
 			present = append(present, collections[index])
-			if stale[index] {
-				staleTargets = append(staleTargets, hosts[index].Target)
-			}
 		}
-		return Snapshot{Result: mergeCollections(present), Stale: staleTargets, Done: done}
+		return Snapshot{Result: mergeCollections(present), Loading: loading, Done: done}
 	}
 
 	emit(snapshot(len(hosts) == 0))
@@ -101,12 +108,12 @@ func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, coll
 			if cache.Save != nil {
 				cache.Save(hosts[done.index].Target, collection.sessions)
 			}
-			stale[done.index] = false
-		} else if stale[done.index] {
+		} else if fromCache[done.index] {
 			collection.sessions = collections[done.index].sessions
 		}
 		collections[done.index] = collection
 		hasData[done.index] = true
+		pending[done.index] = false
 		remaining--
 		emit(snapshot(remaining == 0))
 	}

@@ -20,10 +20,8 @@ const (
 type rowLayout struct {
 	width                     int
 	showProvider, showClients bool
-	showCached                bool
 	title, provider, location int
 	runtime, activity         int
-	cached                    int
 	now                       time.Time
 }
 
@@ -81,18 +79,14 @@ func column(value string, width int, right bool) string {
 	return value + padding
 }
 
-func newRowLayout(items []session.Session, stale map[string]struct{}, width int, now time.Time, localTarget string, pins map[sessionKey]bool) rowLayout {
+func newRowLayout(items []session.Session, width int, now time.Time, localTarget string, pins map[sessionKey]bool) rowLayout {
 	layout := rowLayout{
 		width:        width,
 		showProvider: width >= providerColumnWidth,
 		showClients:  width >= clientColumnWidth,
-		cached:       lipgloss.Width("cached"),
 		now:          now,
 	}
 	for _, item := range items {
-		if _, ok := stale[item.Host]; ok {
-			layout.showCached = true
-		}
 		layout.title = max(layout.title, lipgloss.Width(pinnedTitle(item, pins)))
 		layout.location = max(layout.location, lipgloss.Width(location(item, localTarget)))
 		layout.runtime = max(layout.runtime, lipgloss.Width(runtimeLabel(item, layout.showClients)))
@@ -108,10 +102,6 @@ func newRowLayout(items []session.Session, stale map[string]struct{}, width int,
 		fieldCount++
 		fixed += layout.provider
 	}
-	if layout.showCached {
-		fieldCount++
-		fixed += layout.cached
-	}
 	fixed += (fieldCount - 1) * lipgloss.Width(columnGutter)
 
 	flexible := []int{layout.title, layout.location}
@@ -124,7 +114,16 @@ func runtimeLabel(item session.Session, clients bool) string {
 	if clients && item.Runtime.State == session.RuntimeAttached {
 		return fmt.Sprintf("attached(%d)", item.Runtime.AttachedClients)
 	}
-	return string(item.Runtime.State)
+	return displayState(item.Runtime.State)
+}
+
+// displayState maps a runtime state to its user-facing label: the internal
+// RuntimeSaved identifier reads as "idle" everywhere the user sees it.
+func displayState(state session.RuntimeState) string {
+	if state == session.RuntimeSaved {
+		return "idle"
+	}
+	return string(state)
 }
 
 func (value model) renderRow(row listRow, selected bool, layout rowLayout) string {
@@ -152,13 +151,6 @@ func (value model) renderRow(row listRow, selected bool, layout rowLayout) strin
 		column(value.stateText(runtimeLabel(item, layout.showClients), item.Runtime.State), layout.runtime, true),
 		column(activityAge(layout.now, item.UpdatedAt), layout.activity, true),
 	)
-	if layout.showCached {
-		cached := ""
-		if _, ok := value.stale[item.Host]; ok {
-			cached = value.stateText("cached", session.RuntimeSaved)
-		}
-		fields = append(fields, column(cached, layout.cached, false))
-	}
 
 	padding := rowPadding(layout.width)
 	innerWidth := layout.width - 2*padding

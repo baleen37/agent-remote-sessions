@@ -403,7 +403,7 @@ func TestActivityHelpLegendListsNeedsInput(t *testing.T) {
 	if !strings.Contains(overlay, activityWaitingSymbol+" needs input") {
 		t.Fatalf("help legend missing the needs-input symbol:\n%s", overlay)
 	}
-	for _, want := range []string{"● attached", "◐ running", "○ saved"} {
+	for _, want := range []string{"● attached", "◐ running", "○ idle"} {
 		if !strings.Contains(overlay, want) {
 			t.Fatalf("help legend lost %q:\n%s", want, overlay)
 		}

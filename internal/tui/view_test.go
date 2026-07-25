@@ -659,31 +659,6 @@ func selectedRow(content string) string {
 	return ""
 }
 
-func TestStaleCachedColumnKeepsActivityVisible(t *testing.T) {
-	model := readyModel()
-	model.width, model.height, model.noColor = 80, 24, true
-	items := twoSessions()
-	items[1].Title = "a very long stale session title " + strings.Repeat("x", 80)
-	model.result.Sessions = items
-	model.stale = map[string]struct{}{"server": {}}
-	model = openAllGroups(model)
-
-	content := ansi.Strip(model.View().Content)
-	for _, line := range strings.Split(content, "\n") {
-		if !strings.Contains(line, "a very long stale") {
-			continue
-		}
-		if !strings.HasSuffix(strings.TrimRight(line, " "), "cached") || !strings.Contains(line, "2d") {
-			t.Fatalf("stale row lost activity or cached column: %q", line)
-		}
-		if ansi.StringWidth(line) > model.width {
-			t.Fatalf("stale row exceeds width: %q", line)
-		}
-		return
-	}
-	t.Fatalf("stale row not found:\n%s", content)
-}
-
 func strippedLines(lines []string) []string {
 	plain := make([]string, len(lines))
 	for index, line := range lines {
@@ -939,7 +914,7 @@ func TestHelpOverlayShowsStateSymbolLegend(t *testing.T) {
 	model.width, model.height, model.noColor = 120, 24, true
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
 	content := ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "● attached · ◐ running · ? needs input · ○ saved") {
+	if !strings.Contains(content, "● attached · ◐ running · ? needs input · ○ idle") {
 		t.Fatalf("help overlay missing state symbol legend: %q", content)
 	}
 }
@@ -1130,40 +1105,40 @@ func TestHelpOffersExpandOnMoreRow(t *testing.T) {
 	}
 }
 
-func TestViewMarksStaleHostRowsAsCached(t *testing.T) {
+func TestHeaderNamesLoadingHostsAndDropsCompletedOnes(t *testing.T) {
 	model := readyModel()
-	model.width = 120
-	model.stale = map[string]struct{}{"server": {}}
-	model = openAllGroups(model)
-
+	model.width, model.noColor = 120, true
+	model.collecting = true
+	model.loading = []string{"localhost", "server"}
 	content := ansi.Strip(model.View().Content)
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		switch {
-		case strings.Contains(line, "API repair"):
-			if !strings.HasSuffix(strings.TrimRight(line, " "), "cached") {
-				t.Fatalf("stale row missing cached marker: %q", line)
-			}
-		case strings.Contains(line, "connection check"):
-			if strings.Contains(line, "cached") {
-				t.Fatalf("fresh row has cached marker: %q", line)
-			}
-		}
+	if !strings.Contains(content, "loading localhost, server") {
+		t.Fatalf("header missing loading hosts: %q", content)
 	}
 
-	model.noColor = false
-	rawContent := model.View().Content
-	faintCached := model.stateText("cached", session.RuntimeSaved)
-	for _, line := range strings.Split(rawContent, "\n") {
-		switch {
-		case strings.Contains(line, "API repair"):
-			if !strings.Contains(line, faintCached) {
-				t.Fatalf("stale row cached marker not faint-styled: %q", line)
-			}
-		case strings.Contains(line, "connection check"):
-			if strings.Contains(line, "cached") {
-				t.Fatalf("fresh row has cached marker: %q", line)
-			}
-		}
+	model.loading = []string{"server"}
+	content = ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "loading server") || strings.Contains(content, "localhost,") {
+		t.Fatalf("header kept a completed host: %q", content)
+	}
+
+	model.collecting = false
+	model.loading = nil
+	content = ansi.Strip(model.View().Content)
+	if strings.Contains(content, "loading") {
+		t.Fatalf("header shows loading segment when idle: %q", content)
+	}
+}
+
+func TestHeaderCollapsesThreeOrMoreLoadingHostsIntoCount(t *testing.T) {
+	model := readyModel()
+	model.width, model.noColor = 120, true
+	model.collecting = true
+	model.loading = []string{"localhost", "server", "backup"}
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "loading 3 hosts") {
+		t.Fatalf("header missing loading count: %q", content)
+	}
+	if strings.Contains(content, "loading localhost") {
+		t.Fatalf("header lists hosts instead of the count: %q", content)
 	}
 }
