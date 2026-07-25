@@ -133,6 +133,12 @@ type ephemeralSSHD struct {
 func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *ephemeralSSHD {
 	t.Helper()
 	t.Setenv("TMPDIR", "/tmp")
+	// Defense-in-depth alongside the TMUX_TMPDIR isolation below: give this
+	// fixture's ars server its own socket name too, distinct from the shared
+	// default. Kept as short as the default "ars-v1" (6 bytes) since the
+	// socket path already sits close to the platform's sun_path limit once
+	// combined with t.TempDir()'s test-name-derived prefix.
+	t.Setenv("ARS_TMUX_SOCKET", "a"+strconv.Itoa(os.Getpid()%100000))
 	root := t.TempDir()
 	remoteTemp := filepath.Join(root, "remote-tmp")
 	if err := os.Mkdir(remoteTemp, 0o700); err != nil {
