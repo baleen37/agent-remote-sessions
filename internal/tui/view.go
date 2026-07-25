@@ -83,7 +83,7 @@ func (value model) View() tea.View {
 		body = value.joinPreview(body, listWidth, previewCols, panelHeight)
 	}
 
-	lines := []string{fitLine(value.header(), width), ""}
+	lines := []string{value.header(width), ""}
 	lines = append(lines, body...)
 	lines = append(lines, "")
 	lines = append(lines, details...)
@@ -288,15 +288,43 @@ func (value model) contentWidth() int {
 	return defaultWidth
 }
 
-func (value model) header() string {
+// header assembles the agent-deck style header: a compact status logo, the
+// title, a status-count summary replacing the old active/recent tally, the
+// existing suffixes (showing all / older hidden / peers / refreshing /
+// filter), and a right-aligned version dropped when it would not fit into
+// width.
+func (value model) header(width int) string {
+	left := value.headerContent()
+	version := value.versionText()
+	if version == "" {
+		return fitLine(left, width)
+	}
+	budget := width - lipgloss.Width(version) - 2
+	if lipgloss.Width(left) > budget {
+		return fitLine(left, width)
+	}
+	pad := width - lipgloss.Width(left) - lipgloss.Width(version)
+	return fitLine(left+strings.Repeat(" ", max(0, pad))+version, width)
+}
+
+// headerContent builds the left-hand header content: logo, title, and
+// status stats, without the right-aligned version.
+func (value model) headerContent() string {
 	counted := value.result.Sessions
 	if value.query == "" {
 		counted, _ = filterByStale(counted, value.deps.Now(), value.showAll, value.pins)
 	}
-	active := 0
+	var attached, running, waiting, idle int
 	for _, item := range counted {
-		if item.Runtime.State != session.RuntimeSaved {
-			active++
+		switch {
+		case item.Runtime.State == session.RuntimeAttached:
+			attached++
+		case item.Runtime.State == session.RuntimeRunning && value.activity[keyOf(item)].state == activityWaiting:
+			waiting++
+		case item.Runtime.State == session.RuntimeRunning:
+			running++
+		default:
+			idle++
 		}
 	}
 	peers := 0
@@ -305,7 +333,7 @@ func (value model) header() string {
 			peers++
 		}
 	}
-	stats := fmt.Sprintf("  %d active · %d recent", active, len(counted)-active)
+	stats := "  " + value.statusCounts(attached, running, waiting, idle)
 	if value.showAll {
 		stats += " · showing all"
 	} else if value.staleHidden > 0 {
@@ -324,10 +352,69 @@ func (value model) header() string {
 	if symbols := value.filterSymbols(); symbols != "" {
 		stats += " · filter " + symbols
 	}
-	if value.noColor {
-		return "ars" + stats
+	live := attached + running + waiting
+	return value.statusLogo(live) + " " + value.titleText() + stats
+}
+
+// statusCounts renders the attached/running/waiting/idle tally, symbol
+// colored and label muted, omitting zero counts.
+func (value model) statusCounts(attached, running, waiting, idle int) string {
+	var parts []string
+	if attached > 0 {
+		parts = append(parts, value.countPart("●", value.styles.attached, attached, "attached"))
 	}
-	return value.styles.title.Render("ars") + value.styles.muted.Render(stats)
+	if running > 0 {
+		parts = append(parts, value.countPart("◐", value.styles.running, running, "running"))
+	}
+	if waiting > 0 {
+		parts = append(parts, value.countPart("?", value.styles.failure, waiting, "waiting"))
+	}
+	if idle > 0 {
+		parts = append(parts, value.countPart("○", value.styles.saved, idle, "idle"))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (value model) countPart(symbol string, symbolStyle lipgloss.Style, count int, label string) string {
+	text := fmt.Sprintf("%d %s", count, label)
+	if value.noColor {
+		return symbol + " " + text
+	}
+	return symbolStyle.Render(symbol) + " " + value.styles.muted.Render(text)
+}
+
+// statusLogo renders the fixed 3-cell "⟨●●○⟩" summary, filling from the left
+// with live-session dots and the rest with saved dots.
+func (value model) statusLogo(live int) string {
+	const cells = 3
+	filled := min(live, cells)
+	dots := strings.Repeat("●", filled) + strings.Repeat("○", cells-filled)
+	if value.noColor {
+		return "⟨" + dots + "⟩"
+	}
+	rendered := value.styles.attached.Render(strings.Repeat("●", filled)) + value.styles.saved.Render(strings.Repeat("○", cells-filled))
+	return value.styles.muted.Render("⟨") + rendered + value.styles.muted.Render("⟩")
+}
+
+func (value model) titleText() string {
+	if value.noColor {
+		return "ars"
+	}
+	return value.styles.title.Render("ars")
+}
+
+func (value model) versionText() string {
+	if value.deps.Version == "" {
+		return ""
+	}
+	text := value.deps.Version
+	if !strings.HasPrefix(text, "v") {
+		text = "v" + text
+	}
+	if value.noColor {
+		return text
+	}
+	return value.styles.muted.Render(text)
 }
 
 // filterSymbols returns the state symbols for the active filter, in

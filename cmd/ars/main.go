@@ -145,6 +145,7 @@ func main() {
 					return ssh.SendKeys(ctx, sshRunner, host.Target, string(item.Provider), item.NativeID, text)
 				},
 				LocalTarget: app.LocalhostTarget,
+				Version:     version,
 			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},
 		Stdout: os.Stdout,

@@ -549,7 +549,7 @@ func (value model) joinPreview(body []string, listWidth, previewCols, height int
 // hint. Like helpOverlay it owns the whole frame, so the list, details,
 // diagnostics and footer are absent.
 func (value model) fullscreenPreview(inset, width int) tea.View {
-	lines := []string{fitLine(value.header(), width), ""}
+	lines := []string{value.header(width), ""}
 	selected, ok := value.selectedSession()
 	if ok {
 		lines = append(lines, value.previewHeader(sessionTitle(selected), width), "")
