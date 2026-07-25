@@ -74,18 +74,18 @@ func TestRemoteAttachShowsDetachHintOnStatusLineBeforeAttach(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := command.command.Args[3]
-	hint := "set-option -g status-right " + quotePOSIX(arsruntime.DetachHint)
+	hint := "set-option -g status-right " + quotePOSIX(arsruntime.DetachHint())
 	if !strings.Contains(script, hint) {
 		t.Fatalf("script missing detach status hint %q:\n%s", hint, script)
 	}
 	if hintAt, attachAt := strings.Index(script, hint), strings.Index(script, "attach-session"); hintAt == -1 || hintAt > attachAt {
 		t.Fatalf("status hint is not set before attach:\n%s", script)
 	}
-	if !strings.Contains(arsruntime.DetachHint, "ctrl-q") {
-		t.Fatalf("shared detach hint does not name the key: %q", arsruntime.DetachHint)
+	if !strings.Contains(arsruntime.DetachHint(), "ctrl-q") {
+		t.Fatalf("shared detach hint does not name the key: %q", arsruntime.DetachHint())
 	}
-	if !strings.Contains(arsruntime.DetachHint, "tmux -L "+arsruntime.SocketName) {
-		t.Fatalf("shared detach hint does not count the ars socket's own sessions: %q", arsruntime.DetachHint)
+	if !strings.Contains(arsruntime.DetachHint(), "tmux -L "+arsruntime.SocketName()) {
+		t.Fatalf("shared detach hint does not count the ars socket's own sessions: %q", arsruntime.DetachHint())
 	}
 }
 

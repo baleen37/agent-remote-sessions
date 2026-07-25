@@ -36,7 +36,7 @@ func TestAttachCommandCreatesBindsAndAttachesOnce(t *testing.T) {
 		tmuxCommand("has-session", "-t", "="+key),
 		tmuxCommand("new-session", "-d", "-s", key, "-c", item.CWD, "claude", "--resume", item.NativeID),
 		tmuxCommand("bind-key", "-n", "C-q", "detach-client"),
-		tmuxCommand("set-option", "-g", "status-right", DetachHint),
+		tmuxCommand("set-option", "-g", "status-right", DetachHint()),
 		tmuxCommand("set-option", "-g", "status-interval", "5"),
 		tmuxCommand("attach-session", "-d", "-t", "="+key),
 	}
@@ -72,14 +72,14 @@ func TestAttachCommandShowsDetachHintOnStatusLine(t *testing.T) {
 	if hint.Name == "" {
 		t.Fatalf("attach did not set a status option: %v", runner.commandNames())
 	}
-	if want := []string{"set-option", "-g", "status-right", DetachHint}; !slices.Equal(hint.Args[4:], want) {
+	if want := []string{"set-option", "-g", "status-right", DetachHint()}; !slices.Equal(hint.Args[4:], want) {
 		t.Fatalf("status option = %v, want %v", hint.Args[4:], want)
 	}
-	if !strings.Contains(DetachHint, "ctrl-q") || !strings.Contains(DetachHint, "detach") {
-		t.Fatalf("detach hint does not name the key: %q", DetachHint)
+	if !strings.Contains(DetachHint(), "ctrl-q") || !strings.Contains(DetachHint(), "detach") {
+		t.Fatalf("detach hint does not name the key: %q", DetachHint())
 	}
-	if !strings.Contains(DetachHint, "tmux -L "+SocketName) {
-		t.Fatalf("detach hint does not count the ars socket's own sessions: %q", DetachHint)
+	if !strings.Contains(DetachHint(), "tmux -L "+SocketName()) {
+		t.Fatalf("detach hint does not count the ars socket's own sessions: %q", DetachHint())
 	}
 	// The hint must be set before attach so it is visible from the first frame.
 	names := runner.commandNames()
@@ -238,7 +238,7 @@ func TestNewAttachCommandRejectsInvalidInputBeforeTmux(t *testing.T) {
 func tmuxCommand(args ...string) Command {
 	return Command{
 		Name: "tmux",
-		Args: append([]string{"-L", SocketName, "-f", "/dev/null"}, args...),
+		Args: append([]string{"-L", SocketName(), "-f", "/dev/null"}, args...),
 		Env:  []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
 	}
 }

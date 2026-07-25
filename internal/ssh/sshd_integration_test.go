@@ -100,7 +100,7 @@ func TestIntegrationTmuxCleanupReportsKillError(t *testing.T) {
 }
 
 func TestIntegrationTmuxCleanupReportsLeaks(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), arsruntime.SocketName)
+	socket := filepath.Join(t.TempDir(), arsruntime.SocketName())
 	if err := os.WriteFile(socket, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +133,12 @@ type ephemeralSSHD struct {
 func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *ephemeralSSHD {
 	t.Helper()
 	t.Setenv("TMPDIR", "/tmp")
+	// Defense-in-depth alongside the TMUX_TMPDIR isolation below: give this
+	// fixture's ars server its own socket name too, distinct from the shared
+	// default. Kept as short as the default "ars-v1" (6 bytes) since the
+	// socket path already sits close to the platform's sun_path limit once
+	// combined with t.TempDir()'s test-name-derived prefix.
+	t.Setenv("ARS_TMUX_SOCKET", "a"+strconv.Itoa(os.Getpid()%100000))
 	root := t.TempDir()
 	remoteTemp := filepath.Join(root, "remote-tmp")
 	if err := os.Mkdir(remoteTemp, 0o700); err != nil {
@@ -267,7 +273,7 @@ func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *epheme
 		providerPID:  providerPID,
 		root:         root,
 		tmux:         tmux,
-		tmuxSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName),
+		tmuxSocket:   filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName()),
 		command:      command,
 		done:         done,
 		logFile:      logFile,
@@ -436,7 +442,7 @@ func (sentinel *integrationDefaultTmuxSentinel) output(t *testing.T, args ...str
 func integrationTmuxCommand(ctx context.Context, tmux, tempDir string, ars bool, args ...string) *exec.Cmd {
 	prefix := []string{"-f", "/dev/null"}
 	if ars {
-		prefix = []string{"-L", arsruntime.SocketName, "-f", "/dev/null"}
+		prefix = []string{"-L", arsruntime.SocketName(), "-f", "/dev/null"}
 	}
 	command := exec.CommandContext(ctx, tmux, append(prefix, args...)...)
 	command.Env = integrationTmuxEnv(tempDir)
@@ -730,7 +736,7 @@ func waitRemoteClients(t *testing.T, server *ephemeralSSHD, want int) {
 }
 
 func remoteAttachedClients(server *ephemeralSSHD) (int, bool) {
-	command := exec.Command("tmux", "-L", arsruntime.SocketName, "-f", "/dev/null", "list-sessions", "-F", "#{session_attached}")
+	command := exec.Command("tmux", "-L", arsruntime.SocketName(), "-f", "/dev/null", "list-sessions", "-F", "#{session_attached}")
 	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+server.tmuxTemp)
 	output, err := command.Output()
 	if err != nil {
@@ -742,7 +748,7 @@ func remoteAttachedClients(server *ephemeralSSHD) (int, bool) {
 
 func remoteSessionCount(t *testing.T, server *ephemeralSSHD) int {
 	t.Helper()
-	command := exec.Command("tmux", "-L", arsruntime.SocketName, "-f", "/dev/null", "list-sessions", "-F", "#{session_name}")
+	command := exec.Command("tmux", "-L", arsruntime.SocketName(), "-f", "/dev/null", "list-sessions", "-F", "#{session_name}")
 	command.Env = append(os.Environ(), "TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+server.tmuxTemp)
 	output, err := command.Output()
 	if err != nil {

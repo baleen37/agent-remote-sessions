@@ -16,7 +16,9 @@ import (
 // always reports that host's own ars sessions with no daemon and no
 // local/remote branching. Local and remote attach share it so the status line
 // reads the same everywhere.
-const DetachHint = "#(TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp tmux -L " + SocketName + " -f /dev/null list-sessions 2>/dev/null | wc -l | tr -d ' ') ars · ctrl-q detach  %H:%M "
+func DetachHint() string {
+	return "#(TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp tmux -L " + SocketName() + " -f /dev/null list-sessions 2>/dev/null | wc -l | tr -d ' ') ars · ctrl-q detach  %H:%M "
+}
 
 type AttachCommand struct {
 	ctx    context.Context
@@ -107,7 +109,7 @@ func bindDetach() Command {
 // already on, so overriding status-right reuses space the user can see the
 // whole session.
 func showDetachHint() Command {
-	return arsTMUXCommand("set-option", "-g", "status-right", DetachHint)
+	return arsTMUXCommand("set-option", "-g", "status-right", DetachHint())
 }
 
 // setStatusInterval speeds up status-right refreshes so the live session
@@ -123,7 +125,7 @@ func attachSession(name string) Command {
 func arsTMUXCommand(args ...string) Command {
 	return Command{
 		Name: "tmux",
-		Args: append([]string{"-L", SocketName, "-f", "/dev/null"}, args...),
+		Args: append([]string{"-L", SocketName(), "-f", "/dev/null"}, args...),
 		Env:  []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
 	}
 }

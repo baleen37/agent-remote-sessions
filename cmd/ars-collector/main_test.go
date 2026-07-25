@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,19 @@ import (
 
 const collectorNonce = "0123456789abcdef0123456789abcdef"
 
+// isolateCollectorTmuxSocket points run()'s real runtime.SystemRunner at a
+// private, almost certainly nonexistent tmux socket, so these tests exercise
+// discovery/encoding without depending on (or polluting) the shared ars-v1
+// server. A missing server still resolves to a clean Report{Status: StatusOK}
+// with every candidate defaulting to RuntimeSaved, which is what these tests
+// expect.
+func isolateCollectorTmuxSocket(t *testing.T) {
+	t.Helper()
+	t.Setenv("ARS_TMUX_SOCKET", "ars-test-"+strconv.Itoa(os.Getpid())+"-"+t.Name())
+}
+
 func TestRunRequiresHexadecimal128BitNonce(t *testing.T) {
+	isolateCollectorTmuxSocket(t)
 	adapters := emptyAdapters()
 	for _, args := range [][]string{nil, {"not-hex"}, {"abcd"}, {collectorNonce, "extra"}} {
 		var stdout, stderr bytes.Buffer
@@ -33,6 +47,7 @@ func TestRunRequiresHexadecimal128BitNonce(t *testing.T) {
 }
 
 func TestRunDiscoversBothProvidersAndSortsSessions(t *testing.T) {
+	isolateCollectorTmuxSocket(t)
 	claudeFirst := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	claudeSecond := validCollectorCandidate(session.Claude, "33333333-3333-3333-3333-333333333333")
 	codex := validCollectorCandidate(session.Codex, "22222222-2222-2222-2222-222222222222")
@@ -74,6 +89,7 @@ func TestRunDiscoversBothProvidersAndSortsSessions(t *testing.T) {
 }
 
 func TestRunWritesRecentSnapshotBeforeFullDiscoveryCompletes(t *testing.T) {
+	isolateCollectorTmuxSocket(t)
 	recentCandidate := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	releaseComplete := make(chan struct{})
 	adapters := []provider.Adapter{
@@ -154,6 +170,7 @@ func TestRunWritesRecentSnapshotBeforeFullDiscoveryCompletes(t *testing.T) {
 }
 
 func TestRunEmitsPartialProviderSummaries(t *testing.T) {
+	isolateCollectorTmuxSocket(t)
 	candidate := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	adapters := []provider.Adapter{
 		&fakeAdapter{name: session.Claude, result: provider.Result{
@@ -183,6 +200,7 @@ func TestRunEmitsPartialProviderSummaries(t *testing.T) {
 }
 
 func TestRunRejectsInvalidCandidateBeforeEncoding(t *testing.T) {
+	isolateCollectorTmuxSocket(t)
 	invalid := validCollectorCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	invalid.CWD = "relative/provider/path"
 	adapters := []provider.Adapter{
@@ -203,6 +221,7 @@ func TestRunRejectsInvalidCandidateBeforeEncoding(t *testing.T) {
 }
 
 func TestRunReturnsNonZeroWhenEncodingFails(t *testing.T) {
+	isolateCollectorTmuxSocket(t)
 	var stderr bytes.Buffer
 	code := run(context.Background(), []string{collectorNonce}, "/remote/home", emptyAdapters(), errorWriter{}, &stderr)
 	if code == 0 {

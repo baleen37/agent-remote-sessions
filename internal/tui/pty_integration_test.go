@@ -217,7 +217,7 @@ func TestPTYTmuxCleanupReportsKillError(t *testing.T) {
 }
 
 func TestPTYTmuxCleanupReportsLeaks(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), arsruntime.SocketName)
+	socket := filepath.Join(t.TempDir(), arsruntime.SocketName())
 	if err := os.WriteFile(socket, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +245,12 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 		t.Skip("PTY tmux integration unavailable: tmux was not found")
 	}
 	t.Setenv("TMPDIR", "/tmp")
+	// Defense-in-depth alongside the TMUX_TMPDIR isolation below: give this
+	// fixture's ars server its own socket name too, distinct from the shared
+	// default. Kept as short as the default "ars-v1" (6 bytes) since the
+	// socket path already sits close to the platform's sun_path limit once
+	// combined with t.TempDir()'s test-name-derived prefix.
+	t.Setenv("ARS_TMUX_SOCKET", "a"+strconv.Itoa(os.Getpid()%100000))
 	root := t.TempDir()
 	tmuxTemp := filepath.Join(root, "tmux")
 	bin := filepath.Join(root, "bin")
@@ -277,7 +283,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 		Title:     "PTY fixture provider",
 	}
 	runner := ptyTempTmuxRunner{tempDir: tmuxTemp}
-	socket := filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName)
+	socket := filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName())
 	providerPID := 0
 	cleaned := false
 	cleanup := func() {
@@ -532,7 +538,7 @@ func (runner ptyTempTmuxRunner) command(command arsruntime.Command) arsruntime.C
 func ptyTmuxCommand(args ...string) arsruntime.Command {
 	return arsruntime.Command{
 		Name: "tmux",
-		Args: append([]string{"-L", arsruntime.SocketName, "-f", "/dev/null"}, args...),
+		Args: append([]string{"-L", arsruntime.SocketName(), "-f", "/dev/null"}, args...),
 		Env:  []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
 	}
 }
