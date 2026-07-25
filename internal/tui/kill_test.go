@@ -385,6 +385,35 @@ func liveTitles(items []session.Session) []string {
 	return titles
 }
 
+// TestModelXOnHeaderArmsGroupKillWithLiveSessionsOnLocalHostOmitsHost is the
+// local-host control for the follow-up below (TestModelXOnHeaderArms...
+// LiveSessionsOnly asserts the remote case): a group kill's grace-period
+// status must disambiguate same-named groups on two hosts, since
+// liveGroupSessions already targets by (host, project) but the status text
+// used to name only the project. Local groups keep the bare project name,
+// matching the group header's own label rule.
+func TestModelXOnHeaderArmsGroupKillWithLiveSessionsOnLocalHostOmitsHost(t *testing.T) {
+	model := readyModel()
+	sessions := manySessions(2)
+	for index := range sessions {
+		sessions[index].Host = "localhost"
+	}
+	model.result.Sessions = sessions
+	model.refreshVisible()
+	project := session.Project(sessions[0].CWD)
+	model.selectHeader("localhost", project)
+	row, ok := model.selectedRow()
+	if !ok || row.kind != rowHeader || row.project != project {
+		t.Fatalf("expected the %q header selected: %+v", project, row)
+	}
+
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	want := "killing 2 sessions in " + project + " in 3s · u undo"
+	if model.status != want {
+		t.Fatalf("status = %q, want %q (no host suffix for a local group)", model.status, want)
+	}
+}
+
 func TestModelXOnHeaderArmsGroupKillWithLiveSessionsOnly(t *testing.T) {
 	model := groupKillModel(t)
 	row, _ := model.selectedRow()
@@ -404,7 +433,7 @@ func TestModelXOnHeaderArmsGroupKillWithLiveSessionsOnly(t *testing.T) {
 			t.Fatalf("saved session %q included in the batch", sessionTitle(target))
 		}
 	}
-	want := "killing 2 sessions in " + row.project + " in 3s · u undo"
+	want := "killing 2 sessions in " + row.project + " · " + row.host + " in 3s · u undo"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -482,7 +511,7 @@ func TestModelGroupKillFireKillsEveryMember(t *testing.T) {
 	if command == nil {
 		t.Fatal("group killDoneMsg did not restart collection")
 	}
-	want := "killed 2 sessions in " + row.project + " · enter to resume"
+	want := "killed 2 sessions in " + row.project + " · " + row.host + " · enter to resume"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -511,7 +540,7 @@ func TestModelGroupKillPartialFailureSurfacesInStatus(t *testing.T) {
 	}
 
 	model, command = updateModel(model, done)
-	want := "kill failed: 1 of 2 sessions in " + row.project + ": boom"
+	want := "kill failed: 1 of 2 sessions in " + row.project + " · " + row.host + ": boom"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -537,7 +566,7 @@ func TestModelGroupKillTotalFailureDoesNotRestartCollection(t *testing.T) {
 	if command != nil {
 		t.Fatal("a wholly failed batch should not restart collection")
 	}
-	want := "kill failed: 2 of 2 sessions in " + row.project + ": boom"
+	want := "kill failed: 2 of 2 sessions in " + row.project + " · " + row.host + ": boom"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -599,10 +628,11 @@ func TestModelHeaderXReplacesPendingSingleKill(t *testing.T) {
 	if batchSeq == singleSeq {
 		t.Fatal("header x did not bump killSeq")
 	}
-	if len(model.killTargets) != 2 || model.killGroup != header.project {
+	wantLabel := header.project + " · " + header.host
+	if len(model.killTargets) != 2 || model.killGroup != wantLabel {
 		t.Fatalf("header x did not replace the single target with the batch: targets=%+v group=%q", model.killTargets, model.killGroup)
 	}
-	want := "killing 2 sessions in " + header.project + " in 3s · u undo"
+	want := "killing 2 sessions in " + wantLabel + " in 3s · u undo"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -704,7 +734,7 @@ func TestModelXOnHeaderWithNoLiveSessionsIsNoop(t *testing.T) {
 	if model.killPending {
 		t.Fatal("x on an all-saved group armed a pending kill")
 	}
-	want := "no live sessions in " + project
+	want := "no live sessions in " + project + " · server"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -730,7 +760,7 @@ func TestModelGroupKillRespectsTheActiveSearchQuery(t *testing.T) {
 	if got := sessionTitle(model.killTargets[0]); got != "session 00" {
 		t.Fatalf("killTargets[0] = %q, want %q", got, "session 00")
 	}
-	want := "killing 1 sessions in " + project + " in 3s · u undo"
+	want := "killing 1 sessions in " + project + " · server in 3s · u undo"
 	if model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
@@ -753,7 +783,7 @@ func TestModelGroupKillRespectsTheActiveStateFilter(t *testing.T) {
 	if command != nil || model.killPending {
 		t.Fatalf("x armed a kill for filtered-out live sessions: command=%v pending=%t", command, model.killPending)
 	}
-	if want := "no live sessions in " + project; model.status != want {
+	if want := "no live sessions in " + project + " · server"; model.status != want {
 		t.Fatalf("status = %q, want %q", model.status, want)
 	}
 }

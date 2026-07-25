@@ -44,12 +44,13 @@ func (value model) startKill(row listRow) (model, tea.Cmd) {
 		return value.armKill([]session.Session{row.session}, "", "killing "+sessionTitle(row.session)+" in 3s · u undo")
 	case rowHeader:
 		targets := value.liveGroupSessions(row.host, row.project)
+		label := value.groupLabel(row.host, row.project)
 		if len(targets) == 0 {
-			value.status = boundedStatus("no live sessions in " + row.project)
+			value.status = boundedStatus("no live sessions in " + label)
 			return value, nil
 		}
-		status := "killing " + strconv.Itoa(len(targets)) + " sessions in " + row.project + " in 3s · u undo"
-		return value.armKill(targets, row.project, status)
+		status := "killing " + strconv.Itoa(len(targets)) + " sessions in " + label + " in 3s · u undo"
+		return value.armKill(targets, label, status)
 	default:
 		return value, nil
 	}

@@ -96,6 +96,7 @@ type model struct {
 	previewContent      []string
 	previewErr          string
 	previewPending      bool
+	previewFullKey      sessionKey
 	previewFullContent  []string
 	previewFullErr      string
 	previewFullPending  bool
@@ -169,7 +170,7 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 			return value, waitForUpdate(message.generation, message.channel)
 		}
 		value.applyCollectionUpdate(message.update)
-		return value, tea.Batch(waitForUpdate(message.generation, message.channel), value.syncPreview())
+		return value, tea.Batch(waitForUpdate(message.generation, message.channel), value.syncPreview(), value.syncFullPreview())
 	case interactionIdleMsg:
 		if message.generation != value.generation || message.sequence != value.interactionSeq || !value.coalescing {
 			return value, nil
@@ -181,7 +182,7 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		update := *value.pendingUpdate
 		value.pendingUpdate = nil
 		value.applyCollectionUpdate(update)
-		return value, value.syncPreview()
+		return value, tea.Batch(value.syncPreview(), value.syncFullPreview())
 	case previewMsg:
 		return value.updatePreview(message)
 	case previewTickMsg:
@@ -223,6 +224,7 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		// fullscreen, so drop back to the list rather than render an empty view.
 		if value.previewFullscreen && !value.previewVisible() {
 			value.previewFullscreen = false
+			value.helpFromFullscreen = false
 		}
 		return value, tea.Batch(value.syncPreview(), value.syncFullPreview())
 	case tea.KeyPressMsg:
@@ -254,6 +256,16 @@ func (value *model) applyCollectionUpdate(update Update) {
 	}
 	value.refreshVisible()
 	value.evictActivity()
+	// A session dying or its host dropping out can leave restoreSelection on
+	// a non-session row while fullscreen is still open; without this the
+	// panel keeps rendering the empty frame PR #45 eliminated at the other
+	// entry points. Mirrors the WindowSizeMsg exit in Update.
+	if value.previewFullscreen {
+		if _, ok := value.selectedSession(); !ok {
+			value.previewFullscreen = false
+			value.helpFromFullscreen = false
+		}
+	}
 }
 
 func (value model) isRelevantInteraction(message tea.KeyPressMsg) bool {
