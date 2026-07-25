@@ -32,6 +32,20 @@ func filterByState(items []session.Session, states map[session.RuntimeState]bool
 	return filtered
 }
 
+// filterByWaiting keeps the sessions whose last probe saw the agent waiting on a
+// reply. Waiting is a view-layer state, so it comes from the activity map rather
+// than the session: a session with no probe result yet is not waiting and drops
+// out until one lands.
+func filterByWaiting(items []session.Session, activity map[sessionKey]activityEntry) []session.Session {
+	filtered := make([]session.Session, 0, len(items))
+	for _, item := range items {
+		if item.Runtime.State == session.RuntimeRunning && activity[keyOf(item)].state == activityWaiting {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
 func filterSessions(items []session.Session, query, localTarget string) []session.Session {
 	if query == "" {
 		return append([]session.Session(nil), items...)

@@ -315,13 +315,17 @@ func (value model) header() string {
 }
 
 // filterSymbols returns the state symbols for the active filter, in
-// attached/running/saved order, or "" when no filter is active.
+// attached/running/saved order with the needs-input marker last, or "" when no
+// filter is active.
 func (value model) filterSymbols() string {
 	symbols := ""
 	for _, state := range []session.RuntimeState{session.RuntimeAttached, session.RuntimeRunning, session.RuntimeSaved} {
 		if value.stateFilter[state] {
 			symbols += stateSymbol(state)
 		}
+	}
+	if value.waitingFilter {
+		symbols += activityWaitingSymbol
 	}
 	return symbols
 }
@@ -501,7 +505,7 @@ func (value model) help(width int) string {
 	}
 	items := []string{"↑↓/jk move"}
 	if width >= 75 {
-		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@# filter", "x kill", "m msg", "P pin")
+		items = append(items, "h/l fold", "g/G top/end", "1-9 group", "!@#$ filter", "x kill", "m msg", "P pin")
 	}
 	items = append(items, "/ search")
 	if value.query != "" || value.filterActive() {
@@ -526,7 +530,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"P pin", "m msg", "x kill", "!@# filter", "1-9 group", "g/G top/end", "h/l fold", "f full"}
+	droppable := []string{"P pin", "m msg", "x kill", "!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "f full"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {

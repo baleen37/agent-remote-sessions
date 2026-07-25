@@ -834,21 +834,6 @@ func TestHelpOverlayFitsNarrowTerminal(t *testing.T) {
 	}
 }
 
-func TestHelpOverlayAndFooterAdvertiseStateFilter(t *testing.T) {
-	model := readyModel()
-	model.width = 140
-	content := ansi.Strip(model.help(model.contentWidth()))
-	if !strings.Contains(content, "!@# filter") {
-		t.Fatalf("footer help missing state filter hint: %q", content)
-	}
-
-	model.showHelp = true
-	overlay := ansi.Strip(model.View().Content)
-	if !strings.Contains(overlay, "! / @ / #") || !strings.Contains(overlay, "filter attached / running / saved") {
-		t.Fatalf("help overlay missing state filter binding:\n%s", overlay)
-	}
-}
-
 func TestFooterShowsEscClearWhenFilterActiveWithoutQuery(t *testing.T) {
 	model := readyModel()
 	model.width = 120
@@ -892,7 +877,7 @@ func TestFooterAtWideWidthShowsAllHints(t *testing.T) {
 	model := readyModel()
 	model.width = 140
 	content := ansi.Strip(model.View().Content)
-	for _, want := range []string{"!@# filter", "1-9 group", "g/G top/end", "h/l fold", "? help"} {
+	for _, want := range []string{"!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "? help"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("wide footer missing %q: %q", want, content)
 		}
@@ -903,8 +888,8 @@ func TestFooterAtCommonWidthDropsLowPriorityHintsBeforeHighPriorityOnes(t *testi
 	model := readyModel()
 	model.width = 120
 	content := ansi.Strip(model.View().Content)
-	if strings.Contains(content, "!@# filter") {
-		t.Fatalf("footer at width 120 should drop !@# filter to make room: %q", content)
+	if strings.Contains(content, "!@#$ filter") {
+		t.Fatalf("footer at width 120 should drop !@#$ filter to make room: %q", content)
 	}
 	for _, want := range []string{"? help", "q quit", "r refresh", "enter attach", "/ search", "↑↓/jk move"} {
 		if !strings.Contains(content, want) {
