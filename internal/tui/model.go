@@ -49,6 +49,7 @@ type Dependencies struct {
 	LocalTarget    string
 	Now            func() time.Time
 	NoColor        bool
+	Version        string
 }
 
 type collectUpdateMsg struct {

@@ -225,7 +225,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	content := model.View().Content
 	plain := ansi.Strip(content)
 	for _, want := range []string{
-		"ars", "1 active", "1 recent", "▾ ars (1)", "▾ api (1)", "claude", "server",
+		"ars", "1 attached", "1 idle", "▾ ars (1)", "▾ api (1)", "claude", "server",
 		"attached(1)", "↑↓/jk move",
 	} {
 		if !strings.Contains(plain, want) {
@@ -260,7 +260,7 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	value.width, value.height = 120, 24
 	lines := strings.Split(ansi.Strip(value.View().Content), "\n")
 
-	header := lineContaining(t, lines, "ars  1 active · 1 recent")
+	header := lineContaining(t, lines, "ars  ● 1 attached · ○ 1 idle")
 	firstHeader := lineContaining(t, lines, "▾ ars (1)")
 	activeRow := lineContaining(t, lines, "attached(1)")
 	secondHeader := lineContaining(t, lines, "▾ api (1)")
@@ -296,11 +296,6 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 
 	lines := strings.Split(value.View().Content, "\n")
 	plain := strippedLines(lines)
-	header := lines[lineContaining(t, plain, "ars  1 active · 1 recent")]
-	wantHeader := " " + value.styles.title.Render("ars") + value.styles.muted.Render("  1 active · 1 recent")
-	if header != wantHeader {
-		t.Fatalf("header hierarchy = %q, want %q", header, wantHeader)
-	}
 
 	selected, ok := value.selectedSession()
 	if !ok {

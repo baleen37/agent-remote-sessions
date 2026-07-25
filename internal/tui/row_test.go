@@ -277,7 +277,7 @@ func cellsWithoutBackground(line string) []int {
 func sessionRows(content string) []string {
 	var rows []string
 	for _, line := range strings.Split(ansi.Strip(content), "\n") {
-		if strings.Contains(line, "attached") {
+		if strings.Contains(line, "├─") || strings.Contains(line, "└─") {
 			rows = append(rows, line)
 		}
 	}
