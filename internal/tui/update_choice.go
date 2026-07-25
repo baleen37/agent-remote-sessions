@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,13 +16,15 @@ type updateChoiceModel struct {
 	selected  int
 	confirmed bool
 	update    bool
+	noColor   bool
 	styles    viewStyles
 }
 
-func newUpdateChoiceModel(current, latest string) updateChoiceModel {
+func newUpdateChoiceModel(current, latest string, noColor bool) updateChoiceModel {
 	return updateChoiceModel{
 		current: current,
 		latest:  latest,
+		noColor: noColor,
 		styles:  newViewStyles(true),
 	}
 }
@@ -55,13 +58,19 @@ func (value updateChoiceModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (value updateChoiceModel) View() tea.View {
+	title := fmt.Sprintf("ars v%s available (current v%s)", value.latest, value.current)
+	hint := "↑/↓ move · 1/2 choose · enter confirm"
+	if !value.noColor {
+		title = value.styles.title.Render(title)
+		hint = value.styles.muted.Render(hint)
+	}
 	lines := []string{
-		value.styles.title.Render(fmt.Sprintf("ars v%s available (current v%s)", value.latest, value.current)),
+		title,
 		"",
 		value.choiceRow(0, fmt.Sprintf("1. Update to v%s", value.latest)),
 		value.choiceRow(1, fmt.Sprintf("2. Continue with v%s", value.current)),
 		"",
-		value.styles.muted.Render("↑/↓ move · 1/2 choose · enter confirm"),
+		hint,
 	}
 	return tea.View{Content: strings.Join(lines, "\n")}
 }
@@ -69,6 +78,9 @@ func (value updateChoiceModel) View() tea.View {
 func (value updateChoiceModel) choiceRow(index int, label string) string {
 	if value.selected != index {
 		return "  " + label
+	}
+	if value.noColor {
+		return "> " + label
 	}
 	return value.styles.selectedCursor.Render(">") + " " + value.styles.selected.Render(label)
 }
@@ -82,8 +94,9 @@ func (value updateChoiceModel) confirm(selected int) (tea.Model, tea.Cmd) {
 
 // ChooseUpdate asks whether to install the latest release before the main TUI.
 func ChooseUpdate(ctx context.Context, input io.Reader, output io.Writer, current, latest string) bool {
+	_, noColor := os.LookupEnv("NO_COLOR")
 	program := tea.NewProgram(
-		newUpdateChoiceModel(current, latest),
+		newUpdateChoiceModel(current, latest, noColor),
 		tea.WithContext(ctx),
 		tea.WithInput(input),
 		tea.WithOutput(output),
