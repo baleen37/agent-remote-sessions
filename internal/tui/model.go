@@ -83,6 +83,7 @@ type model struct {
 	previewPending  bool
 	activity        map[sessionKey]activityEntry
 	activityPending map[sessionKey]bool
+	pins            map[sessionKey]bool
 	killSeq         uint64
 	killPending     bool
 	killTarget      session.Session
@@ -312,7 +313,13 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 	case '/':
 		value.searching = true
-	case 'p':
+	case 'p', 'P':
+		if key.Text == "P" {
+			if row, ok := value.selectedRow(); ok {
+				value.togglePin(row)
+			}
+			return value, nil
+		}
 		value.previewOn = !value.previewOn
 		if !value.previewOn {
 			value.previewKey = sessionKey{}
@@ -431,7 +438,7 @@ func (value *model) refreshVisible() {
 	filtered := filterByState(value.result.Sessions, value.stateFilter)
 	filtered = filterSessions(filtered, value.query, value.deps.LocalTarget)
 	value.matched = len(filtered)
-	value.rows = buildRows(filtered, value.groupMode, value.query != "")
+	value.rows = buildRows(filtered, value.groupMode, value.query != "", value.pins)
 	value.restoreSelection()
 }
 

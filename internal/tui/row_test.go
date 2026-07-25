@@ -55,7 +55,7 @@ func TestSelectedRowKeepsBackgroundAcrossNestedANSIStyles(t *testing.T) {
 	value := readyModel()
 	value.width, value.height, value.noColor = 120, 24, false
 	_, usable := contentFrame(value.width)
-	layout := newRowLayout(rowSessions(value.rows), value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(rowSessions(value.rows), value.stale, usable, value.deps.Now(), value.deps.LocalTarget, value.pins)
 	line := value.renderRow(value.rows[1], true, layout)
 
 	if missing := cellsWithoutBackground(line); len(missing) > 0 {
@@ -112,7 +112,7 @@ func TestCachedColumnAlignsAcrossGroupsAndKeepsSelectedBackground(t *testing.T) 
 
 	value.noColor = false
 	_, usable := contentFrame(value.width)
-	layout := newRowLayout(rowSessions(value.rows), value.stale, usable, value.deps.Now(), value.deps.LocalTarget)
+	layout := newRowLayout(rowSessions(value.rows), value.stale, usable, value.deps.Now(), value.deps.LocalTarget, value.pins)
 	selected := value.renderRow(value.rows[1], true, layout)
 	if !strings.Contains(selected, value.styles.saved.Render("cached")[:strings.Index(value.styles.saved.Render("cached"), "cached")]) {
 		t.Fatalf("cached marker is not faint-styled: %q", selected)

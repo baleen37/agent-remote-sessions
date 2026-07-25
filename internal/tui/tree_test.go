@@ -29,7 +29,7 @@ func TestBuildRowsGroupsAndOrdersByStateThenActivity(t *testing.T) {
 		treeSession("ars", "ars-live", session.RuntimeRunning, base.Add(-2*time.Hour)),
 	}
 	modes := map[string]groupMode{"ars": groupModeOpen, "blog": groupModeOpen}
-	rows := buildRows(items, modes, false)
+	rows := buildRows(items, modes, false, nil)
 	want := []struct {
 		kind    rowKind
 		project string
@@ -68,11 +68,11 @@ func TestBuildRowsClosedHidesSessionsUnlessSearching(t *testing.T) {
 		treeSession("ars", "ars-live", session.RuntimeRunning, base),
 	}
 	modes := map[string]groupMode{"ars": groupModeClosed}
-	rows := buildRows(items, modes, false)
+	rows := buildRows(items, modes, false, nil)
 	if len(rows) != 1 || !rows[0].collapsed {
 		t.Fatalf("closed rows = %+v", rows)
 	}
-	rows = buildRows(items, modes, true)
+	rows = buildRows(items, modes, true, nil)
 	if len(rows) != 2 || rows[0].collapsed {
 		t.Fatalf("search rows = %+v", rows)
 	}
@@ -85,7 +85,7 @@ func TestBuildRowsAutoShowsOnlyActiveWithMoreRow(t *testing.T) {
 		treeSession("ars", "ars-saved", session.RuntimeSaved, base.Add(-time.Hour)),
 		treeSession("ars", "ars-older", session.RuntimeSaved, base.Add(-2*time.Hour)),
 	}
-	rows := buildRows(items, nil, false)
+	rows := buildRows(items, nil, false, nil)
 	if len(rows) != 3 {
 		t.Fatalf("rows = %+v, want header, active session, more", rows)
 	}
@@ -105,11 +105,11 @@ func TestBuildRowsAutoCollapsesGroupsWithoutActiveSessions(t *testing.T) {
 	items := []session.Session{
 		treeSession("blog", "blog-old", session.RuntimeSaved, base),
 	}
-	rows := buildRows(items, nil, false)
+	rows := buildRows(items, nil, false, nil)
 	if len(rows) != 1 || rows[0].kind != rowHeader || !rows[0].collapsed {
 		t.Fatalf("rows = %+v, want a single collapsed header", rows)
 	}
-	rows = buildRows(items, nil, true)
+	rows = buildRows(items, nil, true, nil)
 	if len(rows) != 2 || rows[0].collapsed || rows[1].kind != rowSession {
 		t.Fatalf("search rows = %+v, want expanded group", rows)
 	}
@@ -121,7 +121,7 @@ func TestBuildRowsAutoAllActiveHasNoMoreRow(t *testing.T) {
 		treeSession("ars", "ars-live", session.RuntimeRunning, base),
 		treeSession("ars", "ars-live2", session.RuntimeAttached, base.Add(-time.Hour)),
 	}
-	rows := buildRows(items, nil, false)
+	rows := buildRows(items, nil, false, nil)
 	if len(rows) != 3 || rows[2].kind != rowSession || !rows[2].last {
 		t.Fatalf("rows = %+v, want all active sessions and no more row", rows)
 	}
@@ -131,7 +131,7 @@ func TestRefOfDistinguishesHeadersSessionsAndMoreRows(t *testing.T) {
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	item := treeSession("ars", "ars-live", session.RuntimeRunning, base)
 	saved := treeSession("ars", "ars-saved", session.RuntimeSaved, base.Add(-time.Hour))
-	rows := buildRows([]session.Session{item, saved}, nil, false)
+	rows := buildRows([]session.Session{item, saved}, nil, false, nil)
 	header, leaf, more := refOf(rows[0]), refOf(rows[1]), refOf(rows[2])
 	if header.kind != rowHeader || header.project != "ars" || header.key != (sessionKey{}) {
 		t.Fatalf("header ref = %+v", header)
