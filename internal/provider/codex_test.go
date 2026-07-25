@@ -239,6 +239,23 @@ func TestCodexReadHistoryReportsCorruptIrrelevantLine(t *testing.T) {
 	}
 }
 
+func TestCodexReadHistoryBufferParsesNearLimitLine(t *testing.T) {
+	id := fixtureID(1)
+	prefix := `{"type":"session_meta","payload":{"id":"` + id +
+		`","cwd":"/synthetic/codex","source":"cli","thread_source":"user","padding":"`
+	suffix := `"}}`
+	line := prefix + strings.Repeat("x", maxProviderLineBytes-1-len(prefix)-len(suffix)) + suffix
+	path := writeCodexHistory(t, line)
+
+	candidate, include, issue := (codexAdapter{}).readHistoryBuffer(
+		path,
+		make([]byte, maxProviderLineBytes),
+	)
+	if !include || issue != "" || candidate.NativeID != id || candidate.CWD != "/synthetic/codex" {
+		t.Fatalf("readHistoryBuffer() = %#v include %t issue %q, want near-limit line parsed", candidate, include, issue)
+	}
+}
+
 func TestCodexReadHistoryDoesNotCopyLargeIrrelevantPayloads(t *testing.T) {
 	const records = 4
 	id := fixtureID(1)

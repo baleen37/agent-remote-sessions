@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 const (
 	directoryBatchSize    = 128
 	maxDiscoveredSessions = 10_000
+	maxProviderLineBytes  = 1 << 20
 )
 
 type Status string
@@ -85,6 +87,12 @@ func DiscoverAll(ctx context.Context, home string, adapters []Adapter) ([]sessio
 		return nil, nil, err
 	}
 	return final.Candidates, final.Results, nil
+}
+
+func newHistoryScanner(reader io.Reader, buffer []byte) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(buffer, maxProviderLineBytes)
+	return scanner
 }
 
 func validRegistry(adapters []Adapter) bool {

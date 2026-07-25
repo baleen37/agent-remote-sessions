@@ -329,6 +329,22 @@ func TestClaudeReadHistoryMalformedEligibleMessageKeepsFallback(t *testing.T) {
 	}
 }
 
+func TestClaudeReadHistoryBufferParsesNearLimitLine(t *testing.T) {
+	id := fixtureID(1)
+	prefix := `{"type":"user","sessionId":"` + id + `","cwd":"/synthetic/claude","padding":"`
+	suffix := `"}`
+	line := prefix + strings.Repeat("x", maxProviderLineBytes-1-len(prefix)-len(suffix)) + suffix
+	path := writeClaudeHistory(t, line)
+
+	candidate, include, issue := (claudeAdapter{}).readHistoryBuffer(
+		path,
+		make([]byte, maxProviderLineBytes),
+	)
+	if !include || issue != "" || candidate.NativeID != id || candidate.CWD != "/synthetic/claude" {
+		t.Fatalf("readHistoryBuffer() = %#v include %t issue %q, want near-limit line parsed", candidate, include, issue)
+	}
+}
+
 func TestClaudeDiscoverExcludesMarkedHistoryDespiteUserPrompt(t *testing.T) {
 	const id = "56565656-5656-5656-5656-565656565656"
 	for _, testCase := range []struct {

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,6 +72,7 @@ func (adapter codexAdapter) discoverStream(
 	if err != nil {
 		return err
 	}
+	scanBuffer := make([]byte, maxProviderLineBytes)
 	return discoverHistoryStream(
 		ctx,
 		adapter.Name(),
@@ -80,7 +80,9 @@ func (adapter codexAdapter) discoverStream(
 		inventoryIssue,
 		recentAfter,
 		sessionLimit,
-		adapter.readHistory,
+		func(path string) (session.Candidate, bool, string) {
+			return adapter.readHistoryBuffer(path, scanBuffer)
+		},
 		emit,
 	)
 }
@@ -161,6 +163,10 @@ type codexEventMsg struct {
 }
 
 func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, string) {
+	return adapter.readHistoryBuffer(path, make([]byte, 64*1024))
+}
+
+func (adapter codexAdapter) readHistoryBuffer(path string, scanBuffer []byte) (session.Candidate, bool, string) {
 	file, err := os.Open(path)
 	if err != nil {
 		return session.Candidate{}, false, "unavailable"
@@ -179,8 +185,7 @@ func (adapter codexAdapter) readHistory(path string) (session.Candidate, bool, s
 	title := ""
 	multipleMeta := false
 	errorCode := ""
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxProviderLineBytes)
+	scanner := newHistoryScanner(file, scanBuffer)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var header codexHeader

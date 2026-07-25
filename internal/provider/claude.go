@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"os"
@@ -12,8 +11,6 @@ import (
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
-
-const maxProviderLineBytes = 1 << 20
 
 // candidateTextValidationID is used only for independent CWD/title validation.
 const candidateTextValidationID = "00000000-0000-0000-0000-000000000000"
@@ -71,6 +68,7 @@ func (adapter claudeAdapter) discoverStream(
 	if err != nil {
 		return err
 	}
+	scanBuffer := make([]byte, maxProviderLineBytes)
 	return discoverHistoryStream(
 		ctx,
 		adapter.Name(),
@@ -78,7 +76,9 @@ func (adapter claudeAdapter) discoverStream(
 		inventoryIssue,
 		recentAfter,
 		sessionLimit,
-		adapter.readHistory,
+		func(path string) (session.Candidate, bool, string) {
+			return adapter.readHistoryBuffer(path, scanBuffer)
+		},
 		emit,
 	)
 }
@@ -152,6 +152,10 @@ type claudeMessage struct {
 }
 
 func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, string) {
+	return adapter.readHistoryBuffer(path, make([]byte, 64*1024))
+}
+
+func (adapter claudeAdapter) readHistoryBuffer(path string, scanBuffer []byte) (session.Candidate, bool, string) {
 	file, err := os.Open(path)
 	if err != nil {
 		return session.Candidate{}, false, "unavailable"
@@ -171,8 +175,7 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 	excluded := false
 	mixedIDs := false
 	errorCode := ""
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxProviderLineBytes)
+	scanner := newHistoryScanner(file, scanBuffer)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var header claudeHeader
