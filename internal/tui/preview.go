@@ -148,6 +148,7 @@ func (value model) updatePreviewTick(message previewTickMsg) (model, tea.Cmd) {
 func (value model) enterFullscreen() model {
 	value.previewFullscreen = true
 	value.previewScrollOffset = 0
+	value.previewFullKey = sessionKey{}
 	value.previewFullContent = nil
 	value.previewFullErr = ""
 	value.previewFullPending = false
@@ -165,8 +166,12 @@ func (value model) fullscreenHistoryCapture() func(context.Context, session.Sess
 }
 
 // syncFullPreview issues a scrollback capture for the current selection when
-// fullscreen is open and no capture is already loaded or in flight. It also
-// (re)starts the fullscreen tick.
+// fullscreen is open and no capture is already loaded or in flight for that
+// same selection. A selection change is detected the same way the side
+// panel's syncPreview does it — comparing against the key of the last capture
+// — so switching sessions while fullscreen stays open recaptures instead of
+// freezing the previous session's scrollback on screen. It also (re)starts
+// the fullscreen tick.
 func (value *model) syncFullPreview() tea.Cmd {
 	if !value.previewFullscreen {
 		return nil
@@ -174,6 +179,14 @@ func (value *model) syncFullPreview() tea.Cmd {
 	selected, ok := value.selectedSession()
 	if !ok {
 		return nil
+	}
+	key := keyOf(selected)
+	if key != value.previewFullKey {
+		value.previewFullKey = key
+		value.previewScrollOffset = 0
+		value.previewFullContent = nil
+		value.previewFullErr = ""
+		value.previewFullPending = false
 	}
 	if selected.Runtime.State == session.RuntimeSaved {
 		return nil
@@ -185,7 +198,6 @@ func (value *model) syncFullPreview() tea.Cmd {
 	if value.previewFullPending || value.previewFullContent != nil || value.previewFullErr != "" {
 		return nil
 	}
-	key := keyOf(selected)
 	value.previewFullPending = true
 	return tea.Batch(captureFullPreview(value.ctx, capture, selected), fullPreviewTick(key))
 }

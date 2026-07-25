@@ -147,6 +147,16 @@ func (value model) featuredHelp() (featured, rest []helpBinding) {
 		{helpGroupRow, helpSessionRow, helpMoreRow},
 		{helpPreview, helpFullscreen, helpFilterActive},
 	}
+	// Fullscreen hides the list, so the row-kind band's bindings (P/x/m/enter)
+	// are exactly the ones fullscreen swallows — helpContextLabel already gives
+	// fullscreen precedence over the row kind; this keeps featuredHelp's band
+	// selection in agreement rather than featuring keys the view ignores.
+	if contexts[helpFullscreen] {
+		bands = [][]helpContext{
+			{helpKillPending},
+			{helpPreview, helpFullscreen, helpFilterActive},
+		}
+	}
 	isFeatured := make(map[string]bool, len(helpBindings))
 	for _, band := range bands {
 		for _, binding := range helpBindings {

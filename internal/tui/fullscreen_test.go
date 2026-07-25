@@ -456,6 +456,113 @@ func TestFullscreenExitsWhenResizedBelowMinWidth(t *testing.T) {
 	}
 }
 
+// TestFullscreenExitsWhenResizeLeavesHelpFromFullscreenStale covers M-3: a
+// resize that forces fullscreen closed must also clear helpFromFullscreen,
+// or a help overlay opened afterward from the plain list would still be
+// mislabeled "fullscreen preview:".
+func TestFullscreenExitsWhenResizeLeavesHelpFromFullscreenStale(t *testing.T) {
+	value := loadedFullscreenModel(t, "live output\n")
+	value, _ = updateModel(value, tea.WindowSizeMsg{Width: previewMinWidth - 1, Height: 30})
+	if value.previewFullscreen {
+		t.Fatal("fullscreen survived a resize below the preview minimum width")
+	}
+	if value.helpFromFullscreen {
+		t.Fatal("helpFromFullscreen survived a resize-forced fullscreen exit")
+	}
+}
+
+// TestFullscreenExitsWhenSelectionLeavesSessionRowOnCollect covers I-1: a
+// collectUpdateMsg that leaves the selection off a session row (the session
+// died, or its host dropped out) must close fullscreen exactly like the
+// WindowSizeMsg guard does, rather than rendering the empty frame PR #45
+// eliminated for other entry points.
+func TestFullscreenExitsWhenSelectionLeavesSessionRowOnCollect(t *testing.T) {
+	value := loadedFullscreenModel(t, "live output\n")
+	generation := value.generation
+
+	// The collection comes back with the session gone entirely: the group
+	// header is what restoreSelection lands on.
+	empty := Result{}
+	value, _ = updateModel(value, collectUpdateMsg{generation: generation, update: Update{Result: empty, Done: true}})
+
+	if value.previewFullscreen {
+		t.Fatal("fullscreen survived a collect that left the selection off a session row")
+	}
+	if content := ansi.Strip(value.View().Content); !strings.Contains(content, "q quit") {
+		t.Fatalf("split view footer missing after the forced exit:\n%s", content)
+	}
+}
+
+// TestFullscreenStaysOpenWhenCollectKeepsSessionSelected is the control for
+// I-1: a collect that still resolves the same session must not be treated as
+// a "selection left the session row" exit.
+func TestFullscreenStaysOpenWhenCollectKeepsSessionSelected(t *testing.T) {
+	value := loadedFullscreenModel(t, "live output\n")
+	generation := value.generation
+
+	same := Result{Sessions: twoSessions()}
+	value, _ = updateModel(value, collectUpdateMsg{generation: generation, update: Update{Result: same, Done: true}})
+
+	if !value.previewFullscreen {
+		t.Fatal("fullscreen closed on a collect that kept the session selected")
+	}
+}
+
+// TestFullscreenRecapturesWhenSelectionChangesWithContentAlreadyLoaded covers
+// I-2: syncFullPreview must recapture when the selected session changes even
+// though previewFullContent is already non-nil from the previous session —
+// otherwise the old session's scrollback freezes on screen, and the tick
+// (key-checked against the new session) never corrects it.
+func TestFullscreenRecapturesWhenSelectionChangesWithContentAlreadyLoaded(t *testing.T) {
+	sessions := manySessions(2)
+	calls := map[string]int{}
+	value := previewModel(func(_ context.Context, item session.Session) ([]byte, error) {
+		calls[item.NativeID]++
+		return []byte("content for " + item.NativeID), nil
+	})
+	value.result.Sessions = sessions
+	value.refreshVisible()
+	value.selectRow(firstSessionRow(value.rows))
+	first, ok := value.selectedSession()
+	if !ok {
+		t.Fatal("expected a session row selected")
+	}
+	value = pressKey(value, 'f', "f")
+	if !value.previewFullscreen {
+		t.Fatal("f did not open fullscreen")
+	}
+	if !strings.Contains(ansi.Strip(value.View().Content), "content for "+first.NativeID) {
+		t.Fatalf("fullscreen did not capture the first session:\n%s", ansi.Strip(value.View().Content))
+	}
+
+	// Move to the other session while fullscreen stays open (session rows are
+	// adjacent, so this simulates the selection changing under the hood).
+	value.previewFullscreen = true
+	for index, row := range value.rows {
+		if row.kind == rowSession && row.session.NativeID != first.NativeID {
+			value.selectRow(index)
+			break
+		}
+	}
+	second, ok := value.selectedSession()
+	if !ok || second.NativeID == first.NativeID {
+		t.Fatalf("test setup did not select a different session: %+v", second)
+	}
+
+	command := value.syncFullPreview()
+	if command == nil {
+		t.Fatal("syncFullPreview did not recapture after the selection changed")
+	}
+	value, _ = updateModel(value, drainFullPreviewMsg(command))
+	content := ansi.Strip(value.View().Content)
+	if strings.Contains(content, "content for "+first.NativeID) {
+		t.Fatalf("fullscreen still shows the previous session's frozen scrollback:\n%s", content)
+	}
+	if !strings.Contains(content, "content for "+second.NativeID) {
+		t.Fatalf("fullscreen did not recapture the newly selected session:\n%s", content)
+	}
+}
+
 func TestFullscreenPreviewOffKeyExitsAndClosesPane(t *testing.T) {
 	value := loadedFullscreenModel(t, "live output\n")
 	value = pressKey(value, 'p', "p")
@@ -485,6 +592,30 @@ func TestFullscreenFooterHintFollowsPreviewVisibility(t *testing.T) {
 	value.width = previewMinWidth - 1
 	if footer := ansi.Strip(value.help(value.contentWidth())); strings.Contains(footer, "f full") {
 		t.Fatalf("footer shows the fullscreen hint below the minimum width: %q", footer)
+	}
+}
+
+// TestFullscreenFeaturedHelpExcludesRowKindBindings covers the follow-up: while
+// fullscreen is open, the list underneath it is hidden, so featuredHelp must
+// not feature row-kind bindings fullscreen swallows (P, x, m, enter) — only
+// the scroll binding fullscreen actually handles. helpFullscreen already wins
+// helpContextLabel; this brings featuredHelp's band selection into agreement.
+func TestFullscreenFeaturedHelpExcludesRowKindBindings(t *testing.T) {
+	value := loadedFullscreenModel(t, "live output\n")
+	value.width, value.height, value.noColor = 120, 40, true
+	lines := overlayLines(t, value)
+
+	label := lineContaining(t, lines, "fullscreen preview")
+	all := lineContaining(t, lines, "all keys")
+	for _, want := range []string{"pin / unpin", "kill session / group", "send a line without attaching", "attach session"} {
+		if index := lineContaining(t, lines, want); index >= label && index <= all {
+			t.Fatalf("row-kind binding %q at line %d is wrongly featured under fullscreen (%d..%d):\n%s",
+				want, index, label, all, strings.Join(lines, "\n"))
+		}
+	}
+	if index := lineContaining(t, lines, "scroll scrollback"); index < label || index > all {
+		t.Fatalf("scroll binding at line %d is outside the fullscreen context section (%d..%d):\n%s",
+			index, label, all, strings.Join(lines, "\n"))
 	}
 }
 
