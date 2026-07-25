@@ -140,6 +140,17 @@ func TestClaudeDiscoverDerivesTitleFromFirstUserPrompt(t *testing.T) {
 			lines: prompt("\"\\n\\nFix the flaky discovery test\\nand the changelog\""),
 			want:  "Fix the flaky discovery test",
 		},
+		{
+			name: "weak first prompt yields to a later substantial prompt",
+			lines: prompt("\"tes\"") +
+				prompt("\"fix the login bug\""),
+			want: "fix the login bug",
+		},
+		{
+			name:  "weak prompt is used when no substantial prompt follows",
+			lines: prompt("\"ls\""),
+			want:  "ls",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			home := t.TempDir()

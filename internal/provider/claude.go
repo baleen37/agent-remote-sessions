@@ -130,7 +130,7 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 		return session.Candidate{}, false, "incompatible"
 	}
 
-	var id, cwd, title, promptTitle string
+	var id, cwd, title, substantialPromptTitle, weakPromptTitle string
 	titleRank := 0
 	excluded := false
 	mixedIDs := false
@@ -170,8 +170,16 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 			title = value
 			titleRank = rank
 		}
-		if promptTitle == "" {
-			promptTitle = claudePromptTitle(record)
+		if substantialPromptTitle == "" {
+			if candidate := claudePromptTitle(record); candidate != "" {
+				if isWeakPromptTitle(candidate) {
+					if weakPromptTitle == "" {
+						weakPromptTitle = candidate
+					}
+				} else {
+					substantialPromptTitle = candidate
+				}
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -200,7 +208,7 @@ func (adapter claudeAdapter) readHistory(path string) (session.Candidate, bool, 
 		NativeID:  id,
 		UpdatedAt: info.ModTime().UTC(),
 		CWD:       cwd,
-		Title:     firstNonEmpty(title, promptTitle),
+		Title:     firstNonEmpty(title, substantialPromptTitle, weakPromptTitle),
 	}
 	if err := session.ValidateCandidate(candidate); err != nil {
 		return session.Candidate{}, false, strongerError(errorCode, "incompatible")
@@ -247,6 +255,13 @@ func claudePromptTitle(record claudeRecord) string {
 		return ""
 	}
 	return title
+}
+
+// isWeakPromptTitle reports whether a prompt title is a throwaway single word (like
+// "tes" or "ls") rather than a substantial prompt, so the scan loop can keep looking
+// for a better title instead of settling on the first thing the user typed.
+func isWeakPromptTitle(title string) bool {
+	return !strings.ContainsAny(title, " \t") && len([]rune(title)) < 8
 }
 
 // claudeMessageText extracts the prompt text from message.content, which is either a
