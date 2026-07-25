@@ -71,6 +71,9 @@ func discoverHistoryStream(
 	if err := emit(PhaseRecent, aggregateHistory(name, outcomes, recent, sessionLimit, "")); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := readHistoryPartition(ctx, files, outcomes, old, readHistory); err != nil {
 		return err
 	}
@@ -81,7 +84,10 @@ func discoverHistoryStream(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return emit(PhaseComplete, aggregateHistory(name, outcomes, all, sessionLimit, inventoryIssue))
+	if err := emit(PhaseComplete, aggregateHistory(name, outcomes, all, sessionLimit, inventoryIssue)); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func readHistoryPartition(
@@ -207,6 +213,9 @@ func DiscoverAllStream(
 		snapshot, err := buildSnapshot(phase, adapters, results)
 		if err == nil {
 			err = emit(snapshot)
+			if err == nil {
+				err = ctx.Err()
+			}
 		}
 		for _, event := range phaseEvents {
 			event.ack <- err

@@ -136,12 +136,56 @@ func TestBuiltinDiscoverStreamStopsBeforeCallbackWhenContextCanceled(t *testing.
 	}
 }
 
+func TestBuiltinDiscoverStreamPropagatesCancellationFromCompleteCallback(t *testing.T) {
+	for _, adapter := range []Adapter{claudeAdapter{}, codexAdapter{}} {
+		t.Run(string(adapter.Name()), func(t *testing.T) {
+			installExecutable(t, string(adapter.Name()))
+			ctx, cancel := context.WithCancel(context.Background())
+			var phases []Phase
+			err := adapter.DiscoverStream(ctx, t.TempDir(), time.Unix(100, 0), func(phase Phase, _ Result) error {
+				phases = append(phases, phase)
+				if phase == PhaseComplete {
+					cancel()
+				}
+				return nil
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("DiscoverStream() error = %v, want context canceled after phases %v", err, phases)
+			}
+		})
+	}
+}
+
+func TestDiscoverAllStreamPropagatesCancellationFromCompleteCallback(t *testing.T) {
+	callbackErrors := make(chan error, 2)
+	adapters := progressiveAdapters(nil, nil)
+	for _, adapter := range adapters {
+		adapter.(*progressiveAdapter).callbackErrors = callbackErrors
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := DiscoverAllStream(ctx, "/home", adapters, time.Unix(100, 0), func(snapshot Snapshot) error {
+		if snapshot.Phase == PhaseComplete {
+			cancel()
+		}
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("DiscoverAllStream() error = %v, want context canceled", err)
+	}
+	for range adapters {
+		if err := <-callbackErrors; !errors.Is(err, context.Canceled) {
+			t.Fatalf("provider complete callback error = %v, want context canceled", err)
+		}
+	}
+}
+
 type progressiveAdapter struct {
-	name    session.Provider
-	recent  Result
-	final   Result
-	started chan<- session.Provider
-	release <-chan struct{}
+	name           session.Provider
+	recent         Result
+	final          Result
+	started        chan<- session.Provider
+	release        <-chan struct{}
+	callbackErrors chan<- error
 }
 
 func progressiveAdapters(started chan<- session.Provider, release <-chan struct{}) []Adapter {
@@ -209,7 +253,11 @@ func (adapter *progressiveAdapter) DiscoverStream(
 	if err := emit(PhaseRecent, adapter.recent); err != nil {
 		return err
 	}
-	return emit(PhaseComplete, adapter.final)
+	err := emit(PhaseComplete, adapter.final)
+	if adapter.callbackErrors != nil {
+		adapter.callbackErrors <- err
+	}
+	return err
 }
 
 func (adapter *progressiveAdapter) ValidateID(string) error { return nil }
