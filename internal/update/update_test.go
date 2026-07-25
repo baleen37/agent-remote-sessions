@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -15,9 +14,10 @@ type maybeHarness struct {
 	deps     Dependencies
 	commands [][]string
 	execs    [][]string
+	choices  [][2]string
 }
 
-func newMaybeHarness(t *testing.T, tag, current, key, executable string) *maybeHarness {
+func newMaybeHarness(t *testing.T, tag, current string, accept bool, executable string) *maybeHarness {
 	t.Helper()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -42,9 +42,10 @@ func newMaybeHarness(t *testing.T, tag, current, key, executable string) *maybeH
 			harness.execs = append(harness.execs, append([]string{argv0}, argv...))
 			return nil
 		},
-		MakeRaw:      noopRaw,
-		Input:        strings.NewReader(key),
-		Output:       &strings.Builder{},
+		Choose: func(current, latest string) bool {
+			harness.choices = append(harness.choices, [2]string{current, latest})
+			return accept
+		},
 		Args:         []string{"ars"},
 		Environ:      []string{"HOME=/home/user"},
 		CheckTimeout: time.Second,
@@ -66,35 +67,38 @@ func TestMaybeSkipsDevBuildsWithoutChecking(t *testing.T) {
 func TestMaybeIgnoresCheckFailures(t *testing.T) {
 	t.Parallel()
 
-	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", "\r", npmExecutable)
+	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", true, npmExecutable)
 	harness.deps.ReleaseAPI = "http://127.0.0.1:0/unreachable"
 	if err := Maybe(context.Background(), harness.deps); err != nil {
 		t.Fatal(err)
 	}
-	if len(harness.commands) != 0 || len(harness.execs) != 0 {
-		t.Errorf("update ran after check failure: %v %v", harness.commands, harness.execs)
+	if len(harness.choices) != 0 || len(harness.commands) != 0 || len(harness.execs) != 0 {
+		t.Errorf("update path ran after check failure: choices %v, commands %v, execs %v", harness.choices, harness.commands, harness.execs)
 	}
 }
 
 func TestMaybeSkipsWhenUpToDate(t *testing.T) {
 	t.Parallel()
 
-	harness := newMaybeHarness(t, "v1.2.0", "1.2.0", "\r", npmExecutable)
+	harness := newMaybeHarness(t, "v1.2.0", "1.2.0", true, npmExecutable)
 	if err := Maybe(context.Background(), harness.deps); err != nil {
 		t.Fatal(err)
 	}
-	prompt := harness.deps.Output.(*strings.Builder).String()
-	if prompt != "" {
-		t.Errorf("prompt shown while up to date: %q", prompt)
+	if len(harness.choices) != 0 {
+		t.Errorf("choice shown while up to date: %v", harness.choices)
 	}
 }
 
 func TestMaybeSkipsWhenDeclined(t *testing.T) {
 	t.Parallel()
 
-	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", "q", npmExecutable)
+	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", false, npmExecutable)
 	if err := Maybe(context.Background(), harness.deps); err != nil {
 		t.Fatal(err)
+	}
+	wantChoices := [][2]string{{"1.2.0", "1.3.0"}}
+	if !reflect.DeepEqual(harness.choices, wantChoices) {
+		t.Errorf("choices = %#v, want %#v", harness.choices, wantChoices)
 	}
 	if len(harness.commands) != 0 || len(harness.execs) != 0 {
 		t.Errorf("update ran after decline: %v %v", harness.commands, harness.execs)
@@ -104,7 +108,7 @@ func TestMaybeSkipsWhenDeclined(t *testing.T) {
 func TestMaybeAppliesNPMUpdateAndReExecs(t *testing.T) {
 	t.Parallel()
 
-	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", "\r", npmExecutable)
+	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", true, npmExecutable)
 	if err := Maybe(context.Background(), harness.deps); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +125,7 @@ func TestMaybeAppliesNPMUpdateAndReExecs(t *testing.T) {
 func TestMaybeReturnsApplyFailureWithoutExec(t *testing.T) {
 	t.Parallel()
 
-	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", "\r", npmExecutable)
+	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", true, npmExecutable)
 	harness.deps.RunCommand = func(_ context.Context, _ string, _ ...string) error {
 		return errors.New("exit status 1")
 	}
