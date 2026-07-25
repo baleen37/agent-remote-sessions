@@ -556,7 +556,9 @@ func (value model) filterActive() bool {
 // list explains why, e.g. "no attached / running sessions · esc to clear".
 // A needs-input-only filter reads as "no sessions need input" instead, since
 // "no needs-input sessions" doesn't scan as English; combined with a state
-// filter it folds into the joined list as "needs-input".
+// filter it folds into the joined list as "needs-input". If sessions are also
+// stale-hidden, esc to clear isn't the whole story, so a suffix names the a
+// key as the other recovery path.
 func (value model) emptyFilterMessage() string {
 	var names []string
 	for _, state := range []session.RuntimeState{session.RuntimeAttached, session.RuntimeRunning, session.RuntimeSaved} {
@@ -564,13 +566,19 @@ func (value model) emptyFilterMessage() string {
 			names = append(names, string(state))
 		}
 	}
+	var message string
 	if len(names) == 0 && value.waitingFilter {
-		return "no sessions need input · esc to clear"
+		message = "no sessions need input · esc to clear"
+	} else {
+		if value.waitingFilter {
+			names = append(names, "needs-input")
+		}
+		message = "no " + strings.Join(names, " / ") + " sessions · esc to clear"
 	}
-	if value.waitingFilter {
-		names = append(names, "needs-input")
+	if value.staleHidden > 0 {
+		message += " · a to show older"
 	}
-	return "no " + strings.Join(names, " / ") + " sessions · esc to clear"
+	return message
 }
 
 func (value *model) restoreSelection() {
