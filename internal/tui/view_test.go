@@ -817,7 +817,7 @@ func TestHelpOverlayShowsStateSymbolLegend(t *testing.T) {
 	model.width, model.height, model.noColor = 120, 24, true
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
 	content := ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "● attached · ◐ running · ○ saved") {
+	if !strings.Contains(content, "● attached · ◐ running · ? needs input · ○ saved") {
 		t.Fatalf("help overlay missing state symbol legend: %q", content)
 	}
 }
