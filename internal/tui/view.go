@@ -107,7 +107,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		{"! / @ / #", "filter attached / running / saved"},
 		{"p", "toggle preview pane"},
 		{"P", "pin / unpin session"},
-		{"x", "kill session (3s grace · u undo)"},
+		{"x", "kill session / group (3s grace · u undo)"},
 		{"m", "send a line without attaching"},
 		{"enter", "attach session · toggle group"},
 		{"space", "toggle group"},
