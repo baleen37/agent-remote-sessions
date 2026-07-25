@@ -86,7 +86,8 @@ type model struct {
 	pins            map[sessionKey]bool
 	killSeq         uint64
 	killPending     bool
-	killTarget      session.Session
+	killTargets     []session.Session
+	killGroup       string
 	collecting      bool
 	spinner         int
 	generation      uint64
@@ -411,7 +412,8 @@ func (value model) restartCollection() (model, tea.Cmd) {
 	value.collecting = true
 	value.spinner = 0
 	value.killPending = false
-	value.killTarget = session.Session{}
+	value.killTargets = nil
+	value.killGroup = ""
 	return value, tea.Batch(
 		waitForUpdate(value.generation, value.deps.Collect(collectCtx)),
 		spinnerTick(value.generation),
@@ -435,11 +437,17 @@ func waitForUpdate(generation uint64, channel <-chan Update) tea.Cmd {
 }
 
 func (value *model) refreshVisible() {
-	filtered := filterByState(value.result.Sessions, value.stateFilter)
-	filtered = filterSessions(filtered, value.query, value.deps.LocalTarget)
+	filtered := value.visibleSessions()
 	value.matched = len(filtered)
 	value.rows = buildRows(filtered, value.groupMode, value.query != "", value.pins)
 	value.restoreSelection()
+}
+
+// visibleSessions is the inventory the rows are built from: everything the
+// active state filter and search query admit, folded or not.
+func (value model) visibleSessions() []session.Session {
+	filtered := filterByState(value.result.Sessions, value.stateFilter)
+	return filterSessions(filtered, value.query, value.deps.LocalTarget)
 }
 
 // toggleStateFilter flips the given runtime state in the active filter set.
