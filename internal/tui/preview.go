@@ -15,6 +15,10 @@ const (
 	previewMinWidth = 100
 	previewInterval = 2 * time.Second
 	previewGutter   = 2
+	// fullscreenPageLinesFraction sizes a PgUp/PgDn/Ctrl+U/Ctrl+D scroll step
+	// as a fraction of the terminal height, so a page always leaves visible
+	// overlap with the previous one.
+	fullscreenPageLinesFraction = 2
 )
 
 type previewMsg struct {
@@ -24,6 +28,17 @@ type previewMsg struct {
 }
 
 type previewTickMsg struct {
+	key sessionKey
+}
+
+// fullPreviewMsg carries the result of a fullscreen scrollback capture.
+type fullPreviewMsg struct {
+	key     sessionKey
+	content []byte
+	err     error
+}
+
+type fullPreviewTickMsg struct {
 	key sessionKey
 }
 
@@ -127,6 +142,141 @@ func (value model) updatePreviewTick(message previewTickMsg) (model, tea.Cmd) {
 	return value, tea.Batch(capturePreview(value.ctx, value.deps.Preview, selected), previewTick(message.key))
 }
 
+// enterFullscreen opens the fullscreen preview and resets its scrollback
+// state, so a reopened pane loads fresh at the tail rather than the offset
+// left over from a previous visit.
+func (value model) enterFullscreen() model {
+	value.previewFullscreen = true
+	value.previewScrollOffset = 0
+	value.previewFullContent = nil
+	value.previewFullErr = ""
+	value.previewFullPending = false
+	return value
+}
+
+// fullscreenHistoryCapture picks the scrollback capture for fullscreen,
+// falling back to the tail-only Preview capture when PreviewHistory is not
+// wired, so fullscreen still renders something rather than nothing.
+func (value model) fullscreenHistoryCapture() func(context.Context, session.Session) ([]byte, error) {
+	if value.deps.PreviewHistory != nil {
+		return value.deps.PreviewHistory
+	}
+	return value.deps.Preview
+}
+
+// syncFullPreview issues a scrollback capture for the current selection when
+// fullscreen is open and no capture is already loaded or in flight. It also
+// (re)starts the fullscreen tick.
+func (value *model) syncFullPreview() tea.Cmd {
+	if !value.previewFullscreen {
+		return nil
+	}
+	selected, ok := value.selectedSession()
+	if !ok {
+		return nil
+	}
+	if selected.Runtime.State == session.RuntimeSaved {
+		return nil
+	}
+	capture := value.fullscreenHistoryCapture()
+	if capture == nil {
+		return nil
+	}
+	if value.previewFullPending || value.previewFullContent != nil || value.previewFullErr != "" {
+		return nil
+	}
+	key := keyOf(selected)
+	value.previewFullPending = true
+	return tea.Batch(captureFullPreview(value.ctx, capture, selected), fullPreviewTick(key))
+}
+
+func captureFullPreview(ctx context.Context, capture func(context.Context, session.Session) ([]byte, error), item session.Session) tea.Cmd {
+	key := keyOf(item)
+	return func() tea.Msg {
+		content, err := capture(ctx, item)
+		return fullPreviewMsg{key: key, content: content, err: err}
+	}
+}
+
+func fullPreviewTick(key sessionKey) tea.Cmd {
+	return tea.Tick(previewInterval, func(time.Time) tea.Msg {
+		return fullPreviewTickMsg{key: key}
+	})
+}
+
+func (value model) updateFullPreview(message fullPreviewMsg) (model, tea.Cmd) {
+	selected, ok := value.selectedSession()
+	if !ok || keyOf(selected) != message.key {
+		return value, nil
+	}
+	value.previewFullPending = false
+	if message.err != nil {
+		value.previewFullErr = message.err.Error()
+		value.previewFullContent = nil
+		return value, nil
+	}
+	value.previewFullErr = ""
+	lines := splitPreview(message.content)
+	if lines == nil {
+		lines = []string{}
+	}
+	value.previewFullContent = lines
+	value.previewScrollOffset = clampScrollOffset(value.previewScrollOffset, len(lines))
+	return value, nil
+}
+
+func (value model) updateFullPreviewTick(message fullPreviewTickMsg) (model, tea.Cmd) {
+	if !value.previewFullscreen {
+		return value, nil
+	}
+	selected, ok := value.selectedSession()
+	if !ok || keyOf(selected) != message.key || selected.Runtime.State == session.RuntimeSaved {
+		return value, nil
+	}
+	capture := value.fullscreenHistoryCapture()
+	if capture == nil {
+		return value, nil
+	}
+	// A capture is already in flight; keep the tick alive but do not stack a
+	// second capture, mirroring the side-panel tick's backpressure.
+	if value.previewFullPending {
+		return value, fullPreviewTick(message.key)
+	}
+	value.previewFullPending = true
+	return value, tea.Batch(captureFullPreview(value.ctx, capture, selected), fullPreviewTick(message.key))
+}
+
+// scrollFullscreen moves the scrollback viewport by delta lines, where a
+// positive delta scrolls up (toward older output) and clamps at both ends:
+// 0 is the tail (bottom) and len(previewFullContent)-1 is the oldest visible
+// line reachable while still showing at least one line.
+func (value *model) scrollFullscreen(delta int) {
+	value.previewScrollOffset = clampScrollOffset(value.previewScrollOffset+delta, len(value.previewFullContent))
+}
+
+func clampScrollOffset(offset, lineCount int) int {
+	maxOffset := lineCount - 1
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset < 0 {
+		return 0
+	}
+	if offset > maxOffset {
+		return maxOffset
+	}
+	return offset
+}
+
+// fullscreenPageLines sizes a page scroll step from the terminal height.
+func fullscreenPageLines(height int) int {
+	lines := height / fullscreenPageLinesFraction
+	if lines < 1 {
+		return 1
+	}
+	return lines
+}
+
 func splitPreview(content []byte) []string {
 	text := strings.TrimRight(string(content), "\n")
 	if text == "" {
@@ -218,9 +368,10 @@ func (value model) joinPreview(body []string, listWidth, previewCols, height int
 }
 
 // fullscreenPreview renders the preview as an alternate full-screen view,
-// replacing the list: the session title, the tail of the captured pane over the
-// remaining height, and a close hint. Like helpOverlay it owns the whole frame,
-// so the list, details, diagnostics and footer are absent.
+// replacing the list: the session title, the captured pane's scrollback
+// scrolled to previewScrollOffset over the remaining height, and a close
+// hint. Like helpOverlay it owns the whole frame, so the list, details,
+// diagnostics and footer are absent.
 func (value model) fullscreenPreview(inset, width int) tea.View {
 	lines := []string{fitLine(value.header(), width), ""}
 	selected, ok := value.selectedSession()
@@ -230,7 +381,7 @@ func (value model) fullscreenPreview(inset, width int) tea.View {
 		// and its blank, the title and its blank, then the blank and the close
 		// hint at the foot.
 		const frameLines = 6
-		lines = append(lines, value.previewBody(selected, width, value.height-frameLines)...)
+		lines = append(lines, value.fullscreenBody(selected, width, value.height-frameLines)...)
 	}
 	lines = append(lines, "", value.mutedText("f / esc to close", width))
 	margin := strings.Repeat(" ", inset)
@@ -240,6 +391,90 @@ func (value model) fullscreenPreview(inset, width int) tea.View {
 		}
 	}
 	return tea.View{Content: strings.Join(lines, "\n"), AltScreen: true}
+}
+
+// fullscreenBody renders the fullscreen scrollback body: a saved session's
+// placeholder, an error notice, a loading notice while the first capture is
+// in flight, or the captured lines windowed at previewScrollOffset with
+// scrollIndicator rows — the same "↑/↓ N more" convention the list uses —
+// for whichever side(s) of the viewport have hidden lines.
+func (value model) fullscreenBody(selected session.Session, width, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if selected.Runtime.State == session.RuntimeSaved {
+		return []string{value.mutedText("no live pane", width)}
+	}
+	if value.previewFullErr != "" {
+		return []string{value.mutedText("preview unavailable", width)}
+	}
+	if value.previewFullContent == nil {
+		return []string{value.mutedText("loading preview…", width)}
+	}
+	lines := value.previewFullContent
+	start, rows, topInd, botInd := fullscreenWindow(len(lines), value.previewScrollOffset, height)
+	fitted := make([]string, 0, height)
+	if topInd {
+		fitted = append(fitted, value.scrollIndicator("↑", start, width))
+	}
+	for _, line := range lines[start : start+rows] {
+		fitted = append(fitted, fitLine(ansi.Strip(line), width))
+	}
+	if botInd {
+		fitted = append(fitted, value.scrollIndicator("↓", len(lines)-(start+rows), width))
+	}
+	return fitted
+}
+
+// fullscreenWindow resolves the visible line range [start, start+rows) for a
+// scrollback of lineCount lines viewed through a height-tall viewport
+// anchored offset lines up from the tail (offset 0 = bottom), together with
+// whether the top and/or bottom indicator is needed. It mirrors
+// scrolledBody's iteration: claiming an indicator shrinks the content rows
+// available, which can in turn reveal (or remove the need for) the other
+// indicator, so the counts are resolved by iterating to a fixed point.
+// Indicators may claim at most height-1 rows so at least one content line
+// survives.
+func fullscreenWindow(lineCount, offset, height int) (start, rows int, topInd, botInd bool) {
+	if height <= 0 || lineCount <= 0 {
+		return 0, 0, false, false
+	}
+	if height >= lineCount {
+		return 0, lineCount, false, false
+	}
+	budget := min(2, height-1)
+	end := lineCount - offset
+	if end > lineCount {
+		end = lineCount
+	}
+	claimedTop, claimedBot := 0, 0
+	for range 3 {
+		rows = height - claimedTop - claimedBot
+		start = end - rows
+		if start < 0 {
+			start = 0
+		}
+		newTop, newBot := 0, 0
+		if start > 0 && budget >= 1 {
+			newTop = 1
+		}
+		if start+rows < lineCount && newTop < budget {
+			newBot = 1
+		}
+		if newTop == claimedTop && newBot == claimedBot {
+			break
+		}
+		claimedTop, claimedBot = newTop, newBot
+	}
+	rows = height - claimedTop - claimedBot
+	start = end - rows
+	if start < 0 {
+		start = 0
+	}
+	if start+rows > lineCount {
+		rows = lineCount - start
+	}
+	return start, rows, claimedTop == 1, claimedBot == 1
 }
 
 func (value model) padPanel(lines []string, width, height int) []string {

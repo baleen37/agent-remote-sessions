@@ -40,14 +40,15 @@ type ExecCommand interface {
 }
 
 type Dependencies struct {
-	Collect     func(context.Context) <-chan Update
-	Attach      func(context.Context, session.Session) (ExecCommand, error)
-	Preview     func(context.Context, session.Session) ([]byte, error)
-	Kill        func(context.Context, session.Session) error
-	Send        func(ctx context.Context, item session.Session, text string) error
-	LocalTarget string
-	Now         func() time.Time
-	NoColor     bool
+	Collect        func(context.Context) <-chan Update
+	Attach         func(context.Context, session.Session) (ExecCommand, error)
+	Preview        func(context.Context, session.Session) ([]byte, error)
+	PreviewHistory func(context.Context, session.Session) ([]byte, error)
+	Kill           func(context.Context, session.Session) error
+	Send           func(ctx context.Context, item session.Session, text string) error
+	LocalTarget    string
+	Now            func() time.Time
+	NoColor        bool
 }
 
 type collectUpdateMsg struct {
@@ -70,51 +71,56 @@ type attachDoneMsg struct {
 }
 
 type model struct {
-	ctx               context.Context
-	deps              Dependencies
-	result            Result
-	rows              []listRow
-	selected          int
-	selectedRef       rowRef
-	groupMode         map[string]groupMode
-	stateFilter       map[session.RuntimeState]bool
-	waitingFilter     bool
-	showAll           bool
-	staleHidden       int
-	query             string
-	matched           int
-	searching         bool
-	composing         bool
-	compose           string
-	composeTarget     session.Session
-	showHelp          bool
-	previewOn         bool
-	previewFullscreen bool
-	previewKey        sessionKey
-	previewContent    []string
-	previewErr        string
-	previewPending    bool
-	activity          map[sessionKey]activityEntry
-	activityPending   map[sessionKey]bool
-	pins              map[sessionKey]bool
-	killSeq           uint64
-	killPending       bool
-	killTargets       []session.Session
-	killGroup         string
-	collecting        bool
-	pendingUpdate     *Update
-	coalescing        bool
-	interactionSeq    uint64
-	spinner           int
-	generation        uint64
-	loading           []string
-	cancelCollect     context.CancelFunc
-	initialCollect    tea.Cmd
-	status            string
-	width             int
-	height            int
-	noColor           bool
-	styles            viewStyles
+	ctx                 context.Context
+	deps                Dependencies
+	result              Result
+	rows                []listRow
+	selected            int
+	selectedRef         rowRef
+	groupMode           map[string]groupMode
+	stateFilter         map[session.RuntimeState]bool
+	waitingFilter       bool
+	showAll             bool
+	staleHidden         int
+	query               string
+	matched             int
+	searching           bool
+	composing           bool
+	compose             string
+	composeTarget       session.Session
+	showHelp            bool
+	helpFromFullscreen  bool
+	previewOn           bool
+	previewFullscreen   bool
+	previewKey          sessionKey
+	previewContent      []string
+	previewErr          string
+	previewPending      bool
+	previewFullContent  []string
+	previewFullErr      string
+	previewFullPending  bool
+	previewScrollOffset int
+	activity            map[sessionKey]activityEntry
+	activityPending     map[sessionKey]bool
+	pins                map[sessionKey]bool
+	killSeq             uint64
+	killPending         bool
+	killTargets         []session.Session
+	killGroup           string
+	collecting          bool
+	pendingUpdate       *Update
+	coalescing          bool
+	interactionSeq      uint64
+	spinner             int
+	generation          uint64
+	loading             []string
+	cancelCollect       context.CancelFunc
+	initialCollect      tea.Cmd
+	status              string
+	width               int
+	height              int
+	noColor             bool
+	styles              viewStyles
 }
 
 func newModel(ctx context.Context, deps Dependencies) model {
@@ -180,6 +186,10 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		return value.updatePreview(message)
 	case previewTickMsg:
 		return value.updatePreviewTick(message)
+	case fullPreviewMsg:
+		return value.updateFullPreview(message)
+	case fullPreviewTickMsg:
+		return value.updateFullPreviewTick(message)
 	case activityMsg:
 		return value.updateActivity(message)
 	case activityTickMsg:
@@ -214,7 +224,7 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		if value.previewFullscreen && !value.previewVisible() {
 			value.previewFullscreen = false
 		}
-		return value, value.syncPreview()
+		return value, tea.Batch(value.syncPreview(), value.syncFullPreview())
 	case tea.KeyPressMsg:
 		interaction := value.collecting && value.isRelevantInteraction(message)
 		updated, command := value.updateKey(message)
@@ -230,7 +240,7 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		if command != nil {
 			return updated, command
 		}
-		return updated, updated.syncPreview()
+		return updated, tea.Batch(updated.syncPreview(), updated.syncFullPreview())
 	default:
 		return value, nil
 	}
@@ -292,6 +302,7 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		switch {
 		case key.Text == "?", key.Code == tea.KeyEscape, key.Code == 'q':
 			value.showHelp = false
+			value.helpFromFullscreen = false
 		}
 		return value, nil
 	}
@@ -350,7 +361,8 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	// The fullscreen preview hides the list, so it swallows every key but the
 	// ones below — like the help overlay — rather than moving or acting on a
 	// selection the user cannot see. p exits and closes the pane, keeping the
-	// two states consistent.
+	// two states consistent. j/k and the page keys scroll the captured
+	// scrollback instead of moving the (hidden) list selection.
 	if value.previewFullscreen {
 		switch {
 		case key.Text == "f", key.Code == tea.KeyEscape:
@@ -363,7 +375,11 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 			// The overlay features the f binding, so it has to stay reachable
 			// from here. Leaving fullscreen means closing the overlay returns to
 			// the split view rather than a mode the user can no longer see.
+			// helpFromFullscreen remembers the context was fullscreen, purely
+			// for the overlay's featured section — previewFullscreen itself
+			// stays false so closing help lands in the split view.
 			value.showHelp = true
+			value.helpFromFullscreen = true
 			value.previewFullscreen = false
 		case key.Code == 'q':
 			// Unlike the help overlay — a transient thing q dismisses —
@@ -373,6 +389,18 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 				value.cancelCollect()
 			}
 			return value, tea.Quit
+		case key.Code == tea.KeyUp, key.Code == 'k':
+			value.scrollFullscreen(1)
+		case key.Code == tea.KeyDown, key.Code == 'j':
+			value.scrollFullscreen(-1)
+		case key.Code == tea.KeyPgUp:
+			value.scrollFullscreen(fullscreenPageLines(value.height))
+		case key.Code == tea.KeyPgDown:
+			value.scrollFullscreen(-fullscreenPageLines(value.height))
+		case key.Code == 'u' && key.Mod&tea.ModCtrl != 0:
+			value.scrollFullscreen(fullscreenPageLines(value.height))
+		case key.Code == 'd' && key.Mod&tea.ModCtrl != 0:
+			value.scrollFullscreen(-fullscreenPageLines(value.height))
 		}
 		return value, nil
 	}
@@ -441,7 +469,7 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 	case 'f':
 		if row, ok := value.selectedRow(); ok && row.kind == rowSession && value.previewVisible() {
-			value.previewFullscreen = true
+			value = value.enterFullscreen()
 		}
 	case '?':
 		value.showHelp = true

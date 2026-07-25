@@ -41,6 +41,39 @@ func TestCapturePanePropagatesError(t *testing.T) {
 	}
 }
 
+func TestCapturePaneHistoryCapturesScrollback(t *testing.T) {
+	runner := &fakeRunner{output: []byte("line one\nline two\n")}
+	output, err := CapturePaneHistory(context.Background(), runner, "claude", "123e4567-e89b-42d3-a456-426614174000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "line one\nline two\n" {
+		t.Fatalf("CapturePaneHistory() = %q", output)
+	}
+	name := Key("claude", "123e4567-e89b-42d3-a456-426614174000")
+	want := Command{
+		Name: "tmux",
+		Args: []string{"-L", SocketName, "-f", "/dev/null", "capture-pane", "-p", "-S", "-500", "-t", "=" + name + ":"},
+		Env:  []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
+	}
+	if !reflect.DeepEqual(runner.command, want) {
+		t.Fatalf("command = %#v, want %#v", runner.command, want)
+	}
+}
+
+func TestCapturePaneHistoryRequiresRunner(t *testing.T) {
+	if _, err := CapturePaneHistory(context.Background(), nil, "claude", "id"); err == nil {
+		t.Fatal("CapturePaneHistory() with nil runner did not error")
+	}
+}
+
+func TestCapturePaneHistoryPropagatesError(t *testing.T) {
+	runner := &fakeRunner{err: errors.New("no server")}
+	if _, err := CapturePaneHistory(context.Background(), runner, "claude", "id"); err == nil {
+		t.Fatal("CapturePaneHistory() did not propagate runner error")
+	}
+}
+
 func TestKillSessionKillsTargetSession(t *testing.T) {
 	runner := &fakeRunRunner{}
 	err := KillSession(context.Background(), runner, "claude", "123e4567-e89b-42d3-a456-426614174000")
