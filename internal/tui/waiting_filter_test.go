@@ -54,7 +54,7 @@ func TestModelDollarWithNoWaitingSessionsRendersEmptyGuidance(t *testing.T) {
 		t.Fatalf("rows under $ with no probe results = %+v, want none", value.rows)
 	}
 	content := ansi.Strip(value.View().Content)
-	if !strings.Contains(content, "no sessions match filter · esc to clear") {
+	if !strings.Contains(content, "no sessions need input · esc to clear") {
 		t.Fatalf("empty $ filter view missing guidance: %q", content)
 	}
 }

@@ -139,7 +139,7 @@ func (value model) sessionLines(width int) ([]string, int) {
 			return []string{fitLine(fmt.Sprintf("  no matches for %q · esc to clear", value.query), width)}, 0
 		}
 		if value.filterActive() {
-			return []string{fitLine("  no sessions match filter · esc to clear", width)}, 0
+			return []string{fitLine("  "+value.emptyFilterMessage(), width)}, 0
 		}
 		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
 		return []string{"  no sessions yet", "", hint}, 0
