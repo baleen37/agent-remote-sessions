@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -547,6 +548,35 @@ func (value *model) toggleStateFilter(state session.RuntimeState) {
 
 func (value model) filterActive() bool {
 	return len(value.stateFilter) > 0 || value.waitingFilter
+}
+
+// emptyFilterMessage names the active state/needs-input filters so the empty
+// list explains why, e.g. "no attached / running sessions · esc to clear".
+// A needs-input-only filter reads as "no sessions need input" instead, since
+// "no needs-input sessions" doesn't scan as English; combined with a state
+// filter it folds into the joined list as "needs-input". If sessions are also
+// stale-hidden, esc to clear isn't the whole story, so a suffix names the a
+// key as the other recovery path.
+func (value model) emptyFilterMessage() string {
+	var names []string
+	for _, state := range []session.RuntimeState{session.RuntimeAttached, session.RuntimeRunning, session.RuntimeSaved} {
+		if value.stateFilter[state] {
+			names = append(names, string(state))
+		}
+	}
+	var message string
+	if len(names) == 0 && value.waitingFilter {
+		message = "no sessions need input · esc to clear"
+	} else {
+		if value.waitingFilter {
+			names = append(names, "needs-input")
+		}
+		message = "no " + strings.Join(names, " / ") + " sessions · esc to clear"
+	}
+	if value.staleHidden > 0 {
+		message += " · a to show older"
+	}
+	return message
 }
 
 func (value *model) restoreSelection() {

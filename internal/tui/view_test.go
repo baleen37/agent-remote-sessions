@@ -835,16 +835,77 @@ func TestHeaderShowsFilterIndicatorWhenActive(t *testing.T) {
 	}
 }
 
-func TestEmptyFilterResultShowsGuidance(t *testing.T) {
+func TestEmptyFilterResultNamesActiveFilters(t *testing.T) {
+	tests := []struct {
+		name          string
+		stateFilter   map[session.RuntimeState]bool
+		waitingFilter bool
+		want          string
+	}{
+		{
+			name:        "single state filter: attached",
+			stateFilter: map[session.RuntimeState]bool{session.RuntimeAttached: true},
+			want:        "no attached sessions · esc to clear",
+		},
+		{
+			name:        "single state filter: running",
+			stateFilter: map[session.RuntimeState]bool{session.RuntimeRunning: true},
+			want:        "no running sessions · esc to clear",
+		},
+		{
+			name:        "single state filter: saved",
+			stateFilter: map[session.RuntimeState]bool{session.RuntimeSaved: true},
+			want:        "no saved sessions · esc to clear",
+		},
+		{
+			name: "multiple state filters joined",
+			stateFilter: map[session.RuntimeState]bool{
+				session.RuntimeAttached: true,
+				session.RuntimeRunning:  true,
+			},
+			want: "no attached / running sessions · esc to clear",
+		},
+		{
+			name:          "needs-input filter alone",
+			waitingFilter: true,
+			want:          "no sessions need input · esc to clear",
+		},
+		{
+			name:          "needs-input combined with a state filter",
+			stateFilter:   map[session.RuntimeState]bool{session.RuntimeAttached: true},
+			waitingFilter: true,
+			want:          "no attached / needs-input sessions · esc to clear",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := readyModel()
+			model.width = 120
+			model.result.Sessions = nil
+			model.stateFilter = test.stateFilter
+			model.waitingFilter = test.waitingFilter
+			model.refreshVisible()
+			if len(model.rows) != 0 {
+				t.Fatalf("rows with active filter = %+v, want none", model.rows)
+			}
+			content := ansi.Strip(model.View().Content)
+			if !strings.Contains(content, test.want) {
+				t.Fatalf("empty filter view missing guidance %q: %q", test.want, content)
+			}
+		})
+	}
+}
+
+func TestEmptyFilterResultKeepsSearchMessageUnchanged(t *testing.T) {
 	model := readyModel()
 	model.width = 120
-	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "@"}))
-	if len(model.rows) != 0 {
-		t.Fatalf("rows with no running sessions = %+v, want none", model.rows)
-	}
+	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "/"}))
+	model.query = "nonexistent-query"
+	model.refreshVisible()
 	content := ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "no sessions match filter · esc to clear") {
-		t.Fatalf("empty filter view missing guidance: %q", content)
+	if !strings.Contains(content, `no matches for "nonexistent-query" · esc to clear`) {
+		t.Fatalf("empty search view missing guidance: %q", content)
 	}
 }
 
@@ -911,9 +972,9 @@ func TestFooterHelpIncludesHelpHint(t *testing.T) {
 
 func TestFooterAtWideWidthShowsAllHints(t *testing.T) {
 	model := readyModel()
-	model.width = 140
+	model.width = 170
 	content := ansi.Strip(model.View().Content)
-	for _, want := range []string{"!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "? help"} {
+	for _, want := range []string{"!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "a older", "? help"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("wide footer missing %q: %q", want, content)
 		}
