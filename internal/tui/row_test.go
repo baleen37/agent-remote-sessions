@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
@@ -29,6 +30,104 @@ func TestWideRowsAlignRuntimeAndAgeColumns(t *testing.T) {
 		if first, second := renderedColumn(rows[0], column), renderedColumn(rows[1], column); first != second {
 			t.Fatalf("%s columns = (%d, %d), rows = %q", column, first, second, rows)
 		}
+	}
+}
+
+func TestCJKTitleRowFillsUsableWidthInsideInset(t *testing.T) {
+	for _, width := range []int{120, 140} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			value := readyModel()
+			value.width, value.height, value.noColor = width, 24, true
+			items := twoSessions()
+			items[0].Title = "인증 플로우 리팩터링"
+			value.result.Sessions = items
+			value.refreshVisible()
+
+			inset, usable := contentFrame(value.width)
+			for _, line := range strings.Split(value.View().Content, "\n") {
+				if !strings.Contains(line, "인증") {
+					continue
+				}
+				if got := ansi.StringWidth(line); got != inset+usable {
+					t.Fatalf("row width = %d, want inset %d + usable %d: %q", got, inset, usable, line)
+				}
+			}
+		})
+	}
+}
+
+func TestCJKProjectHeaderFillsUsableWidthInsideInset(t *testing.T) {
+	for _, width := range []int{120, 140} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			value := readyModel()
+			value.width, value.height, value.noColor = width, 24, true
+			items := twoSessions()
+			items[0].CWD = "/work/인증-서비스"
+			value.result.Sessions = items
+			value.refreshVisible()
+
+			inset, usable := contentFrame(value.width)
+			found := false
+			for _, line := range strings.Split(value.View().Content, "\n") {
+				if !strings.Contains(line, "▾ 인증-서비스") {
+					continue
+				}
+				found = true
+				if got := ansi.StringWidth(line); got != inset+usable {
+					t.Fatalf("header width = %d, want inset %d + usable %d: %q", got, inset, usable, line)
+				}
+			}
+			if !found {
+				t.Fatalf("no header line contains the CJK project name:\n%s", value.View().Content)
+			}
+		})
+	}
+}
+
+func TestCJKTitleTruncatesAtCellBoundaryWithoutExceedingContract(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	items := twoSessions()
+	items[0].Title = "인증 플로우 리팩터링 및 세션 상태 동기화 작업 진행중"
+	value.result.Sessions = items
+	value.refreshVisible()
+
+	sawOddTitleWidth := false
+	for width := 28; width <= 40; width++ {
+		layout := newRowLayout(items, width, value.deps.Now(), value.deps.LocalTarget, value.pins)
+		if layout.title%2 == 1 {
+			sawOddTitleWidth = true
+		}
+		line := value.renderRow(listRow{kind: rowSession, session: items[0], last: true}, false, layout)
+		if got := ansi.StringWidth(line); got != width {
+			t.Fatalf("width=%d: row rendered at %d, want exactly %d: %q", width, got, width, line)
+		}
+		if plain := ansi.Strip(line); !utf8.ValidString(plain) {
+			t.Fatalf("width=%d: truncated row is not valid UTF-8, a 2-cell rune was split: %q", width, plain)
+		}
+	}
+	if !sawOddTitleWidth {
+		t.Fatalf("no swept width produced an odd title column; the 2-cell boundary case was not exercised")
+	}
+}
+
+func TestCJKSelectedRowKeepsBackgroundAcrossUsableWidth(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	items := twoSessions()
+	items[0].Title = "인증 플로우 리팩터링"
+	value.result.Sessions = items
+	value.refreshVisible()
+
+	_, usable := contentFrame(value.width)
+	layout := newRowLayout(rowSessions(value.rows), usable, value.deps.Now(), value.deps.LocalTarget, value.pins)
+	line := value.renderRow(value.rows[1], true, layout)
+
+	if missing := cellsWithoutBackground(line); len(missing) > 0 {
+		t.Fatalf("selected background missing from cells %v: %q", missing, line)
+	}
+	if got := ansi.StringWidth(line); got != usable {
+		t.Fatalf("selected width = %d, want usable %d", got, usable)
 	}
 }
 
