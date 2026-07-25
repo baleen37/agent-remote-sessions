@@ -225,7 +225,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	content := model.View().Content
 	plain := ansi.Strip(content)
 	for _, want := range []string{
-		"ars", "1 active", "1 recent", "▾ ars · server (1)", "▾ api · server (1)", "claude", "server",
+		"ars", "1 active", "1 recent", "▾ ars (1)", "▾ api (1)", "claude", "server",
 		"attached(1)", "↑↓/jk move",
 	} {
 		if !strings.Contains(plain, want) {
@@ -263,7 +263,7 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	header := lineContaining(t, lines, "ars  1 active · 1 recent")
 	firstHeader := lineContaining(t, lines, "▾ ars (1)")
 	activeRow := lineContaining(t, lines, "attached(1)")
-	secondHeader := lineContaining(t, lines, "▾ api · server (1)")
+	secondHeader := lineContaining(t, lines, "▾ api (1)")
 	recentRow := lineContaining(t, lines, "API repair")
 	details := lineContaining(t, lines, "/work/ars")
 	help := lineContaining(t, lines, "↑↓/jk move")
@@ -464,10 +464,8 @@ func TestNarrowRowKeepsLongTitleLocationRuntimeAndActivityVisible(t *testing.T) 
 	item.Host = "remote-host-" + strings.Repeat("a", session.MaxHostBytes-len("remote-host-"))
 	item.Title = "critical-title-" + strings.Repeat("b", 200)
 	model.result.Sessions = []session.Session{item}
-	// The prior selection pointed at a session on a different host, so it no
-	// longer resolves to any row in the new (host, project) group; reset it
-	// rather than lean on that fallback. restoreSelection then lands on the
-	// session row directly, since a zero selectedRef selects the first one.
+	// Changing the host changes the session identity, so reset the stale
+	// selection before rebuilding the rows.
 	model.selected = 0
 	model.selectedRef = rowRef{}
 	model.refreshVisible()
@@ -535,7 +533,7 @@ func TestNoColorPreservesSelectionAndStateWithoutANSI(t *testing.T) {
 	if ansi.Strip(content) != content {
 		t.Fatalf("NO_COLOR emitted ANSI: %q", content)
 	}
-	for _, want := range []string{"> └─ ●", "attached(1)", "▾ api · server (1)", "○"} {
+	for _, want := range []string{"> └─ ●", "attached(1)", "▾ api (1)", "○"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("NO_COLOR missing %q: %q", want, content)
 		}
@@ -548,7 +546,7 @@ func TestViewGroupsSessionsUnderProjectHeaders(t *testing.T) {
 	value.width, value.height, value.noColor = 120, 24, true
 	plain := ansi.Strip(value.View().Content)
 	arsAt := strings.Index(plain, "▾ ars (1)")
-	apiAt := strings.Index(plain, "▾ api · server (1)")
+	apiAt := strings.Index(plain, "▾ api (1)")
 	if arsAt == -1 || apiAt == -1 || arsAt > apiAt {
 		t.Fatalf("headers missing or misordered:\n%s", plain)
 	}
@@ -563,7 +561,7 @@ func TestViewGroupsSessionsUnderProjectHeaders(t *testing.T) {
 func TestViewCollapsedHeaderShowsCountAndActiveMarker(t *testing.T) {
 	value := readyModel()
 	value.width, value.height, value.noColor = 120, 24, true
-	value.toggle("localhost", "ars")
+	value.toggle("ars")
 	plain := ansi.Strip(value.View().Content)
 	if !strings.Contains(plain, "▸ ars (1) ●") {
 		t.Fatalf("collapsed header missing marker:\n%s", plain)
@@ -640,7 +638,7 @@ func openAllGroups(value model) model {
 		value.groupMode = make(map[string]groupMode)
 	}
 	for _, item := range value.result.Sessions {
-		value.groupMode[groupKey(item.Host, session.Project(item.CWD))] = groupModeOpen
+		value.groupMode[session.Project(item.CWD)] = groupModeOpen
 	}
 	value.refreshVisible()
 	return value

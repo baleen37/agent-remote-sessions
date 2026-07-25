@@ -177,18 +177,6 @@ func rowSessions(rows []listRow) []session.Session {
 	return items
 }
 
-// groupLabel names a (host, project) group for display: the project alone
-// when it's local, "project · host" when it's remote — the same disambiguation
-// a group header needs, reused wherever a group is named for the user (e.g.
-// kill status text) so two same-named groups on different hosts never read
-// as one.
-func (value model) groupLabel(host, project string) string {
-	if host == value.deps.LocalTarget {
-		return project
-	}
-	return project + " · " + host
-}
-
 func (value model) renderHeader(row listRow, selected bool, width int) string {
 	cursor := "  "
 	if selected {
@@ -201,8 +189,7 @@ func (value model) renderHeader(row listRow, selected bool, width int) string {
 	if row.collapsed {
 		symbol = "▸"
 	}
-	label := value.groupLabel(row.host, row.project)
-	text := fmt.Sprintf("%s %s (%d)", symbol, label, row.count)
+	text := fmt.Sprintf("%s %s (%d)", symbol, row.project, row.count)
 	if row.collapsed && row.state != session.RuntimeSaved {
 		text += " " + value.stateText(stateSymbol(row.state), row.state)
 	}

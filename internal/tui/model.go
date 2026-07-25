@@ -524,10 +524,10 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		}
 		switch row.kind {
 		case rowHeader:
-			value.toggle(row.host, row.project)
+			value.toggle(row.project)
 			return value, nil
 		case rowMore:
-			value.openGroup(row.host, row.project)
+			value.openGroup(row.project)
 			return value, nil
 		}
 		command, err := value.deps.Attach(value.ctx, row.session)
@@ -541,9 +541,9 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 		if row, ok := value.selectedRow(); ok {
 			switch row.kind {
 			case rowHeader:
-				value.toggle(row.host, row.project)
+				value.toggle(row.project)
 			case rowMore:
-				value.openGroup(row.host, row.project)
+				value.openGroup(row.project)
 			}
 		}
 		return value, nil
@@ -746,7 +746,7 @@ func (value *model) restoreSelection() {
 			value.selectRow(index)
 			return
 		}
-		if ref.kind != rowSession && ref.project == value.selectedRef.project && ref.host == value.selectedRef.host {
+		if ref.kind != rowSession && ref.project == value.selectedRef.project {
 			value.selectRow(index)
 			return
 		}
@@ -757,7 +757,7 @@ func (value *model) restoreSelection() {
 	}
 	if value.selectedRef.kind != rowHeader {
 		for index, row := range value.rows {
-			if row.kind == rowHeader && row.project == value.selectedRef.project && row.host == value.selectedRef.host {
+			if row.kind == rowHeader && row.project == value.selectedRef.project {
 				value.selectRow(index)
 				return
 			}
@@ -794,34 +794,33 @@ func (value model) selectedRow() (listRow, bool) {
 	return value.rows[value.selected], true
 }
 
-func (value *model) toggle(host, project string) {
+func (value *model) toggle(project string) {
 	if value.groupMode == nil {
 		value.groupMode = make(map[string]groupMode)
 	}
-	key := groupKey(host, project)
-	if value.projectExpanded(host, project) {
-		value.groupMode[key] = groupModeClosed
+	if value.projectExpanded(project) {
+		value.groupMode[project] = groupModeClosed
 	} else {
-		value.groupMode[key] = groupModeOpen
+		value.groupMode[project] = groupModeOpen
 	}
-	value.selectedRef = rowRef{kind: rowHeader, project: project, host: host}
+	value.selectedRef = rowRef{kind: rowHeader, project: project}
 	value.refreshVisible()
 }
 
-func (value model) projectExpanded(host, project string) bool {
+func (value model) projectExpanded(project string) bool {
 	for _, row := range value.rows {
-		if row.kind == rowHeader && row.project == project && row.host == host {
+		if row.kind == rowHeader && row.project == project {
 			return !row.collapsed
 		}
 	}
 	return false
 }
 
-func (value *model) openGroup(host, project string) {
+func (value *model) openGroup(project string) {
 	if value.groupMode == nil {
 		value.groupMode = make(map[string]groupMode)
 	}
-	value.groupMode[groupKey(host, project)] = groupModeOpen
+	value.groupMode[project] = groupModeOpen
 	index := value.selected
 	value.refreshVisible()
 	if index < len(value.rows) {
@@ -837,11 +836,11 @@ func (value *model) foldLeft() {
 		return
 	}
 	if row.kind != rowHeader {
-		value.selectHeader(row.host, row.project)
+		value.selectHeader(row.project)
 		return
 	}
 	if !row.collapsed {
-		value.toggle(row.host, row.project)
+		value.toggle(row.project)
 	}
 }
 
@@ -854,21 +853,21 @@ func (value *model) foldRight() {
 	}
 	switch row.kind {
 	case rowMore:
-		value.openGroup(row.host, row.project)
+		value.openGroup(row.project)
 	case rowHeader:
 		if row.collapsed {
-			value.toggle(row.host, row.project)
+			value.toggle(row.project)
 			return
 		}
-		if next := value.selected + 1; next < len(value.rows) && value.rows[next].project == row.project && value.rows[next].host == row.host {
+		if next := value.selected + 1; next < len(value.rows) && value.rows[next].project == row.project {
 			value.selectRow(next)
 		}
 	}
 }
 
-func (value *model) selectHeader(host, project string) {
+func (value *model) selectHeader(project string) {
 	for index, row := range value.rows {
-		if row.kind == rowHeader && row.project == project && row.host == host {
+		if row.kind == rowHeader && row.project == project {
 			value.selectRow(index)
 			return
 		}
