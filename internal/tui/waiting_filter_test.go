@@ -196,14 +196,14 @@ func TestHeaderShowsWaitingFilterIndicator(t *testing.T) {
 	value.noColor = true
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Text: "$"}))
 	content := ansi.Strip(value.View().Content)
-	if !strings.Contains(content, "· filter "+activityWaitingSymbol) {
-		t.Fatalf("header missing the needs-input filter indicator: %q", content)
+	if !strings.Contains(content, "["+activityWaitingSymbol+" 1]") {
+		t.Fatalf("pill bar missing the needs-input active pill: %q", content)
 	}
 
 	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Text: "!"}))
 	content = ansi.Strip(value.View().Content)
-	if !strings.Contains(content, "· filter ●"+activityWaitingSymbol) {
-		t.Fatalf("header missing the combined needs-input indicator: %q", content)
+	if !strings.Contains(content, "["+activityWaitingSymbol+" 1]") || !strings.Contains(content, "[● 1]") {
+		t.Fatalf("pill bar missing the combined needs-input and attached active pills: %q", content)
 	}
 }
 

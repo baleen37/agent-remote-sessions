@@ -397,10 +397,10 @@ func TestModelPageStepMatchesVisibleBodyHeight(t *testing.T) {
 	model, _ = updateModel(model, tea.WindowSizeMsg{Width: 120, Height: 20})
 	start := model.selected
 
-	// height 20 minus header(2) + list gap(1) + one detail line + no
-	// search line + help block(2) leaves a 14-row session body.
+	// height 20 minus header+pillbar+gap(3) + one detail line + no
+	// search line + help block(2) leaves a 13-row session body.
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
-	if want := start + 14; model.selected != want {
+	if want := start + 13; model.selected != want {
 		t.Fatalf("PgDn selected = %d, want %d", model.selected, want)
 	}
 }
