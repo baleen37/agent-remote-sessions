@@ -51,7 +51,7 @@ var helpBindings = []helpBinding{
 	{key: "1-9", text: "jump to group", featured: []helpContext{helpGroupRow}},
 	{key: "PgUp / PgDn · Ctrl+U / Ctrl+D", text: "page up / down"},
 	{key: "/", text: "search"},
-	{key: "! / @ / # / $", text: "filter attached / running / saved / needs input", featured: []helpContext{helpFilterActive}},
+	{key: "! / @ / # / $", text: "filter attached / running / idle / needs input", featured: []helpContext{helpFilterActive}},
 	{key: "a", text: "show / hide sessions older than 7d"},
 	{
 		key:            "p",
@@ -184,7 +184,7 @@ func (value model) helpOverlay(inset, width int) tea.View {
 		lines = append(lines, "", value.mutedText("all keys:", width))
 	}
 	lines = append(lines, value.helpRows(rest, keyWidth, width)...)
-	legend := "● attached · ◐ running · " + activityWaitingSymbol + " needs input · ○ saved"
+	legend := "● attached · ◐ running · " + activityWaitingSymbol + " needs input · ○ idle"
 	lines = append(lines, "", value.mutedText(legend, width), value.mutedText("? / esc / q to close", width))
 	margin := strings.Repeat(" ", inset)
 	for index, line := range lines {

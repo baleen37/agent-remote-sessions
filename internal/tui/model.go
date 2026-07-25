@@ -24,9 +24,9 @@ type Result struct {
 }
 
 type Update struct {
-	Result Result
-	Stale  []string
-	Done   bool
+	Result  Result
+	Loading []string
+	Done    bool
 }
 
 type ExecCommand interface {
@@ -96,7 +96,7 @@ type model struct {
 	collecting        bool
 	spinner           int
 	generation        uint64
-	stale             map[string]struct{}
+	loading           []string
 	cancelCollect     context.CancelFunc
 	initialCollect    tea.Cmd
 	status            string
@@ -147,10 +147,7 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 			return value, nil
 		}
 		value.result = message.update.Result
-		value.stale = make(map[string]struct{}, len(message.update.Stale))
-		for _, target := range message.update.Stale {
-			value.stale[target] = struct{}{}
-		}
+		value.loading = message.update.Loading
 		if message.update.Done {
 			value.collecting = false
 		}
@@ -458,6 +455,7 @@ func (value model) restartCollection() (model, tea.Cmd) {
 	value.cancelCollect = cancel
 	value.generation++
 	value.collecting = true
+	value.loading = nil
 	value.spinner = 0
 	value.killPending = false
 	value.killTargets = nil
@@ -556,7 +554,9 @@ func (value model) filterActive() bool {
 // list explains why, e.g. "no attached / running sessions · esc to clear".
 // A needs-input-only filter reads as "no sessions need input" instead, since
 // "no needs-input sessions" doesn't scan as English; combined with a state
-// filter it folds into the joined list as "needs-input".
+// filter it folds into the joined list as "needs-input". If sessions are also
+// stale-hidden, esc to clear isn't the whole story, so a suffix names the a
+// key as the other recovery path.
 func (value model) emptyFilterMessage() string {
 	var names []string
 	for _, state := range []session.RuntimeState{session.RuntimeAttached, session.RuntimeRunning, session.RuntimeSaved} {
@@ -564,13 +564,19 @@ func (value model) emptyFilterMessage() string {
 			names = append(names, string(state))
 		}
 	}
+	var message string
 	if len(names) == 0 && value.waitingFilter {
-		return "no sessions need input · esc to clear"
+		message = "no sessions need input · esc to clear"
+	} else {
+		if value.waitingFilter {
+			names = append(names, "needs-input")
+		}
+		message = "no " + strings.Join(names, " / ") + " sessions · esc to clear"
 	}
-	if value.waitingFilter {
-		names = append(names, "needs-input")
+	if value.staleHidden > 0 {
+		message += " · a to show older"
 	}
-	return "no " + strings.Join(names, " / ") + " sessions · esc to clear"
+	return message
 }
 
 func (value *model) restoreSelection() {

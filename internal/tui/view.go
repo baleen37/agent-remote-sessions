@@ -141,10 +141,14 @@ func (value model) sessionLines(width int) ([]string, int) {
 		if value.filterActive() {
 			return []string{fitLine("  "+value.emptyFilterMessage(), width)}, 0
 		}
+		if value.staleHidden > 0 {
+			message := fmt.Sprintf("  all %d sessions are older than 7d · a to show", value.staleHidden)
+			return []string{fitLine(message, width)}, 0
+		}
 		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
 		return []string{"  no sessions yet", "", hint}, 0
 	}
-	layout := newRowLayout(value.result.Sessions, value.stale, width, value.deps.Now(), value.deps.LocalTarget, value.pins)
+	layout := newRowLayout(value.result.Sessions, width, value.deps.Now(), value.deps.LocalTarget, value.pins)
 	lines := make([]string, 0, len(value.rows))
 	for index, row := range value.rows {
 		selected := index == value.selected
@@ -312,7 +316,7 @@ func (value model) header() string {
 		stats += fmt.Sprintf(" · %d peers", peers)
 	}
 	if value.collecting {
-		stats += " · " + spinnerFrames[value.spinner%len(spinnerFrames)]
+		stats += " · " + spinnerFrames[value.spinner%len(spinnerFrames)] + loadingLabel(value.loading)
 	}
 	if symbols := value.filterSymbols(); symbols != "" {
 		stats += " · filter " + symbols
@@ -321,6 +325,21 @@ func (value model) header() string {
 		return "ars" + stats
 	}
 	return value.styles.title.Render("ars") + value.styles.muted.Render(stats)
+}
+
+// loadingLabel names the hosts still being collected next to the spinner. Up
+// to two hosts are listed by target; more collapse into a count so the header
+// stays one line. Before the first snapshot arrives the host list is unknown
+// and the spinner stands alone.
+func loadingLabel(loading []string) string {
+	switch {
+	case len(loading) == 0:
+		return ""
+	case len(loading) <= 2:
+		return " loading " + strings.Join(loading, ", ")
+	default:
+		return fmt.Sprintf(" loading %d hosts", len(loading))
+	}
 }
 
 // filterSymbols returns the state symbols for the active filter, in
@@ -559,7 +578,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"a older", "P pin", "m msg", "x kill", "!@#$ filter", "1-9 group", "g/G top/end", "h/l fold", "f full"}
+	droppable := []string{"g/G top/end", "P pin", "m msg", "x kill", "!@#$ filter", "a older", "1-9 group", "h/l fold", "f full"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {

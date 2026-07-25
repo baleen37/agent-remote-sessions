@@ -743,26 +743,26 @@ func TestModelAttachCompletionSupersedesCollectionInFlight(t *testing.T) {
 	}
 }
 
-func TestModelAppliesIncrementalUpdatesAndStaleHostsUntilDone(t *testing.T) {
+func TestModelAppliesIncrementalUpdatesAndLoadingHostsUntilDone(t *testing.T) {
 	items := twoSessions()
 	model := readyModel()
 	model.collecting = true
 	model.generation = 2
 
 	channel := make(chan Update, 2)
-	partial := Update{Result: Result{Sessions: items}, Stale: []string{"server"}}
+	partial := Update{Result: Result{Sessions: items}, Loading: []string{"server"}}
 	model, command := updateModel(model, collectUpdateMsg{generation: 2, update: partial, channel: channel})
 	if command == nil || !model.collecting {
 		t.Fatalf("partial update command=%v collecting=%t", command, model.collecting)
 	}
-	if _, ok := model.stale["server"]; !ok || len(model.stale) != 1 {
-		t.Fatalf("stale set = %#v", model.stale)
+	if len(model.loading) != 1 || model.loading[0] != "server" {
+		t.Fatalf("loading = %#v", model.loading)
 	}
 
 	final := Update{Result: Result{Sessions: items[:1]}, Done: true}
 	model, _ = updateModel(model, collectUpdateMsg{generation: 2, update: final, channel: channel})
-	if model.collecting || len(model.stale) != 0 || len(model.result.Sessions) != 1 {
-		t.Fatalf("final update not applied: collecting=%t stale=%#v", model.collecting, model.stale)
+	if model.collecting || len(model.loading) != 0 || len(model.result.Sessions) != 1 {
+		t.Fatalf("final update not applied: collecting=%t loading=%#v", model.collecting, model.loading)
 	}
 }
 

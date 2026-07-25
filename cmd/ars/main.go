@@ -53,7 +53,7 @@ func main() {
 		return ssh.Collect(ctx, sshRunner, assets, host.Target, collectOptions)
 	}
 	collectHosts := func(ctx context.Context, hosts []app.Host) app.Result {
-		return app.CollectHosts(ctx, hosts, 4, collectHost)
+		return app.CollectHosts(ctx, hosts, app.DefaultWorkerLimit, collectHost)
 	}
 	hostCache := app.HostCache{}
 	if cacheDir, err := app.CachePath(); err == nil {
@@ -80,7 +80,7 @@ func main() {
 					updates := make(chan tui.Update)
 					go func() {
 						defer close(updates)
-						app.CollectHostsStream(ctx, hosts, 4, collectHost, hostCache, func(snapshot app.Snapshot) {
+						app.CollectHostsStream(ctx, hosts, app.DefaultWorkerLimit, collectHost, hostCache, func(snapshot app.Snapshot) {
 							update := tui.Update{
 								Result: tui.Result{
 									Hosts:    snapshot.Result.Hosts,
@@ -88,8 +88,8 @@ func main() {
 									Errors:   snapshot.Result.Errors,
 									Warnings: snapshot.Result.Warnings,
 								},
-								Stale: snapshot.Stale,
-								Done:  snapshot.Done,
+								Loading: snapshot.Loading,
+								Done:    snapshot.Done,
 							}
 							select {
 							case updates <- update:
