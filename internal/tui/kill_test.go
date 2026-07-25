@@ -367,7 +367,7 @@ func groupKillModel(t *testing.T) model {
 	value.result.Sessions = sessions
 	value.refreshVisible()
 	project := session.Project(sessions[0].CWD)
-	value.selectHeader(project)
+	value.selectHeader("server", project)
 	row, ok := value.selectedRow()
 	if !ok || row.kind != rowHeader || row.project != project {
 		t.Fatalf("expected the %q header selected: %+v", project, row)
@@ -691,7 +691,7 @@ func TestModelXOnHeaderWithNoLiveSessionsIsNoop(t *testing.T) {
 	model.result.Sessions = sessions
 	model.refreshVisible()
 	project := session.Project(sessions[0].CWD)
-	model.selectHeader(project)
+	model.selectHeader("server", project)
 	row, ok := model.selectedRow()
 	if !ok || row.kind != rowHeader || row.project != project {
 		t.Fatalf("expected the %q header selected: %+v", project, row)
@@ -717,7 +717,7 @@ func TestModelGroupKillRespectsTheActiveSearchQuery(t *testing.T) {
 	model.query = "session 00"
 	model.refreshVisible()
 	project := session.Project(model.result.Sessions[0].CWD)
-	model.selectHeader(project)
+	model.selectHeader("server", project)
 	row, ok := model.selectedRow()
 	if !ok || row.kind != rowHeader {
 		t.Fatalf("expected the %q header selected: %+v", project, row)
@@ -743,7 +743,7 @@ func TestModelGroupKillRespectsTheActiveStateFilter(t *testing.T) {
 	model.stateFilter = map[session.RuntimeState]bool{session.RuntimeSaved: true}
 	model.refreshVisible()
 	project := session.Project(model.result.Sessions[0].CWD)
-	model.selectHeader(project)
+	model.selectHeader("server", project)
 	row, ok := model.selectedRow()
 	if !ok || row.kind != rowHeader {
 		t.Fatalf("expected the %q header selected: %+v", project, row)
@@ -763,7 +763,7 @@ func TestModelGroupKillCountsCollapsedGroupMembers(t *testing.T) {
 	row, _ := model.selectedRow()
 	// Collapse the group: x must still target every live member, not only the
 	// rows currently on screen.
-	model.toggle(row.project)
+	model.toggle(row.host, row.project)
 	collapsed, ok := model.selectedRow()
 	if !ok || collapsed.kind != rowHeader || !collapsed.collapsed {
 		t.Fatalf("expected a collapsed header selected: %+v", collapsed)

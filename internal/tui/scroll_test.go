@@ -97,7 +97,7 @@ func TestScrollIndicatorCountsHiddenLines(t *testing.T) {
 	// shown session/header rows plus the hidden count must equal the whole list.
 	shown := 0
 	for _, line := range strings.Split(content, "\n") {
-		if strings.Contains(line, "session ") || strings.Contains(line, "api (20)") {
+		if strings.Contains(line, "session ") || strings.Contains(line, "api · server (20)") {
 			shown++
 		}
 	}

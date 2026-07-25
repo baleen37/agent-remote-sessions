@@ -8,8 +8,12 @@ import (
 )
 
 func treeSession(project, id string, state session.RuntimeState, updated time.Time) session.Session {
+	return treeSessionOnHost("localhost", project, id, state, updated)
+}
+
+func treeSessionOnHost(host, project, id string, state session.RuntimeState, updated time.Time) session.Session {
 	return session.Session{
-		Host: "localhost",
+		Host: host,
 		Candidate: session.Candidate{
 			Provider:  session.Claude,
 			NativeID:  id,
@@ -28,7 +32,7 @@ func TestBuildRowsGroupsAndOrdersByStateThenActivity(t *testing.T) {
 		treeSession("ars", "ars-saved", session.RuntimeSaved, base),
 		treeSession("ars", "ars-live", session.RuntimeRunning, base.Add(-2*time.Hour)),
 	}
-	modes := map[string]groupMode{"ars": groupModeOpen, "blog": groupModeOpen}
+	modes := map[string]groupMode{groupKey("localhost", "ars"): groupModeOpen, groupKey("localhost", "blog"): groupModeOpen}
 	rows := buildRows(items, modes, false, nil)
 	want := []struct {
 		kind    rowKind
@@ -67,7 +71,7 @@ func TestBuildRowsClosedHidesSessionsUnlessSearching(t *testing.T) {
 	items := []session.Session{
 		treeSession("ars", "ars-live", session.RuntimeRunning, base),
 	}
-	modes := map[string]groupMode{"ars": groupModeClosed}
+	modes := map[string]groupMode{groupKey("localhost", "ars"): groupModeClosed}
 	rows := buildRows(items, modes, false, nil)
 	if len(rows) != 1 || !rows[0].collapsed {
 		t.Fatalf("closed rows = %+v", rows)
@@ -124,6 +128,76 @@ func TestBuildRowsAutoAllActiveHasNoMoreRow(t *testing.T) {
 	rows := buildRows(items, nil, false, nil)
 	if len(rows) != 3 || rows[2].kind != rowSession || !rows[2].last {
 		t.Fatalf("rows = %+v, want all active sessions and no more row", rows)
+	}
+}
+
+func TestBuildRowsSplitsSameBasenameByHost(t *testing.T) {
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSessionOnHost("localhost", "infra", "infra-local", session.RuntimeRunning, base),
+		treeSessionOnHost("server", "infra", "infra-remote", session.RuntimeRunning, base),
+	}
+	rows := buildRows(items, nil, false, nil)
+	var headers []listRow
+	for _, row := range rows {
+		if row.kind == rowHeader {
+			headers = append(headers, row)
+		}
+	}
+	if len(headers) != 2 {
+		t.Fatalf("headers = %+v, want 2 separate groups for the same basename on different hosts", headers)
+	}
+	for _, header := range headers {
+		if header.count != 1 {
+			t.Fatalf("header %+v count = %d, want 1 (groups must not merge across hosts)", header, header.count)
+		}
+	}
+}
+
+func TestGroupKeyIsCollisionProofAcrossHostAndProjectBoundaries(t *testing.T) {
+	// "a" + "\x00" + "bc" must not collide with "ab" + "\x00" + "c" and similar
+	// splits; the NUL separator guarantees this since it cannot appear in a
+	// legal host or project string.
+	left := groupKey("a", "bc")
+	right := groupKey("ab", "c")
+	if left == right {
+		t.Fatalf("groupKey collided: %q", left)
+	}
+}
+
+func TestFoldStateIsIsolatedBetweenSameNamedGroupsOnDifferentHosts(t *testing.T) {
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSessionOnHost("localhost", "infra", "infra-local", session.RuntimeSaved, base),
+		treeSessionOnHost("server", "infra", "infra-remote", session.RuntimeSaved, base),
+	}
+	modes := map[string]groupMode{
+		groupKey("server", "infra"):    groupModeClosed,
+		groupKey("localhost", "infra"): groupModeOpen,
+	}
+	rows := buildRows(items, modes, false, nil)
+	var localHeader, remoteHeader listRow
+	var sawLocalSession bool
+	for _, row := range rows {
+		if row.kind == rowHeader {
+			if row.host == "localhost" {
+				localHeader = row
+			} else {
+				remoteHeader = row
+			}
+		}
+		if row.kind == rowSession && row.host == "localhost" {
+			sawLocalSession = true
+		}
+	}
+	if remoteHeader.collapsed != true {
+		t.Fatalf("remote infra header = %+v, want collapsed", remoteHeader)
+	}
+	if localHeader.collapsed {
+		t.Fatalf("local infra header = %+v, want open (folding remote must not affect it)", localHeader)
+	}
+	if !sawLocalSession {
+		t.Fatalf("expected local infra session row to be visible, rows = %+v", rows)
 	}
 }
 
