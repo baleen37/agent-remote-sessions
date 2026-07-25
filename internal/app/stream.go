@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/baleen37/agent-remote-sessions/internal/output"
@@ -25,7 +26,6 @@ type HostCache struct {
 func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, collector Collector, cache HostCache, emit func(Snapshot)) {
 	collections := make([]hostCollection, len(hosts))
 	hasData := make([]bool, len(hosts))
-	fromCache := make([]bool, len(hosts))
 	pending := make([]bool, len(hosts))
 	for index := range pending {
 		pending[index] = true
@@ -52,7 +52,6 @@ func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, coll
 			sessions: sessions,
 		}
 		hasData[index] = true
-		fromCache[index] = true
 	}
 
 	snapshot := func(done bool) Snapshot {
@@ -75,11 +74,13 @@ func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, coll
 		return
 	}
 
-	type completion struct {
+	type event struct {
 		index      int
 		collection hostCollection
+		early      bool
+		ack        chan struct{}
 	}
-	completions := make(chan completion)
+	events := make(chan event)
 	jobs := make(chan int)
 	workers := min(workerLimit, len(hosts))
 	var waitGroup sync.WaitGroup
@@ -88,7 +89,34 @@ func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, coll
 		go func() {
 			defer waitGroup.Done()
 			for index := range jobs {
-				completions <- completion{index: index, collection: collectHost(ctx, hosts[index], collector)}
+				emitRecent := func(discovered []session.Discovered) error {
+					sessions, err := bindSessions(hosts[index].Target, discovered)
+					if err != nil {
+						return fmt.Errorf("collector protocol: %w", err)
+					}
+					update := event{
+						index: index,
+						collection: hostCollection{
+							host:     output.HostResult{Target: hosts[index].Target, Status: output.HostOK},
+							sessions: sessions,
+						},
+						early: true,
+						ack:   make(chan struct{}),
+					}
+					select {
+					case events <- update:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					select {
+					case <-update.ack:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				collection := collectHost(ctx, hosts[index], collector, emitRecent)
+				events <- event{index: index, collection: collection}
 			}
 		}()
 	}
@@ -98,22 +126,31 @@ func CollectHostsStream(ctx context.Context, hosts []Host, workerLimit int, coll
 		}
 		close(jobs)
 		waitGroup.Wait()
-		close(completions)
+		close(events)
 	}()
 
 	remaining := len(hosts)
-	for done := range completions {
-		collection := done.collection
+	for update := range events {
+		if update.early {
+			update.collection.sessions = overlaySessions(collections[update.index].sessions, update.collection.sessions)
+			collections[update.index] = update.collection
+			hasData[update.index] = true
+			emit(snapshot(false))
+			close(update.ack)
+			continue
+		}
+
+		collection := update.collection
 		if collection.err == nil {
 			if cache.Save != nil {
-				cache.Save(hosts[done.index].Target, collection.sessions)
+				cache.Save(hosts[update.index].Target, collection.sessions)
 			}
-		} else if fromCache[done.index] {
-			collection.sessions = collections[done.index].sessions
+		} else if hasData[update.index] {
+			collection.sessions = collections[update.index].sessions
 		}
-		collections[done.index] = collection
-		hasData[done.index] = true
-		pending[done.index] = false
+		collections[update.index] = collection
+		hasData[update.index] = true
+		pending[update.index] = false
 		remaining--
 		emit(snapshot(remaining == 0))
 	}

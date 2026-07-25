@@ -141,6 +141,9 @@ func (value model) sessionLines(width int) ([]string, int) {
 		if value.filterActive() {
 			return []string{fitLine("  "+value.emptyFilterMessage(), width)}, 0
 		}
+		if value.collecting && len(value.result.Sessions) == 0 {
+			return []string{"  loading sessions…"}, 0
+		}
 		if value.staleHidden > 0 {
 			message := fmt.Sprintf("  all %d sessions are older than 7d · a to show", value.staleHidden)
 			return []string{fitLine(message, width)}, 0
@@ -320,7 +323,7 @@ func (value model) header() string {
 		stats += fmt.Sprintf(" · %d peers", peers)
 	}
 	if value.collecting {
-		stats += " · " + spinnerFrames[value.spinner%len(spinnerFrames)] + loadingLabel(value.loading)
+		stats += " · " + spinnerFrames[value.spinner%len(spinnerFrames)] + " refreshing"
 	}
 	if symbols := value.filterSymbols(); symbols != "" {
 		stats += " · filter " + symbols
@@ -329,21 +332,6 @@ func (value model) header() string {
 		return "ars" + stats
 	}
 	return value.styles.title.Render("ars") + value.styles.muted.Render(stats)
-}
-
-// loadingLabel names the hosts still being collected next to the spinner. Up
-// to two hosts are listed by target; more collapse into a count so the header
-// stays one line. Before the first snapshot arrives the host list is unknown
-// and the spinner stands alone.
-func loadingLabel(loading []string) string {
-	switch {
-	case len(loading) == 0:
-		return ""
-	case len(loading) <= 2:
-		return " loading " + strings.Join(loading, ", ")
-	default:
-		return fmt.Sprintf(" loading %d hosts", len(loading))
-	}
 }
 
 // filterSymbols returns the state symbols for the active filter, in

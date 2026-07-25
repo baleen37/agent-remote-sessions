@@ -154,7 +154,11 @@ func newE2EHarness(localHome, remoteHome string) *e2eHarness {
 		runtimeRunner: &e2eRuntimeRunner{},
 	}
 	assets := e2eAssets{data: harness.sshRunner.collectorAsset}
-	collector := func(ctx context.Context, host app.Host) ([]session.Discovered, []provider.Result, runtime.Report, error) {
+	collector := func(
+		ctx context.Context,
+		host app.Host,
+		_ func([]session.Discovered) error,
+	) ([]session.Discovered, []provider.Result, runtime.Report, error) {
 		if host.Local {
 			candidates, results, err := provider.DiscoverAll(ctx, localHome, provider.Builtin())
 			if err != nil {

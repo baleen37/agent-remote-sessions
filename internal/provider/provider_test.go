@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +15,70 @@ import (
 )
 
 const canonicalID = "123e4567-e89b-42d3-a456-426614174000"
+
+func TestNewHistoryScannerUsesCallerBuffer(t *testing.T) {
+	const lineBytes = 524_318
+	prefix := []byte(`{"type":"synthetic","payload":"`)
+	suffix := []byte("\"}\n")
+	line := append(prefix, bytes.Repeat([]byte("x"), lineBytes-len(prefix)-len(suffix))...)
+	line = append(line, suffix...)
+
+	controlReads, controlBytes := scanCountingHistory(t, line, 64*1024)
+	variantReads, variantBytes := scanCountingHistory(t, line, maxProviderLineBytes)
+	if controlReads != 6 {
+		t.Fatalf("64KiB reader calls = %d, want 6", controlReads)
+	}
+	if variantReads > 2 {
+		t.Fatalf("1MiB reader calls = %d, want at most 2", variantReads)
+	}
+	if controlBytes != len(line) || variantBytes != len(line) {
+		t.Fatalf(
+			"reader bytes = control %d variant %d, want identical %d",
+			controlBytes,
+			variantBytes,
+			len(line),
+		)
+	}
+	t.Logf(
+		"64KiB calls=%d bytes=%d; 1MiB calls=%d bytes=%d",
+		controlReads,
+		controlBytes,
+		variantReads,
+		variantBytes,
+	)
+}
+
+func scanCountingHistory(t *testing.T, line []byte, bufferBytes int) (int, int) {
+	t.Helper()
+	reader := &countingReader{reader: bytes.NewReader(line)}
+	scanner := newHistoryScanner(reader, make([]byte, bufferBytes))
+	if !scanner.Scan() {
+		t.Fatalf("Scan() = false: %v", scanner.Err())
+	}
+	if got := scanner.Bytes(); !bytes.Equal(got, line[:len(line)-1]) {
+		t.Fatalf("Scan() returned %d bytes, want %d identical bytes", len(got), len(line)-1)
+	}
+	if scanner.Scan() {
+		t.Fatal("second Scan() = true, want EOF")
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("Scanner.Err() = %v", err)
+	}
+	return reader.reads, reader.bytes
+}
+
+type countingReader struct {
+	reader io.Reader
+	reads  int
+	bytes  int
+}
+
+func (reader *countingReader) Read(buffer []byte) (int, error) {
+	reader.reads++
+	count, err := reader.reader.Read(buffer)
+	reader.bytes += count
+	return count, err
+}
 
 func TestBuiltinRegistersOnlyClaudeThenCodex(t *testing.T) {
 	adapters := Builtin()
@@ -207,6 +273,18 @@ type discoveryAdapter struct {
 func (adapter *discoveryAdapter) Name() session.Provider { return adapter.name }
 
 func (adapter *discoveryAdapter) Discover(context.Context, string) Result { return adapter.result }
+
+func (adapter *discoveryAdapter) DiscoverStream(
+	_ context.Context,
+	_ string,
+	_ time.Time,
+	emit func(Phase, Result) error,
+) error {
+	if err := emit(PhaseRecent, adapter.result); err != nil {
+		return err
+	}
+	return emit(PhaseComplete, adapter.result)
+}
 
 func (adapter *discoveryAdapter) ValidateID(string) error { return nil }
 

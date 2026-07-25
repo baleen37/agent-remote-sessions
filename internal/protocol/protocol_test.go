@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"strconv"
@@ -60,7 +61,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRoundTripARS2RuntimeState(t *testing.T) {
+func TestRoundTripARS3RuntimeState(t *testing.T) {
 	discovered := []session.Discovered{
 		{Candidate: validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111"), Runtime: session.Runtime{State: session.RuntimeSaved}},
 		{Candidate: validCandidate(session.Codex, "22222222-2222-2222-2222-222222222222"), Runtime: session.Runtime{
@@ -74,7 +75,7 @@ func TestRoundTripARS2RuntimeState(t *testing.T) {
 	if err := Encode(&encoded, testNonce, discovered, results, runtime.Report{Status: runtime.StatusOK}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(encoded.String(), "ARS/2 BEGIN ") {
+	if !strings.HasPrefix(encoded.String(), "ARS/3 BEGIN ") {
 		t.Fatalf("protocol = %q", encoded.String())
 	}
 	got, _, report, err := Decode(&encoded, testNonce, DefaultLimits())
@@ -145,16 +146,18 @@ func TestDecodeRejectsImpossibleSummarySessionCombinations(t *testing.T) {
 func TestDecodeRejectsEnvelopeViolations(t *testing.T) {
 	valid := validTranscript(t)
 	tests := map[string][]byte{
-		"wrong BEGIN nonce":   []byte("ARS/2 BEGIN ffffffffffffffffffffffffffffffff\n"),
-		"missing BEGIN nonce": []byte("ARS/2 BEGIN\n"),
-		"unknown version":     []byte("ARS/1 BEGIN " + testNonce + "\n"),
-		"unknown frame":       []byte("ARS/2 BEGIN " + testNonce + "\n{\"type\":\"prompt\",\"text\":\"must not cross\"}\n"),
-		"invalid UTF-8":       append([]byte("ARS/2 BEGIN "+testNonce+"\n"), []byte{'{', '"', 't', 'y', 'p', 'e', '"', ':', '"', 0xff, '"', '}', '\n'}...),
-		"truncated END":       valid[:bytes.LastIndex(valid, []byte("ARS/2 END"))],
-		"wrong END nonce":     bytes.Replace(valid, []byte("ARS/2 END "+testNonce), []byte("ARS/2 END ffffffffffffffffffffffffffffffff"), 1),
-		"missing END nonce":   bytes.Replace(valid, []byte("ARS/2 END "+testNonce+" 2"), []byte("ARS/2 END 2"), 1),
-		"mismatched count":    bytes.Replace(valid, []byte("ARS/2 END "+testNonce+" 2"), []byte("ARS/2 END "+testNonce+" 1"), 1),
-		"trailing output":     append(append([]byte(nil), valid...), []byte("trailing\n")...),
+		"wrong BEGIN nonce":   []byte("ARS/3 BEGIN ffffffffffffffffffffffffffffffff\n"),
+		"missing BEGIN nonce": []byte("ARS/3 BEGIN\n"),
+		"unknown version":     []byte("ARS/2 BEGIN " + testNonce + "\n"),
+		"unknown frame":       []byte("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"prompt\",\"text\":\"must not cross\"}\n"),
+		"invalid UTF-8":       append([]byte("ARS/3 BEGIN "+testNonce+"\n"), []byte{'{', '"', 't', 'y', 'p', 'e', '"', ':', '"', 0xff, '"', '}', '\n'}...),
+		"truncated END":       valid[:bytes.LastIndex(valid, []byte("ARS/3 END"))],
+		"wrong END nonce":     bytes.Replace(valid, []byte("ARS/3 END "+testNonce), []byte("ARS/3 END ffffffffffffffffffffffffffffffff"), 1),
+		"missing END nonce":   bytes.Replace(valid, []byte("ARS/3 END "+testNonce), []byte("ARS/3 END"), 1),
+		"mismatched count": bytes.Replace(valid,
+			[]byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":2}"),
+			[]byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":1}"), 1),
+		"trailing output": append(append([]byte(nil), valid...), []byte("trailing\n")...),
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -324,16 +327,16 @@ func TestDecodeRejectsNonCanonicalLineEndings(t *testing.T) {
 
 func TestDecodeRejectsNonCanonicalEnvelopeSpacing(t *testing.T) {
 	valid := validTranscript(t)
-	begin := []byte("ARS/2 BEGIN " + testNonce)
-	end := []byte("ARS/2 END " + testNonce + " 2")
+	begin := []byte("ARS/3 BEGIN " + testNonce)
+	end := []byte("ARS/3 END " + testNonce)
 	tests := map[string][]byte{
 		"leading space in BEGIN":  bytes.Replace(valid, begin, append([]byte{' '}, begin...), 1),
-		"tab in BEGIN":            bytes.Replace(valid, begin, []byte("ARS/2\tBEGIN\t"+testNonce), 1),
-		"double space in BEGIN":   bytes.Replace(valid, begin, []byte("ARS/2  BEGIN "+testNonce), 1),
+		"tab in BEGIN":            bytes.Replace(valid, begin, []byte("ARS/3\tBEGIN\t"+testNonce), 1),
+		"double space in BEGIN":   bytes.Replace(valid, begin, []byte("ARS/3  BEGIN "+testNonce), 1),
 		"trailing space in BEGIN": bytes.Replace(valid, begin, append(append([]byte(nil), begin...), ' '), 1),
 		"leading space in END":    bytes.Replace(valid, end, append([]byte{' '}, end...), 1),
-		"tab in END":              bytes.Replace(valid, end, []byte("ARS/2\tEND\t"+testNonce+"\t2"), 1),
-		"double space in END":     bytes.Replace(valid, end, []byte("ARS/2  END "+testNonce+" 2"), 1),
+		"tab in END":              bytes.Replace(valid, end, []byte("ARS/3\tEND\t"+testNonce), 1),
+		"double space in END":     bytes.Replace(valid, end, []byte("ARS/3  END "+testNonce), 1),
 		"trailing space in END":   bytes.Replace(valid, end, append(append([]byte(nil), end...), ' '), 1),
 	}
 	for name, input := range tests {
@@ -350,9 +353,12 @@ func TestDecodeRejectsNonCanonicalEndCount(t *testing.T) {
 		{Provider: session.Codex, Status: provider.OK},
 	})
 	tests := map[string][]byte{
-		"explicit plus": bytes.Replace(valid, []byte("ARS/2 END "+testNonce+" 2"), []byte("ARS/2 END "+testNonce+" +2"), 1),
-		"leading zero":  bytes.Replace(valid, []byte("ARS/2 END "+testNonce+" 2"), []byte("ARS/2 END "+testNonce+" 02"), 1),
-		"negative zero": bytes.Replace(empty, []byte("ARS/2 END "+testNonce+" 0"), []byte("ARS/2 END "+testNonce+" -0"), 1),
+		"explicit plus": bytes.Replace(valid,
+			[]byte("\"sessions\":2}"), []byte("\"sessions\":+2}"), 1),
+		"leading zero": bytes.Replace(valid,
+			[]byte("\"sessions\":2}"), []byte("\"sessions\":02}"), 1),
+		"negative zero": bytes.Replace(empty,
+			[]byte("\"sessions\":0}"), []byte("\"sessions\":-0}"), 1),
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -363,13 +369,13 @@ func TestDecodeRejectsNonCanonicalEndCount(t *testing.T) {
 
 func TestDecodeRejectsOverlongLine(t *testing.T) {
 	limits := DefaultLimits()
-	input := "ARS/2 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"
+	input := "ARS/3 BEGIN " + testNonce + "\n" + strings.Repeat("x", limits.LineBytes+1) + "\n"
 	assertDecodeFailsClosed(t, []byte(input), limits)
 }
 
 func TestDecodeRejectsStartupGarbageAboveLimit(t *testing.T) {
 	limits := DefaultLimits()
-	input := strings.Repeat("x\n", int(limits.StartupBytes/2)+1) + "ARS/2 BEGIN " + testNonce + "\n"
+	input := strings.Repeat("x\n", int(limits.StartupBytes/2)+1) + "ARS/3 BEGIN " + testNonce + "\n"
 	assertDecodeFailsClosed(t, []byte(input), limits)
 }
 
@@ -407,7 +413,7 @@ func TestDecodeRejectsTotalOutputAboveLimit(t *testing.T) {
 	line := sessionLine(t, candidate)
 
 	var input bytes.Buffer
-	input.WriteString("ARS/2 BEGIN " + testNonce + "\n")
+	input.WriteString("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"snapshot\",\"phase\":\"complete\"}\n")
 	for input.Len() <= int(limits.TotalBytes) {
 		input.Write(line)
 	}
@@ -419,7 +425,7 @@ func TestDecodeRejectsTooManySessions(t *testing.T) {
 	line := sessionLine(t, validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111"))
 
 	var input bytes.Buffer
-	input.WriteString("ARS/2 BEGIN " + testNonce + "\n")
+	input.WriteString("ARS/3 BEGIN " + testNonce + "\n{\"type\":\"snapshot\",\"phase\":\"complete\"}\n")
 	for range limits.Sessions + 1 {
 		input.Write(line)
 	}
@@ -429,7 +435,7 @@ func TestDecodeRejectsTooManySessions(t *testing.T) {
 func TestDecodeRejectsInvalidCandidate(t *testing.T) {
 	candidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
 	candidate.CWD = "relative/path"
-	input := append([]byte("ARS/2 BEGIN "+testNonce+"\n"), sessionLine(t, candidate)...)
+	input := append([]byte("ARS/3 BEGIN "+testNonce+"\n{\"type\":\"snapshot\",\"phase\":\"complete\"}\n"), sessionLine(t, candidate)...)
 	assertDecodeFailsClosed(t, input, DefaultLimits())
 }
 
@@ -468,6 +474,344 @@ func TestEncodeRejectsTotalOutputAboveLimit(t *testing.T) {
 	}
 	if int64(output.Len()) > DefaultLimits().TotalBytes {
 		t.Fatalf("Encode() wrote %d bytes, limit is %d", output.Len(), DefaultLimits().TotalBytes)
+	}
+}
+
+func TestARS3StreamEmitsValidatedRecentBeforeComplete(t *testing.T) {
+	recent := recentProtocolSnapshot()
+	complete := completeProtocolSnapshot()
+	encoded := encodeStream(t, DefaultLimits(), recent, complete)
+
+	var got []Snapshot
+	if err := DecodeStream(bytes.NewReader(encoded), testNonce, DefaultLimits(), func(snapshot Snapshot) error {
+		got = append(got, snapshot)
+		return nil
+	}); err != nil {
+		t.Fatalf("DecodeStream() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []Snapshot{recent, complete}) {
+		t.Fatalf("DecodeStream() snapshots = %#v, want %#v", got, []Snapshot{recent, complete})
+	}
+}
+
+func TestARS3CompleteOnlyWrappersRoundTrip(t *testing.T) {
+	complete := completeProtocolSnapshot()
+	var encoded bytes.Buffer
+	if err := Encode(&encoded, testNonce, complete.Discovered, complete.Results, complete.Report); err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+	if !strings.HasPrefix(encoded.String(), "ARS/3 BEGIN "+testNonce+"\n{\"type\":\"snapshot\",\"phase\":\"complete\"}\n") {
+		t.Fatalf("Encode() output = %q", encoded.String())
+	}
+	discovered, results, report, err := Decode(&encoded, testNonce, DefaultLimits())
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if !reflect.DeepEqual(discovered, complete.Discovered) ||
+		!reflect.DeepEqual(results, complete.Results) || report != complete.Report {
+		t.Fatalf("Decode() = (%#v, %#v, %#v), want %#v", discovered, results, report, complete)
+	}
+}
+
+func TestARS3StreamRejectsInvalidSnapshotOrdering(t *testing.T) {
+	complete := rawSnapshot(t, completeProtocolSnapshot())
+	recent := rawSnapshot(t, recentProtocolSnapshot())
+	tests := map[string][]byte{
+		"complete followed by recent":   rawStream(complete, recent),
+		"complete followed by complete": rawStream(complete, complete),
+		"duplicate recent":              rawStream(recent, recent, complete),
+		"recent after complete":         rawStream(complete, recent, complete),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeStreamFails(t, input, DefaultLimits())
+		})
+	}
+}
+
+func TestARS3StreamRejectsSnapshotSummaryViolations(t *testing.T) {
+	recent := rawSnapshot(t, recentProtocolSnapshot())
+	complete := rawSnapshot(t, completeProtocolSnapshot())
+	claudeSummary := summaryLine(t, completeProtocolSnapshot().Results[0])
+	codexSummary := summaryLine(t, completeProtocolSnapshot().Results[1])
+	recentEnd := []byte("{\"type\":\"snapshot_end\",\"phase\":\"recent\",\"sessions\":1}\n")
+	tests := map[string][]byte{
+		"recent summary": rawStream(
+			bytes.Replace(recent, recentEnd, append(append([]byte(nil), claudeSummary...), recentEnd...), 1),
+			complete,
+		),
+		"complete missing Claude": rawStream(bytes.Replace(complete, claudeSummary, nil, 1)),
+		"complete missing Codex":  rawStream(bytes.Replace(complete, codexSummary, nil, 1)),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeStreamFails(t, input, DefaultLimits())
+		})
+	}
+}
+
+func TestARS3StreamRejectsSnapshotCountMismatch(t *testing.T) {
+	input := encodeStream(t, DefaultLimits(), completeProtocolSnapshot())
+	input = bytes.Replace(input,
+		[]byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":2}"),
+		[]byte("{\"type\":\"snapshot_end\",\"phase\":\"complete\",\"sessions\":1}"), 1)
+	assertDecodeStreamFails(t, input, DefaultLimits())
+}
+
+func TestARS3StreamRejectsEnvelopeViolations(t *testing.T) {
+	valid := encodeStream(t, DefaultLimits(), completeProtocolSnapshot())
+	tests := map[string][]byte{
+		"wrong begin nonce": bytes.Replace(valid, []byte("ARS/3 BEGIN "+testNonce),
+			[]byte("ARS/3 BEGIN ffffffffffffffffffffffffffffffff"), 1),
+		"wrong end nonce": bytes.Replace(valid, []byte("ARS/3 END "+testNonce),
+			[]byte("ARS/3 END ffffffffffffffffffffffffffffffff"), 1),
+		"non-canonical begin": bytes.Replace(valid, []byte("ARS/3 BEGIN "+testNonce),
+			[]byte("ARS/3  BEGIN "+testNonce), 1),
+		"non-canonical snapshot": bytes.Replace(valid,
+			[]byte("{\"type\":\"snapshot\",\"phase\":\"complete\"}"),
+			[]byte("{\"type\":\"snapshot\", \"phase\":\"complete\"}"), 1),
+		"trailing bytes": append(append([]byte(nil), valid...), []byte("trailing\n")...),
+		"truncated":      valid[:bytes.LastIndex(valid, []byte("ARS/3 END"))],
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeStreamFails(t, input, DefaultLimits())
+		})
+	}
+}
+
+func TestARS3StreamStopsOnCallbackError(t *testing.T) {
+	sentinel := errors.New("stop")
+	input := encodeStream(t, DefaultLimits(), recentProtocolSnapshot(), completeProtocolSnapshot())
+	calls := 0
+	err := DecodeStream(bytes.NewReader(input), testNonce, DefaultLimits(), func(Snapshot) error {
+		calls++
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) || calls != 1 {
+		t.Fatalf("DecodeStream() = %v after %d callbacks, want sentinel after one", err, calls)
+	}
+}
+
+func TestARS3StreamAppliesSessionLimitPerSnapshot(t *testing.T) {
+	limits := DefaultLimits()
+	limits.Sessions = 1
+	valid := encodeStream(t, limits, recentProtocolSnapshot(), oneSessionCompleteProtocolSnapshot())
+	if err := DecodeStream(bytes.NewReader(valid), testNonce, limits, func(Snapshot) error { return nil }); err != nil {
+		t.Fatalf("DecodeStream() within per-snapshot limit error = %v", err)
+	}
+
+	recent := rawSnapshot(t, recentProtocolSnapshot())
+	line := sessionLine(t, recentProtocolSnapshot().Discovered[0].Candidate)
+	recent = bytes.Replace(recent, []byte("{\"type\":\"snapshot_end\",\"phase\":\"recent\",\"sessions\":1}\n"),
+		append(append([]byte(nil), line...), []byte("{\"type\":\"snapshot_end\",\"phase\":\"recent\",\"sessions\":2}\n")...), 1)
+	assertDecodeStreamFails(t, rawStream(recent, rawSnapshot(t, oneSessionCompleteProtocolSnapshot())), limits)
+}
+
+func TestARS3StreamSharesOneWholeStreamByteLimit(t *testing.T) {
+	recent := recentProtocolSnapshot()
+	complete := completeProtocolSnapshot()
+	valid := encodeStream(t, DefaultLimits(), recent, complete)
+	limits := DefaultLimits()
+	limits.TotalBytes = int64(len(valid) - len("ARS/3 END "+testNonce+"\n") - 1)
+	assertDecodeStreamFails(t, valid, limits)
+
+	var output bytes.Buffer
+	encoder, err := NewStreamEncoder(&output, testNonce, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Encode(recent); err != nil {
+		t.Fatalf("Encode(recent) error = %v", err)
+	}
+	if err := encoder.Encode(complete); err == nil {
+		t.Fatal("Encode(complete) error = nil, want whole-stream limit error")
+	}
+	if int64(output.Len()) > limits.TotalBytes {
+		t.Fatalf("encoder wrote %d bytes, limit is %d", output.Len(), limits.TotalBytes)
+	}
+}
+
+func TestARS3StreamRejectsInvalidRuntimeInEitherSnapshot(t *testing.T) {
+	valid := encodeStream(t, DefaultLimits(), recentProtocolSnapshot(), completeProtocolSnapshot())
+	runtimeOK := []byte("{\"type\":\"runtime\",\"status\":\"ok\"}")
+	invalid := []byte("{\"type\":\"runtime\",\"status\":\"failed\"}")
+	first := bytes.Replace(valid, runtimeOK, invalid, 1)
+	firstRuntime := bytes.Index(valid, runtimeOK)
+	secondStart := firstRuntime + len(runtimeOK)
+	second := append(append([]byte(nil), valid[:secondStart]...),
+		bytes.Replace(valid[secondStart:], runtimeOK, invalid, 1)...)
+	tests := map[string][]byte{"recent": first, "complete": second}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertDecodeStreamFails(t, input, DefaultLimits())
+		})
+	}
+}
+
+func TestARS3FinalDecodeReturnsNilAfterValidRecentAndBrokenComplete(t *testing.T) {
+	input := encodeStream(t, DefaultLimits(), recentProtocolSnapshot(), completeProtocolSnapshot())
+	input = input[:bytes.LastIndex(input, []byte("ARS/3 END"))]
+	assertDecodeFailsClosed(t, input, DefaultLimits())
+}
+
+func TestARS3EncoderRejectsInvalidContentAndStateBeforeSnapshot(t *testing.T) {
+	tests := []struct {
+		name      string
+		snapshots []Snapshot
+	}{
+		{name: "recent summaries", snapshots: []Snapshot{func() Snapshot {
+			value := recentProtocolSnapshot()
+			value.Results = completeProtocolSnapshot().Results
+			return value
+		}()}},
+		{name: "complete missing summary", snapshots: []Snapshot{func() Snapshot {
+			value := completeProtocolSnapshot()
+			value.Results = value.Results[:1]
+			return value
+		}()}},
+		{name: "complete then another", snapshots: []Snapshot{completeProtocolSnapshot(), completeProtocolSnapshot()}},
+		{name: "duplicate recent", snapshots: []Snapshot{recentProtocolSnapshot(), recentProtocolSnapshot()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			encoder, err := NewStreamEncoder(&output, testNonce, DefaultLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index, snapshot := range tt.snapshots {
+				before := output.Len()
+				err = encoder.Encode(snapshot)
+				if index == len(tt.snapshots)-1 {
+					if err == nil {
+						t.Fatal("Encode() error = nil, want non-nil")
+					}
+					if output.Len() != before {
+						t.Fatalf("invalid Encode() wrote %d bytes", output.Len()-before)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestARS3EncoderRejectsUseAfterClose(t *testing.T) {
+	var output bytes.Buffer
+	encoder, err := NewStreamEncoder(&output, testNonce, DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Encode(completeProtocolSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Encode(completeProtocolSnapshot()); err == nil {
+		t.Fatal("Encode() after Close() error = nil")
+	}
+	if err := encoder.Close(); err == nil {
+		t.Fatal("second Close() error = nil")
+	}
+}
+
+func recentProtocolSnapshot() Snapshot {
+	candidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	return Snapshot{
+		Phase:      provider.PhaseRecent,
+		Discovered: savedDiscovered([]session.Candidate{candidate}),
+		Report:     runtime.Report{Status: runtime.StatusOK},
+	}
+}
+
+func completeProtocolSnapshot() Snapshot {
+	candidates := []session.Candidate{
+		validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111"),
+		validCandidate(session.Codex, "22222222-2222-2222-2222-222222222222"),
+	}
+	return Snapshot{
+		Phase:      provider.PhaseComplete,
+		Discovered: savedDiscovered(candidates),
+		Results: []provider.Result{
+			{Provider: session.Claude, Sessions: candidates[:1], Status: provider.OK, Seen: 1},
+			{Provider: session.Codex, Sessions: candidates[1:], Status: provider.OK, Seen: 1},
+		},
+		Report: runtime.Report{Status: runtime.StatusOK},
+	}
+}
+
+func oneSessionCompleteProtocolSnapshot() Snapshot {
+	candidate := validCandidate(session.Claude, "11111111-1111-1111-1111-111111111111")
+	return Snapshot{
+		Phase:      provider.PhaseComplete,
+		Discovered: savedDiscovered([]session.Candidate{candidate}),
+		Results: []provider.Result{
+			{Provider: session.Claude, Sessions: []session.Candidate{candidate}, Status: provider.OK, Seen: 1},
+			{Provider: session.Codex, Status: provider.Absent},
+		},
+		Report: runtime.Report{Status: runtime.StatusOK},
+	}
+}
+
+func encodeStream(t testing.TB, limits Limits, snapshots ...Snapshot) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	encoder, err := NewStreamEncoder(&output, testNonce, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshot := range snapshots {
+		if err := encoder.Encode(snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func rawStream(snapshots ...[]byte) []byte {
+	var output bytes.Buffer
+	output.WriteString("ARS/3 BEGIN " + testNonce + "\n")
+	for _, snapshot := range snapshots {
+		output.Write(snapshot)
+	}
+	output.WriteString("ARS/3 END " + testNonce + "\n")
+	return output.Bytes()
+}
+
+func rawSnapshot(t testing.TB, snapshot Snapshot) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	phase := testPhaseName(snapshot.Phase)
+	output.WriteString("{\"type\":\"snapshot\",\"phase\":\"" + phase + "\"}\n")
+	for _, item := range snapshot.Discovered {
+		output.Write(sessionLine(t, item.Candidate))
+	}
+	for _, result := range snapshot.Results {
+		output.Write(summaryLine(t, result))
+	}
+	output.Write(runtimeLine(t, snapshot.Report))
+	output.WriteString("{\"type\":\"snapshot_end\",\"phase\":\"" + phase + "\",\"sessions\":" +
+		strconv.Itoa(len(snapshot.Discovered)) + "}\n")
+	return output.Bytes()
+}
+
+func testPhaseName(phase provider.Phase) string {
+	if phase == provider.PhaseRecent {
+		return "recent"
+	}
+	return "complete"
+}
+
+func assertDecodeStreamFails(t *testing.T, input []byte, limits Limits) {
+	t.Helper()
+	if err := DecodeStream(bytes.NewReader(input), testNonce, limits, func(Snapshot) error { return nil }); err == nil {
+		t.Fatal("DecodeStream() error = nil, want non-nil")
 	}
 }
 
@@ -547,17 +891,12 @@ func summaryLine(t testing.TB, result provider.Result) []byte {
 
 func rawTranscript(t testing.TB, candidates []session.Candidate, results []provider.Result) []byte {
 	t.Helper()
-	var output bytes.Buffer
-	output.WriteString("ARS/2 BEGIN " + testNonce + "\n")
-	for _, candidate := range candidates {
-		output.Write(sessionLine(t, candidate))
-	}
-	for _, result := range results {
-		output.Write(summaryLine(t, result))
-	}
-	output.Write(runtimeLine(t, runtime.Report{Status: runtime.StatusOK}))
-	output.WriteString("ARS/2 END " + testNonce + " " + strconv.Itoa(len(candidates)) + "\n")
-	return output.Bytes()
+	return rawStream(rawSnapshot(t, Snapshot{
+		Phase:      provider.PhaseComplete,
+		Discovered: savedDiscovered(candidates),
+		Results:    results,
+		Report:     runtime.Report{Status: runtime.StatusOK},
+	}))
 }
 
 func impossibleSummaryCases() []struct {

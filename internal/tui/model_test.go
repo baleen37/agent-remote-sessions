@@ -478,6 +478,182 @@ func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 	}
 }
 
+func TestModelAppliesCollectionSnapshotImmediatelyBeforeInteraction(t *testing.T) {
+	value := readyModel()
+	value.collecting = true
+	value.generation = 2
+	update := Update{Result: resultWithTitle("early")}
+
+	value, command := updateModel(value, collectUpdateMsg{generation: 2, update: update})
+
+	if got := value.result.Sessions[0].Title; got != "early" {
+		t.Fatalf("visible title = %q, want immediate snapshot", got)
+	}
+	if value.pendingUpdate != nil || value.coalescing {
+		t.Fatalf("snapshot staged before interaction: pending=%#v coalescing=%t", value.pendingUpdate, value.coalescing)
+	}
+	if command == nil {
+		t.Fatal("collection stopped draining after immediate snapshot")
+	}
+}
+
+func TestModelNavigationAndSearchResetInteractionCoalescing(t *testing.T) {
+	value := readyModel()
+	value.collecting = true
+	value.generation = 2
+
+	value, command := updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	if !value.coalescing || value.interactionSeq != 1 || command == nil {
+		t.Fatalf("navigation coalescing=%t sequence=%d command=%v", value.coalescing, value.interactionSeq, command)
+	}
+
+	value, command = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
+	if !value.searching || !value.coalescing || value.interactionSeq != 2 || command == nil {
+		t.Fatalf("search entry coalescing=%t sequence=%d command=%v", value.coalescing, value.interactionSeq, command)
+	}
+
+	value, command = updateModel(value, tea.KeyPressMsg(tea.Key{Code: tea.KeyExtended, Text: "x"}))
+	if value.query != "x" || !value.coalescing || value.interactionSeq != 3 || command == nil {
+		t.Fatalf("search edit query=%q coalescing=%t sequence=%d command=%v", value.query, value.coalescing, value.interactionSeq, command)
+	}
+}
+
+func TestModelCollapsesStagedUpdatesToNewestAfterInteraction(t *testing.T) {
+	value := readyModel()
+	value.collecting = true
+	value.generation = 2
+	visible := value.result.Sessions[0].Title
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+
+	final := Update{Result: resultWithTitle("final"), Done: true}
+	channel := updates(final)
+	early := Update{Result: resultWithTitle("early")}
+	value, next := updateModel(value, collectUpdateMsg{
+		generation: value.generation,
+		update:     early,
+		channel:    channel,
+	})
+	if got := value.result.Sessions[0].Title; got != visible {
+		t.Fatalf("early snapshot changed visible title to %q", got)
+	}
+	if value.pendingUpdate == nil || value.pendingUpdate.Result.Sessions[0].Title != "early" || next == nil {
+		t.Fatalf("early snapshot pending=%#v next=%v", value.pendingUpdate, next)
+	}
+
+	message, ok := next().(collectUpdateMsg)
+	if !ok || message.update.Result.Sessions[0].Title != "final" {
+		t.Fatalf("next drain message = %#v", message)
+	}
+	value, _ = updateModel(value, message)
+	if !value.collecting {
+		t.Fatal("pending final ended collection before idle apply")
+	}
+	if value.pendingUpdate == nil || value.pendingUpdate.Result.Sessions[0].Title != "final" {
+		t.Fatalf("newest pending snapshot = %#v", value.pendingUpdate)
+	}
+
+	value, _ = updateModel(value, interactionIdleMsg{
+		generation: value.generation,
+		sequence:   value.interactionSeq,
+	})
+	if got := value.result.Sessions[0].Title; got != "final" {
+		t.Fatalf("settled title = %q, want final", got)
+	}
+	if value.collecting || value.coalescing || value.pendingUpdate != nil {
+		t.Fatalf("settled collecting=%t coalescing=%t pending=%#v", value.collecting, value.coalescing, value.pendingUpdate)
+	}
+}
+
+func TestModelIgnoresStaleInteractionIdleGenerationAndSequence(t *testing.T) {
+	value := readyModel()
+	value.collecting = true
+	value.generation = 4
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	value, _ = updateModel(value, collectUpdateMsg{
+		generation: 4,
+		update:     Update{Result: resultWithTitle("pending")},
+	})
+	visible := value.result.Sessions[0].Title
+
+	value, _ = updateModel(value, interactionIdleMsg{generation: 3, sequence: value.interactionSeq})
+	value, _ = updateModel(value, interactionIdleMsg{generation: 4, sequence: value.interactionSeq - 1})
+	if got := value.result.Sessions[0].Title; got != visible {
+		t.Fatalf("stale idle applied title %q", got)
+	}
+	if !value.coalescing || value.pendingUpdate == nil {
+		t.Fatalf("stale idle cleared coalescing: coalescing=%t pending=%#v", value.coalescing, value.pendingUpdate)
+	}
+
+	value, _ = updateModel(value, interactionIdleMsg{generation: 4, sequence: value.interactionSeq})
+	if got := value.result.Sessions[0].Title; got != "pending" {
+		t.Fatalf("current idle title = %q, want pending", got)
+	}
+}
+
+func TestModelSettledUpdatePreservesCanonicalSelection(t *testing.T) {
+	value := readyModel()
+	value.collecting = true
+	value.generation = 2
+	selected, ok := value.selectedRow()
+	if !ok || selected.kind != rowSession {
+		t.Fatalf("initial selection = %+v", selected)
+	}
+	canonical := keyOf(selected.session)
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
+
+	renamed := selected.session
+	renamed.Title = "renamed canonical session"
+	renamed.CWD = "/renamed/project"
+	value, _ = updateModel(value, collectUpdateMsg{
+		generation: 2,
+		update: Update{
+			Result: Result{Sessions: []session.Session{twoSessions()[1], renamed}},
+			Done:   true,
+		},
+	})
+	value, _ = updateModel(value, interactionIdleMsg{generation: 2, sequence: value.interactionSeq})
+
+	row, ok := value.selectedRow()
+	if !ok || row.kind != rowSession || keyOf(row.session) != canonical {
+		t.Fatalf("settled selection row=%+v canonical=%+v", row, canonical)
+	}
+}
+
+func TestModelRestartAndAttachReturnClearPendingInteractionState(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		restart func(model) (model, tea.Cmd)
+	}{
+		{name: "refresh", restart: func(value model) (model, tea.Cmd) { return value.restartCollection() }},
+		{name: "attach return", restart: func(value model) (model, tea.Cmd) {
+			return updateModel(value, attachDoneMsg{})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := readyModel()
+			value.collecting = true
+			value.generation = 2
+			value.coalescing = true
+			value.interactionSeq = 7
+			pending := Update{Result: resultWithTitle("old pending"), Done: true}
+			value.pendingUpdate = &pending
+
+			value, command := test.restart(value)
+			if command == nil || value.generation != 3 {
+				t.Fatalf("restart generation=%d command=%v", value.generation, command)
+			}
+			if value.coalescing || value.pendingUpdate != nil {
+				t.Fatalf("restart retained coalescing=%t pending=%#v", value.coalescing, value.pendingUpdate)
+			}
+
+			value, _ = updateModel(value, interactionIdleMsg{generation: 2, sequence: 7})
+			if got := value.result.Sessions[0].Title; got == "old pending" {
+				t.Fatalf("stale pre-restart idle applied %q", got)
+			}
+		})
+	}
+}
+
 func TestModelCursorCoversHeadersAndSessions(t *testing.T) {
 	value := readyModel()
 	kinds := make([]rowKind, 0, len(value.rows))
@@ -919,6 +1095,21 @@ func staticCollect(result Result) func(context.Context) <-chan Update {
 		close(channel)
 		return channel
 	}
+}
+
+func resultWithTitle(title string) Result {
+	item := twoSessions()[0]
+	item.Title = title
+	return Result{Sessions: []session.Session{item}}
+}
+
+func updates(values ...Update) <-chan Update {
+	channel := make(chan Update, len(values))
+	for _, value := range values {
+		channel <- value
+	}
+	close(channel)
+	return channel
 }
 
 func readyModel() model {

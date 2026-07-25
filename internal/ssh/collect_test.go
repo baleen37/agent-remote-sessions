@@ -303,6 +303,252 @@ func TestCollectCarriesRuntimeStateAndReport(t *testing.T) {
 	}
 }
 
+func TestCollectStreamEmitsRecentBeforeRunnerReturns(t *testing.T) {
+	recent, complete := progressiveSSHFixtures()
+	releaseRunner := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseRunner:
+		default:
+			close(releaseRunner)
+		}
+	}()
+	runner := &fakeRunner{run: func(_ context.Context, index int, call runnerCall, stdout, _ io.Writer) error {
+		if index == 0 {
+			_, _ = io.WriteString(stdout, "Linux\namd64\n")
+			return nil
+		}
+		nonce, err := runnerNonce(call.args[len(call.args)-1])
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonce); err != nil {
+			return err
+		}
+		encoder, err := protocol.NewStreamEncoder(stdout, nonce, protocol.DefaultLimits())
+		if err != nil {
+			return err
+		}
+		if err := encoder.Encode(recent); err != nil {
+			return err
+		}
+		<-releaseRunner
+		if err := encoder.Encode(complete); err != nil {
+			return err
+		}
+		return encoder.Close()
+	}}
+
+	emitted := make(chan []session.Discovered, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := CollectStream(
+			context.Background(),
+			runner,
+			&fakeAssets{data: []byte("collector")},
+			"host",
+			CollectOptions{},
+			func(discovered []session.Discovered) error {
+				emitted <- discovered
+				return nil
+			},
+		)
+		done <- err
+	}()
+
+	select {
+	case discovered := <-emitted:
+		if !reflect.DeepEqual(discovered, recent.Discovered) {
+			t.Fatalf("recent discovered = %#v, want %#v", discovered, recent.Discovered)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recent callback was not invoked while runner remained active")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("CollectStream returned before runner release: %v", err)
+	default:
+	}
+
+	close(releaseRunner)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CollectStream() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CollectStream did not finish after runner release")
+	}
+}
+
+func TestCollectStreamUsesOneProbeAndOneCollectorForBothSnapshots(t *testing.T) {
+	recent, complete := progressiveSSHFixtures()
+	runner := progressiveRunner(recent, complete, nil)
+	if _, _, _, err := CollectStream(
+		context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{}, func([]session.Discovered) error {
+			return nil
+		},
+	); err != nil {
+		t.Fatalf("CollectStream() error = %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("runner calls = %d, want one probe and one collector", len(runner.calls))
+	}
+}
+
+func TestCollectStreamReturnsFinalDataAndCollectCompatibility(t *testing.T) {
+	recent, complete := progressiveSSHFixtures()
+	streamRunner := progressiveRunner(recent, complete, nil)
+	discovered, results, report, err := CollectStream(
+		context.Background(), streamRunner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{}, nil,
+	)
+	if err != nil {
+		t.Fatalf("CollectStream() error = %v", err)
+	}
+	if !reflect.DeepEqual(discovered, complete.Discovered) || !reflect.DeepEqual(results, complete.Results) || report != complete.Report {
+		t.Fatalf("CollectStream() = (%#v, %#v, %#v), want authoritative complete %#v", discovered, results, report, complete)
+	}
+
+	legacyRunner := progressiveRunner(recent, complete, nil)
+	legacyDiscovered, legacyResults, legacyReport, err := Collect(
+		context.Background(), legacyRunner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{},
+	)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if !reflect.DeepEqual(legacyDiscovered, discovered) || !reflect.DeepEqual(legacyResults, results) || legacyReport != report {
+		t.Fatalf("Collect() = (%#v, %#v, %#v), want CollectStream final values", legacyDiscovered, legacyResults, legacyReport)
+	}
+}
+
+func TestCollectStreamCallbackErrorCancelsAndCleansOwnedTemporaryPath(t *testing.T) {
+	recent, _ := progressiveSSHFixtures()
+	callbackErr := errors.New("recent callback failed")
+	var temporaryPath string
+	runner := &fakeRunner{run: func(ctx context.Context, index int, call runnerCall, stdout, _ io.Writer) error {
+		switch index {
+		case 0:
+			_, _ = io.WriteString(stdout, "Linux\namd64\n")
+			return nil
+		case 1:
+			nonce, err := runnerNonce(call.args[len(call.args)-1])
+			if err != nil {
+				return err
+			}
+			temporaryPath = "/tmp/custom/ars-" + nonce
+			if _, err := fmt.Fprintln(stdout, temporaryPath); err != nil {
+				return err
+			}
+			encoder, err := protocol.NewStreamEncoder(stdout, nonce, protocol.DefaultLimits())
+			if err != nil {
+				return err
+			}
+			if err := encoder.Encode(recent); err != nil {
+				return err
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		case 2:
+			want := remoteShellCommand("rm -f -- " + singleQuote(temporaryPath+"/collector") + "; rmdir -- " + singleQuote(temporaryPath))
+			if got := call.args[len(call.args)-1]; got != want {
+				t.Errorf("cleanup command = %q, want exact owned path %q", got, want)
+			}
+			return nil
+		default:
+			return fmt.Errorf("unexpected runner call %d", index)
+		}
+	}}
+
+	discovered, results, report, err := CollectStream(
+		context.Background(),
+		runner,
+		&fakeAssets{data: []byte("collector")},
+		"host",
+		CollectOptions{},
+		func([]session.Discovered) error { return callbackErr },
+	)
+	if !errors.Is(err, callbackErr) {
+		t.Fatalf("CollectStream() error = %v, want callback error", err)
+	}
+	if discovered != nil || results != nil || report != (runtime.Report{}) {
+		t.Fatalf("CollectStream() failure returned final data: %#v %#v %#v", discovered, results, report)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("runner calls = %d, want probe, collector, exact cleanup", len(runner.calls))
+	}
+}
+
+func TestCollectStreamRejectsTruncatedFinalAfterValidRecent(t *testing.T) {
+	recent, complete := progressiveSSHFixtures()
+	var callbackCalls int
+	runner := &fakeRunner{run: func(_ context.Context, index int, call runnerCall, stdout, _ io.Writer) error {
+		if index == 0 {
+			_, _ = io.WriteString(stdout, "Linux\namd64\n")
+			return nil
+		}
+		nonce, err := runnerNonce(call.args[len(call.args)-1])
+		if err != nil {
+			return err
+		}
+		var stream bytes.Buffer
+		encoder, err := protocol.NewStreamEncoder(&stream, nonce, protocol.DefaultLimits())
+		if err != nil {
+			return err
+		}
+		if err := encoder.Encode(recent); err != nil {
+			return err
+		}
+		if err := encoder.Encode(complete); err != nil {
+			return err
+		}
+		if err := encoder.Close(); err != nil {
+			return err
+		}
+		truncateAt := bytes.Index(stream.Bytes(), []byte(`{"type":"snapshot_end","phase":"complete"`))
+		if truncateAt < 0 {
+			return errors.New("complete snapshot end missing")
+		}
+		_, err = fmt.Fprintf(stdout, "/tmp/ars-%s\n%s", nonce, stream.Bytes()[:truncateAt])
+		return err
+	}}
+
+	discovered, results, report, err := CollectStream(
+		context.Background(),
+		runner,
+		&fakeAssets{data: []byte("collector")},
+		"host",
+		CollectOptions{},
+		func([]session.Discovered) error {
+			callbackCalls++
+			return nil
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "protocol") {
+		t.Fatalf("CollectStream() error = %v, want protocol truncation", err)
+	}
+	if callbackCalls != 1 {
+		t.Fatalf("recent callback calls = %d, want 1", callbackCalls)
+	}
+	if discovered != nil || results != nil || report != (runtime.Report{}) {
+		t.Fatalf("truncated final returned data: %#v %#v %#v", discovered, results, report)
+	}
+}
+
+func TestCollectStreamRejectsNonzeroRunnerAfterValidStream(t *testing.T) {
+	recent, complete := progressiveSSHFixtures()
+	processErr := errors.New("remote exit 1")
+	runner := progressiveRunner(recent, complete, processErr)
+	discovered, results, report, err := CollectStream(
+		context.Background(), runner, &fakeAssets{data: []byte("collector")}, "host", CollectOptions{}, nil,
+	)
+	if !errors.Is(err, processErr) {
+		t.Fatalf("CollectStream() error = %v, want process error", err)
+	}
+	if discovered != nil || results != nil || report != (runtime.Report{}) {
+		t.Fatalf("nonzero runner returned data: %#v %#v %#v", discovered, results, report)
+	}
+}
+
 func TestCollectorCommandNormalizesTrailingSlashTMPDIR(t *testing.T) {
 	t.Parallel()
 
@@ -814,6 +1060,66 @@ func successfulRunner(probe string) *fakeRunner {
 		_, _ = fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonceMatch[1])
 		return protocol.Encode(stdout, nonceMatch[1], nil, emptyResults(), runtime.Report{Status: runtime.StatusOK})
 	}}
+}
+
+func progressiveRunner(recent, complete protocol.Snapshot, runErr error) *fakeRunner {
+	return &fakeRunner{run: func(_ context.Context, index int, call runnerCall, stdout, _ io.Writer) error {
+		if index == 0 {
+			_, _ = io.WriteString(stdout, "Linux\namd64\n")
+			return nil
+		}
+		nonce, err := runnerNonce(call.args[len(call.args)-1])
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, "/tmp/ars-%s\n", nonce); err != nil {
+			return err
+		}
+		encoder, err := protocol.NewStreamEncoder(stdout, nonce, protocol.DefaultLimits())
+		if err != nil {
+			return err
+		}
+		if err := encoder.Encode(recent); err != nil {
+			return err
+		}
+		if err := encoder.Encode(complete); err != nil {
+			return err
+		}
+		if err := encoder.Close(); err != nil {
+			return err
+		}
+		return runErr
+	}}
+}
+
+func runnerNonce(command string) (string, error) {
+	match := regexp.MustCompile(`([0-9a-f]{32})`).FindStringSubmatch(command)
+	if len(match) != 2 {
+		return "", errors.New("missing nonce")
+	}
+	return match[1], nil
+}
+
+func progressiveSSHFixtures() (protocol.Snapshot, protocol.Snapshot) {
+	candidate := session.Candidate{
+		Provider: session.Claude, NativeID: "123e4567-e89b-42d3-a456-426614174000",
+		UpdatedAt: time.Unix(10, 0).UTC(), CWD: "/work/app", Title: "Progressive",
+	}
+	discovered := []session.Discovered{{
+		Candidate: candidate,
+		Runtime:   session.Runtime{State: session.RuntimeSaved},
+	}}
+	return protocol.Snapshot{
+			Phase: provider.PhaseRecent, Discovered: discovered, Report: runtime.Report{Status: runtime.StatusOK},
+		}, protocol.Snapshot{
+			Phase:      provider.PhaseComplete,
+			Discovered: discovered,
+			Results: []provider.Result{
+				{Provider: session.Claude, Sessions: []session.Candidate{candidate}, Status: provider.OK, Seen: 1},
+				{Provider: session.Codex, Status: provider.Absent},
+			},
+			Report: runtime.Report{Status: runtime.StatusOK},
+		}
 }
 
 func assertCollectionSSHArgs(t *testing.T, args []string, target string, connectSeconds int) {

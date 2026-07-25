@@ -14,7 +14,10 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
 
-const maxStatusBytes = 256
+const (
+	maxStatusBytes  = 256
+	interactionIdle = 300 * time.Millisecond
+)
 
 type Result struct {
 	Hosts    []output.HostResult
@@ -56,6 +59,11 @@ type collectUpdateMsg struct {
 
 type spinnerTickMsg struct {
 	generation uint64
+}
+
+type interactionIdleMsg struct {
+	generation uint64
+	sequence   uint64
 }
 
 type attachDoneMsg struct {
@@ -100,6 +108,9 @@ type model struct {
 	killTargets         []session.Session
 	killGroup           string
 	collecting          bool
+	pendingUpdate       *Update
+	coalescing          bool
+	interactionSeq      uint64
 	spinner             int
 	generation          uint64
 	loading             []string
@@ -152,14 +163,25 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		if message.generation != value.generation {
 			return value, nil
 		}
-		value.result = message.update.Result
-		value.loading = message.update.Loading
-		if message.update.Done {
-			value.collecting = false
+		if value.coalescing {
+			update := message.update
+			value.pendingUpdate = &update
+			return value, waitForUpdate(message.generation, message.channel)
 		}
-		value.refreshVisible()
-		value.evictActivity()
+		value.applyCollectionUpdate(message.update)
 		return value, tea.Batch(waitForUpdate(message.generation, message.channel), value.syncPreview())
+	case interactionIdleMsg:
+		if message.generation != value.generation || message.sequence != value.interactionSeq || !value.coalescing {
+			return value, nil
+		}
+		value.coalescing = false
+		if value.pendingUpdate == nil {
+			return value, nil
+		}
+		update := *value.pendingUpdate
+		value.pendingUpdate = nil
+		value.applyCollectionUpdate(update)
+		return value, value.syncPreview()
 	case previewMsg:
 		return value.updatePreview(message)
 	case previewTickMsg:
@@ -204,7 +226,17 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		}
 		return value, tea.Batch(value.syncPreview(), value.syncFullPreview())
 	case tea.KeyPressMsg:
+		interaction := value.collecting && value.isRelevantInteraction(message)
 		updated, command := value.updateKey(message)
+		if interaction {
+			updated.coalescing = true
+			updated.interactionSeq++
+			idle := interactionIdleTick(updated.generation, updated.interactionSeq)
+			if command != nil {
+				return updated, tea.Batch(command, idle)
+			}
+			return updated, tea.Batch(updated.syncPreview(), idle)
+		}
 		if command != nil {
 			return updated, command
 		}
@@ -212,6 +244,50 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 	default:
 		return value, nil
 	}
+}
+
+func (value *model) applyCollectionUpdate(update Update) {
+	value.result = update.Result
+	value.loading = update.Loading
+	if update.Done {
+		value.collecting = false
+	}
+	value.refreshVisible()
+	value.evictActivity()
+}
+
+func (value model) isRelevantInteraction(message tea.KeyPressMsg) bool {
+	key := message.Key()
+	if value.searching {
+		return key.Code == tea.KeyEnter ||
+			key.Code == tea.KeyEscape ||
+			key.Code == tea.KeyBackspace ||
+			(key.Code == 'u' && key.Mod&tea.ModCtrl != 0) ||
+			printable(key.Text)
+	}
+	if value.composing || value.showHelp || value.previewFullscreen {
+		return false
+	}
+	switch key.Code {
+	case tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd, tea.KeyPgDown, tea.KeyPgUp,
+		tea.KeyLeft, tea.KeyRight, tea.KeySpace:
+		return true
+	case 'j', 'k', 'g', 'G', 'h', 'l', '/', 'a':
+		return true
+	case 'd', 'u':
+		return key.Mod&tea.ModCtrl != 0
+	case tea.KeyEscape:
+		return value.query != "" || value.filterActive()
+	case tea.KeyEnter:
+		row, ok := value.selectedRow()
+		return ok && (row.kind == rowHeader || row.kind == rowMore)
+	}
+	if len(key.Text) != 1 {
+		return false
+	}
+	return (key.Text[0] >= '1' && key.Text[0] <= '9') ||
+		key.Text == "!" || key.Text == "@" || key.Text == "#" ||
+		key.Text == "$" || key.Text == "P"
 }
 
 func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
@@ -483,6 +559,8 @@ func (value model) restartCollection() (model, tea.Cmd) {
 	value.cancelCollect = cancel
 	value.generation++
 	value.collecting = true
+	value.pendingUpdate = nil
+	value.coalescing = false
 	value.loading = nil
 	value.spinner = 0
 	value.killPending = false
@@ -497,6 +575,12 @@ func (value model) restartCollection() (model, tea.Cmd) {
 func spinnerTick(generation uint64) tea.Cmd {
 	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg {
 		return spinnerTickMsg{generation: generation}
+	})
+}
+
+func interactionIdleTick(generation, sequence uint64) tea.Cmd {
+	return tea.Tick(interactionIdle, func(time.Time) tea.Msg {
+		return interactionIdleMsg{generation: generation, sequence: sequence}
 	})
 }
 

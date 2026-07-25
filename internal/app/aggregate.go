@@ -19,7 +19,7 @@ type Result struct {
 	Warnings []output.HostError
 }
 
-type Collector func(context.Context, Host) (
+type Collector func(context.Context, Host, func([]session.Discovered) error) (
 	[]session.Discovered,
 	[]provider.Result,
 	runtime.Report,
@@ -41,11 +41,16 @@ func CollectHosts(ctx context.Context, hosts []Host, workerLimit int, collector 
 	return last.Result
 }
 
-func collectHost(ctx context.Context, host Host, collector Collector) hostCollection {
+func collectHost(
+	ctx context.Context,
+	host Host,
+	collector Collector,
+	emitRecent func([]session.Discovered) error,
+) hostCollection {
 	if err := validateTarget(host.Target); err != nil {
 		return failedCollection(host.Target, "unsupported_target", "SSH target is unsupported")
 	}
-	discovered, providerResults, report, err := collector(ctx, host)
+	discovered, providerResults, report, err := collector(ctx, host, emitRecent)
 	if err != nil {
 		code, message := classifyCollectionError(ctx, err)
 		return failedCollection(host.Target, code, message)
@@ -65,19 +70,47 @@ func collectHost(ctx context.Context, host Host, collector Collector) hostCollec
 	if runtimeDiagnostic != nil {
 		warnings = append(warnings, *runtimeDiagnostic)
 	}
-	sessions := make([]session.Session, 0, len(discovered))
-	for _, item := range discovered {
-		bound, err := session.BindDiscovered(host.Target, item)
-		if err != nil {
-			return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
-		}
-		sessions = append(sessions, bound)
+	sessions, err := bindSessions(host.Target, discovered)
+	if err != nil {
+		return failedCollection(host.Target, "protocol_error", "Collector protocol failed")
 	}
 	return hostCollection{
 		host:     output.HostResult{Target: host.Target, Status: output.HostOK},
 		sessions: sessions,
 		warnings: warnings,
 	}
+}
+
+func bindSessions(target string, discovered []session.Discovered) ([]session.Session, error) {
+	sessions := make([]session.Session, 0, len(discovered))
+	for _, item := range discovered {
+		bound, err := session.BindDiscovered(target, item)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, bound)
+	}
+	return sessions, nil
+}
+
+func overlaySessions(current, recent []session.Session) []session.Session {
+	combined := make(map[sessionIdentity]session.Session, len(current)+len(recent))
+	for _, item := range current {
+		identity := sessionIdentity{host: item.Host, provider: item.Provider, nativeID: item.NativeID}
+		combined[identity] = item
+	}
+	for _, item := range recent {
+		identity := sessionIdentity{host: item.Host, provider: item.Provider, nativeID: item.NativeID}
+		combined[identity] = item
+	}
+	overlaid := make([]session.Session, 0, len(combined))
+	for _, item := range combined {
+		overlaid = append(overlaid, item)
+	}
+	sort.Slice(overlaid, func(i, j int) bool {
+		return sessionLess(overlaid[i], overlaid[j])
+	})
+	return overlaid
 }
 
 func providerWarnings(target string, results []provider.Result) ([]output.HostError, error) {

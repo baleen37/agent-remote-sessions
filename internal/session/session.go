@@ -19,6 +19,7 @@ const (
 	MaxNativeIDBytes = 36
 	MaxCWDBytes      = 4096
 	MaxTitleBytes    = 1024
+	RecentWindow     = 7 * 24 * time.Hour
 )
 
 type Candidate struct {
