@@ -342,7 +342,7 @@ func TestActivityRowRendersNeedsInputSymbol(t *testing.T) {
 	waitingKey := keyOf(items[2])
 	// Auto grouping hides the saved session behind a "… more" row; open the
 	// group so both running rows render.
-	value.groupMode = map[string]groupMode{groupKey("localhost", "ars"): groupModeOpen}
+	value.groupMode = map[string]groupMode{"ars": groupModeOpen}
 	value.refreshVisible()
 
 	// The footer and legend legitimately contain "?", so only the session rows

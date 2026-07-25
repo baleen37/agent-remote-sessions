@@ -43,8 +43,8 @@ func (value model) startKill(row listRow) (model, tea.Cmd) {
 		}
 		return value.armKill([]session.Session{row.session}, "", "killing "+sessionTitle(row.session)+" in 3s · u undo")
 	case rowHeader:
-		targets := value.liveGroupSessions(row.host, row.project)
-		label := value.groupLabel(row.host, row.project)
+		targets := value.liveGroupSessions(row.project)
+		label := row.project
 		if len(targets) == 0 {
 			value.status = boundedStatus("no live sessions in " + label)
 			return value, nil
@@ -65,17 +65,16 @@ func (value model) armKill(targets []session.Session, group, status string) (mod
 	return value, killTick(value.killSeq)
 }
 
-// liveGroupSessions returns the sessions of the (host, project) group that
-// have a live pane, from the same filtered inventory the rows are built from:
+// liveGroupSessions returns the sessions of the project group that have a live
+// pane, from the same filtered inventory the rows are built from:
 // the header stands for every member the active search and state filter admit
 // — including ones a collapsed or auto-folded group hides — and never for one
-// the filters removed. Saved sessions are skipped because they have no
-// process to kill. host distinguishes groups that share a project basename
-// across machines, so killing a remote group never reaches into the local one.
-func (value model) liveGroupSessions(host, project string) []session.Session {
+// the filters removed. Saved sessions are skipped because they have no process
+// to kill.
+func (value model) liveGroupSessions(project string) []session.Session {
 	var targets []session.Session
 	for _, item := range value.visibleSessions() {
-		if session.Project(item.CWD) != project || item.Host != host {
+		if session.Project(item.CWD) != project {
 			continue
 		}
 		if item.Runtime.State == session.RuntimeSaved {
