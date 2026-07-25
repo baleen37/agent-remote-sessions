@@ -71,57 +71,63 @@ type attachDoneMsg struct {
 }
 
 type model struct {
-	ctx                 context.Context
-	deps                Dependencies
-	result              Result
-	rows                []listRow
-	selected            int
-	selectedRef         rowRef
-	groupMode           map[string]groupMode
-	stateFilter         map[session.RuntimeState]bool
-	waitingFilter       bool
-	showAll             bool
-	staleHidden         int
-	query               string
-	matched             int
-	searching           bool
-	composing           bool
-	compose             string
-	composeTarget       session.Session
-	showHelp            bool
-	helpFromFullscreen  bool
-	previewOn           bool
-	previewFullscreen   bool
-	previewKey          sessionKey
-	previewContent      []string
-	previewErr          string
-	previewPending      bool
-	previewFullKey      sessionKey
-	previewFullContent  []string
-	previewFullErr      string
-	previewFullPending  bool
-	previewScrollOffset int
-	activity            map[sessionKey]activityEntry
-	activityPending     map[sessionKey]bool
-	pins                map[sessionKey]bool
-	killSeq             uint64
-	killPending         bool
-	killTargets         []session.Session
-	killGroup           string
-	collecting          bool
-	pendingUpdate       *Update
-	coalescing          bool
-	interactionSeq      uint64
-	spinner             int
-	generation          uint64
-	loading             []string
-	cancelCollect       context.CancelFunc
-	initialCollect      tea.Cmd
-	status              string
-	width               int
-	height              int
-	noColor             bool
-	styles              viewStyles
+	ctx                    context.Context
+	deps                   Dependencies
+	result                 Result
+	rows                   []listRow
+	selected               int
+	selectedRef            rowRef
+	groupMode              map[string]groupMode
+	stateFilter            map[session.RuntimeState]bool
+	waitingFilter          bool
+	showAll                bool
+	staleHidden            int
+	query                  string
+	matched                int
+	searching              bool
+	composing              bool
+	compose                string
+	composeTarget          session.Session
+	showHelp               bool
+	helpFromFullscreen     bool
+	previewOn              bool
+	previewFullscreen      bool
+	previewKey             sessionKey
+	previewContent         []string
+	previewErr             string
+	previewPending         bool
+	previewFullKey         sessionKey
+	previewFullContent     []string
+	previewFullErr         string
+	previewFullPending     bool
+	previewScrollOffset    int
+	previewSearching       bool
+	previewSearchQuery     string
+	previewSearchActive    bool
+	previewSearchNoMatches bool
+	previewSearchMatches   []int
+	previewSearchIndex     int
+	activity               map[sessionKey]activityEntry
+	activityPending        map[sessionKey]bool
+	pins                   map[sessionKey]bool
+	killSeq                uint64
+	killPending            bool
+	killTargets            []session.Session
+	killGroup              string
+	collecting             bool
+	pendingUpdate          *Update
+	coalescing             bool
+	interactionSeq         uint64
+	spinner                int
+	generation             uint64
+	loading                []string
+	cancelCollect          context.CancelFunc
+	initialCollect         tea.Cmd
+	status                 string
+	width                  int
+	height                 int
+	noColor                bool
+	styles                 viewStyles
 }
 
 func newModel(ctx context.Context, deps Dependencies) model {
@@ -376,9 +382,20 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	// two states consistent. j/k and the page keys scroll the captured
 	// scrollback instead of moving the (hidden) list selection.
 	if value.previewFullscreen {
+		if value.previewSearching {
+			return value.updateFullscreenSearchInput(key), nil
+		}
 		switch {
-		case key.Text == "f", key.Code == tea.KeyEscape:
+		case key.Text == "f":
 			value.previewFullscreen = false
+		case key.Code == tea.KeyEscape:
+			// Esc hierarchy: an active search is cleared before it closes
+			// fullscreen, so the user gets their scrollback view back first.
+			if value.previewSearchActive {
+				value = value.clearFullscreenSearch()
+			} else {
+				value.previewFullscreen = false
+			}
 		case key.Text == "p":
 			value.previewFullscreen = false
 			value.previewOn = false
@@ -401,6 +418,13 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 				value.cancelCollect()
 			}
 			return value, tea.Quit
+		case key.Text == "/":
+			value.previewSearching = true
+			value.previewSearchQuery = ""
+		case key.Text == "n" && value.previewSearchActive:
+			value.advanceFullscreenSearch(1)
+		case key.Text == "N" && value.previewSearchActive:
+			value.advanceFullscreenSearch(-1)
 		case key.Code == tea.KeyUp, key.Code == 'k':
 			value.scrollFullscreen(1)
 		case key.Code == tea.KeyDown, key.Code == 'j':

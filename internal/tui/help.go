@@ -51,7 +51,13 @@ var helpBindings = []helpBinding{
 	{key: "g / G · Home / End", text: "jump to top / end"},
 	{key: "1-9", text: "jump to group", featured: []helpContext{helpGroupRow}},
 	{key: "PgUp / PgDn · Ctrl+U / Ctrl+D", text: "page up / down"},
-	{key: "/", text: "search"},
+	{
+		key:            "/",
+		text:           "search",
+		altDescription: "search buffer",
+		altContext:     helpFullscreen,
+		featured:       []helpContext{helpFullscreen},
+	},
 	{key: "! / @ / # / $", text: "filter attached / running / idle / needs input", featured: []helpContext{helpFilterActive}},
 	{key: "a", text: "show / hide sessions older than 7d"},
 	{
@@ -63,6 +69,7 @@ var helpBindings = []helpBinding{
 	},
 	{key: "f", text: "fullscreen preview", featured: []helpContext{helpPreview}},
 	{key: "j / k · PgUp / PgDn · Ctrl+U / Ctrl+D", text: "scroll scrollback", featured: []helpContext{helpFullscreen}},
+	{key: "n / N", text: "next / previous match", featured: []helpContext{helpFullscreen}},
 	{key: "P", text: "pin / unpin session", featured: []helpContext{helpSessionRow}},
 	{key: "x", text: "kill session / group (3s grace · u undo)", featured: []helpContext{helpGroupRow, helpSessionRow}},
 	{key: "u", text: "undo the pending kill", featured: []helpContext{helpKillPending}},
