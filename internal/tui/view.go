@@ -79,7 +79,15 @@ func (value model) View() tea.View {
 	// always false for an empty inventory (nothing to select), so details
 	// plays no part in this reservation; reservedDiagnosticLines mirrors
 	// boundedLayout's own diagnosticHeight formula with details fixed at 0.
-	reservedDiagnosticLines := len(diagnostics)
+	//
+	// emptyDiagnosticFloor (updateModel) guards against the reservation
+	// shrinking on its own: an error status's auto-dismiss timer clearing
+	// value.status is not a user action, so it must not be enough on its
+	// own to promote the empty state to a taller tier mid-countdown. The
+	// floor is a lower bound, not the actual count, so it never stops a
+	// *larger* diagnostics count (a newly arrived error) from reserving
+	// more room than before.
+	reservedDiagnosticLines := max(len(diagnostics), value.emptyDiagnosticFloor)
 	if value.height > 0 {
 		statusFloor := 0
 		if value.status != "" {

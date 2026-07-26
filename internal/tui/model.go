@@ -165,6 +165,7 @@ type model struct {
 	status                 string
 	statusSeq              uint64
 	statusRemaining        int
+	emptyDiagnosticFloor   int
 	width                  int
 	height                 int
 	noColor                bool
@@ -215,7 +216,8 @@ func (value model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 // countdown — that's intentional, not an oversight.
 func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 	if tick, ok := message.(statusTickMsg); ok {
-		return value.updateStatusTick(tick)
+		updated, command := value.updateStatusTick(tick)
+		return updated.settleEmptyDiagnosticFloor(message), command
 	}
 	before := value.status
 	updated, command := dispatchModel(value, message)
@@ -228,7 +230,29 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 			updated.statusRemaining = 0
 		}
 	}
-	return updated, command
+	return updated.settleEmptyDiagnosticFloor(message), command
+}
+
+// settleEmptyDiagnosticFloor tracks emptyDiagnosticFloor, the lower bound
+// View applies to the empty-state tier's diagnostic-line reservation. A
+// status auto-dismissing (statusTickMsg clearing value.status) is not a user
+// action, so the empty state must not promote to a taller tier on its own
+// mid-countdown; the floor holds the reservation at its highest level seen
+// since the last real user action. A user action (a keypress or a resize)
+// resets the floor to the current count instead, so the tier can shrink or
+// grow freely again once the user has actually done something. Every other
+// message (collection updates, ticks, ...) only raises the floor, never
+// lowers it, so a diagnostic that legitimately clears on its own (e.g. a
+// host reconnecting) still can't demote until a user action confirms it.
+func (value model) settleEmptyDiagnosticFloor(message tea.Msg) model {
+	count := len(value.diagnostics(value.width))
+	switch message.(type) {
+	case tea.KeyPressMsg, tea.WindowSizeMsg:
+		value.emptyDiagnosticFloor = count
+	default:
+		value.emptyDiagnosticFloor = max(value.emptyDiagnosticFloor, count)
+	}
+	return value
 }
 
 func dispatchModel(value model, message tea.Msg) (model, tea.Cmd) {
