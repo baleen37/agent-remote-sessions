@@ -130,7 +130,7 @@ func TestStatusLineSurvivesLongListWithoutPreview(t *testing.T) {
 func TestStatusLineSurvivesExtremeStarvation(t *testing.T) {
 	value := readyModel()
 	value.width = 120
-	value.height = 8
+	value.height = 9
 	value.result.Sessions = longSessionList(40)
 	value.refreshVisible()
 	value.result.Warnings = []output.HostError{
@@ -190,7 +190,7 @@ func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 func TestSmallHeightBoundsMaximumLengthCWDDetails(t *testing.T) {
 	model := readyModel()
 	model.width = 48
-	model.height = 9
+	model.height = 10
 	model.noColor = true
 	item := twoSessions()[0]
 	item.CWD = "/" + strings.Repeat("c", session.MaxCWDBytes-1)
@@ -261,6 +261,7 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	lines := strings.Split(ansi.Strip(value.View().Content), "\n")
 
 	header := lineContaining(t, lines, "ars  ● 1 attached · ○ 1 idle")
+	pillBar := lineContaining(t, lines, "[All]")
 	firstHeader := lineContaining(t, lines, "▾ ars (1)")
 	activeRow := lineContaining(t, lines, "attached(1)")
 	secondHeader := lineContaining(t, lines, "▾ api (1)")
@@ -268,11 +269,14 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	details := lineContaining(t, lines, "/work/ars")
 	help := lineContaining(t, lines, "↑↓/jk move")
 
+	if pillBar != header+1 {
+		t.Fatalf("pill bar is not immediately below the header:\n%s", strings.Join(lines, "\n"))
+	}
 	for _, pair := range []struct {
 		before int
 		after  int
 	}{
-		{header, firstHeader},
+		{pillBar, firstHeader},
 		{recentRow, details},
 		{details, help},
 	} {
@@ -817,20 +821,23 @@ func TestHeaderShowsFilterIndicatorWhenActive(t *testing.T) {
 	model := readyModel()
 	model.width, model.noColor = 120, true
 	content := ansi.Strip(model.View().Content)
-	if strings.Contains(content, "· filter") {
-		t.Fatalf("header shows filter indicator with no filter active: %q", content)
+	if strings.Contains(content, "[● 1]") || strings.Contains(content, "[○ 1]") {
+		t.Fatalf("pill bar shows an active pill with no filter active: %q", content)
+	}
+	if !strings.Contains(content, "[All]") {
+		t.Fatalf("pill bar missing active All pill with no filter active: %q", content)
 	}
 
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "!"}))
 	content = ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "· filter ●") {
-		t.Fatalf("header missing filter indicator for attached: %q", content)
+	if !strings.Contains(content, "[● 1]") {
+		t.Fatalf("pill bar missing active pill for attached: %q", content)
 	}
 
 	model, _ = updateModel(model, tea.KeyPressMsg(tea.Key{Text: "#"}))
 	content = ansi.Strip(model.View().Content)
-	if !strings.Contains(content, "· filter ●○") {
-		t.Fatalf("header missing combined filter indicator: %q", content)
+	if !strings.Contains(content, "[● 1]") || !strings.Contains(content, "[○ 1]") {
+		t.Fatalf("pill bar missing combined active pills: %q", content)
 	}
 }
 

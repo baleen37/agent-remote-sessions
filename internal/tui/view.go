@@ -17,6 +17,10 @@ const (
 	providerColumnWidth = 70
 	clientColumnWidth   = 55
 	spinnerInterval     = 100 * time.Millisecond
+	// frameTop is the header, pill bar, and the blank line under them.
+	frameTop = 3
+	// frameBottom is the blank line above the footer and the footer itself.
+	frameBottom = 2
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -83,7 +87,7 @@ func (value model) View() tea.View {
 		body = value.joinPreview(body, listWidth, previewCols, panelHeight)
 	}
 
-	lines := []string{value.header(width), ""}
+	lines := []string{value.header(width), value.pillBar(width), ""}
 	lines = append(lines, body...)
 	lines = append(lines, "")
 	lines = append(lines, details...)
@@ -101,8 +105,10 @@ func (value model) View() tea.View {
 
 // boundedLayout bounds the detail and diagnostics lines to the terminal
 // height and returns them alongside the height left for the session list.
-// movePage derives its page step from the same computation so paging matches
-// one visible screen.
+// The fixed frame is header + pill bar + blank line above the body
+// (frameTop) and blank line + footer below it (frameBottom); movePage
+// derives its page step from the same computation so paging matches one
+// visible screen.
 //
 // Diagnostics (errors, then warnings, then the status line last) compete
 // with the body for the same budget instead of only getting body leftovers:
@@ -120,16 +126,16 @@ func (value model) boundedLayout(details []string, selected session.Session, dia
 	if value.status != "" {
 		statusFloor = 1
 	}
-	detailHeight := value.height - (2 + 1 + 1 + statusFloor + searchLines + 2)
+	detailHeight := value.height - (frameTop + 1 + 1 + statusFloor + searchLines + frameBottom)
 	if len(details) > detailHeight {
 		details = boundedDetailLines(selected, width, detailHeight, value.deps.Now())
 	}
-	diagnosticHeight := value.height - (2 + 1 + len(details) + 1 + searchLines + 2)
+	diagnosticHeight := value.height - (frameTop + 1 + len(details) + 1 + searchLines + frameBottom)
 	diagnosticHeight = max(diagnosticHeight, statusFloor)
 	if len(diagnostics) > diagnosticHeight {
 		diagnostics = diagnostics[len(diagnostics)-diagnosticHeight:]
 	}
-	bodyHeight := max(1, value.height-(2+1+len(details)+len(diagnostics)+searchLines+2))
+	bodyHeight := max(1, value.height-(frameTop+1+len(details)+len(diagnostics)+searchLines+frameBottom))
 	return details, diagnostics, bodyHeight
 }
 
@@ -290,9 +296,9 @@ func (value model) contentWidth() int {
 
 // header assembles the agent-deck style header: a compact status logo, the
 // title, a status-count summary replacing the old active/recent tally, the
-// existing suffixes (showing all / older hidden / peers / refreshing /
-// filter), and a right-aligned version dropped when it would not fit into
-// width.
+// existing suffixes (showing all / older hidden / peers / refreshing), and a
+// right-aligned version dropped when it would not fit into width. The
+// active-filter indicator lives in the pill bar below instead.
 func (value model) header(width int) string {
 	left := value.headerContent()
 	version := value.versionText()
@@ -310,23 +316,7 @@ func (value model) header(width int) string {
 // headerContent builds the left-hand header content: logo, title, and
 // status stats, without the right-aligned version.
 func (value model) headerContent() string {
-	counted := value.result.Sessions
-	if value.query == "" {
-		counted, _ = filterByStale(counted, value.deps.Now(), value.showAll, value.pins)
-	}
-	var attached, running, waiting, idle int
-	for _, item := range counted {
-		switch {
-		case item.Runtime.State == session.RuntimeAttached:
-			attached++
-		case item.Runtime.State == session.RuntimeRunning && value.activity[keyOf(item)].state == activityWaiting:
-			waiting++
-		case item.Runtime.State == session.RuntimeRunning:
-			running++
-		default:
-			idle++
-		}
-	}
+	attached, running, waiting, idle := value.stateCounts()
 	peers := 0
 	for _, host := range value.result.Hosts {
 		if host.Target != value.deps.LocalTarget {
@@ -349,11 +339,33 @@ func (value model) headerContent() string {
 	if value.collecting {
 		stats += " · " + spinnerFrames[value.spinner%len(spinnerFrames)] + " refreshing"
 	}
-	if symbols := value.filterSymbols(); symbols != "" {
-		stats += " · filter " + symbols
-	}
 	live := attached + running + waiting
 	return value.statusLogo(live) + " " + value.titleText() + stats
+}
+
+// stateCounts tallies sessions by presentation state (attached/running/
+// waiting/idle) before any state filter is applied, so the header and pill
+// bar can both show what each filter would reveal rather than the currently
+// filtered subset. Staleness (showAll / older-hidden) still narrows the
+// count, matching what the visible list would contain with filters cleared.
+func (value model) stateCounts() (attached, running, waiting, idle int) {
+	counted := value.result.Sessions
+	if value.query == "" {
+		counted, _ = filterByStale(counted, value.deps.Now(), value.showAll, value.pins)
+	}
+	for _, item := range counted {
+		switch {
+		case item.Runtime.State == session.RuntimeAttached:
+			attached++
+		case item.Runtime.State == session.RuntimeRunning && value.activity[keyOf(item)].state == activityWaiting:
+			waiting++
+		case item.Runtime.State == session.RuntimeRunning:
+			running++
+		default:
+			idle++
+		}
+	}
+	return attached, running, waiting, idle
 }
 
 // statusCounts renders the attached/running/waiting/idle tally, symbol
@@ -381,6 +393,50 @@ func (value model) countPart(symbol string, symbolStyle lipgloss.Style, count in
 		return symbol + " " + text
 	}
 	return symbolStyle.Render(symbol) + " " + value.styles.muted.Render(text)
+}
+
+// pillBar renders the always-present filter pill row beneath the header: an
+// "All" pill plus one pill per runtime state, each showing the count that
+// state would have with filters cleared (state filters change what's
+// visible, not what's counted, so toggling a pill doesn't move the numbers
+// on the others). Pills stay in the line even at a zero count so toggling
+// filters never shifts the layout.
+func (value model) pillBar(width int) string {
+	attached, running, waiting, idle := value.stateCounts()
+	pills := []string{
+		value.renderPill("All", value.styles.muted, 0, !value.filterActive(), true),
+		value.renderPill("●", value.styles.attached, attached, value.stateFilter[session.RuntimeAttached], false),
+		value.renderPill("◐", value.styles.running, running, value.stateFilter[session.RuntimeRunning], false),
+		value.renderPill("○", value.styles.saved, idle, value.stateFilter[session.RuntimeSaved], false),
+		value.renderPill("?", value.styles.failure, waiting, value.waitingFilter, false),
+	}
+	return fitLine(strings.Join(pills, "   "), width)
+}
+
+// renderPill renders a single pill. isAll pills have no count (always
+// "All"); the rest read "symbol N". Active pills get the state's foreground
+// bolded and reversed to read as a filled chip; inactive pills keep just the
+// foreground. A zero count still renders, faint, so the pill never
+// disappears and jumps the layout. Under noColor, only active pills gain a
+// bracket since there's no other way to mark them.
+func (value model) renderPill(symbol string, style lipgloss.Style, count int, active, isAll bool) string {
+	text := symbol
+	if !isAll {
+		text = fmt.Sprintf("%s %d", symbol, count)
+	}
+	if value.noColor {
+		if active {
+			return "[" + text + "]"
+		}
+		return text
+	}
+	if !isAll && count == 0 {
+		return value.styles.muted.Render(text)
+	}
+	if active {
+		return style.Bold(true).Reverse(true).Render(text)
+	}
+	return style.Render(text)
 }
 
 // statusLogo renders the fixed 3-cell "⟨●●○⟩" summary, filling from the left
@@ -415,22 +471,6 @@ func (value model) versionText() string {
 		return text
 	}
 	return value.styles.muted.Render(text)
-}
-
-// filterSymbols returns the state symbols for the active filter, in
-// attached/running/saved order with the needs-input marker last, or "" when no
-// filter is active.
-func (value model) filterSymbols() string {
-	symbols := ""
-	for _, state := range []session.RuntimeState{session.RuntimeAttached, session.RuntimeRunning, session.RuntimeSaved} {
-		if value.stateFilter[state] {
-			symbols += stateSymbol(state)
-		}
-	}
-	if value.waitingFilter {
-		symbols += activityWaitingSymbol
-	}
-	return symbols
 }
 
 func sessionTitle(item session.Session) string {

@@ -183,7 +183,7 @@ func TestScrollIndicatorKeepsBodyWithinHeightAtTransition(t *testing.T) {
 }
 
 func TestScrollIndicatorBodyNeverExceedsHeightAcrossSelections(t *testing.T) {
-	for _, height := range []int{6, 8, 10, 12} {
+	for _, height := range []int{7, 8, 10, 12} {
 		for selected := range 20 {
 			value := manySessionsModel(20)
 			value.width, value.height, value.noColor = 80, height, true
