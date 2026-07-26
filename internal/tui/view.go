@@ -86,8 +86,9 @@ func (value model) View() tea.View {
 	// so it needs to know upfront how many lines diagnostics/search will
 	// actually keep — not just how many they start with. hasSelection is
 	// always false for an empty inventory (nothing to select), so details
-	// plays no part in this reservation; reservedDiagnosticLines mirrors
-	// boundedLayout's own diagnosticHeight formula with details fixed at 0.
+	// plays no part in this reservation; reservedDiagnosticLines shares
+	// diagnosticBudget with boundedLayout's own diagnosticHeight, called
+	// here with details fixed at 0.
 	//
 	// emptyDiagnosticFloor (updateModel) guards against the reservation
 	// shrinking on its own: an error status's auto-dismiss timer clearing
@@ -98,12 +99,7 @@ func (value model) View() tea.View {
 	// more room than before.
 	reservedDiagnosticLines := max(len(diagnostics), value.emptyDiagnosticFloor)
 	if value.height > 0 {
-		statusFloor := 0
-		if value.status != "" {
-			statusFloor = 1
-		}
-		budget := value.height - (frameTop + 1 + 1 + len(search) + frameBottom)
-		budget = max(budget, statusFloor)
+		budget := diagnosticBudget(value.height, 0, len(search), value.status != "")
 		reservedDiagnosticLines = min(reservedDiagnosticLines, budget)
 	}
 	body, selectedLine := value.sessionLines(listWidth, reservedDiagnosticLines+len(search))
@@ -178,13 +174,29 @@ func (value model) boundedLayout(details []string, selected session.Session, dia
 	if len(details) > detailHeight {
 		details = boundedDetailLines(selected, width, detailHeight, value.deps.Now())
 	}
-	diagnosticHeight := value.height - (frameTop + 1 + len(details) + 1 + searchLines + frameBottom)
-	diagnosticHeight = max(diagnosticHeight, statusFloor)
+	diagnosticHeight := diagnosticBudget(value.height, len(details), searchLines, value.status != "")
 	if len(diagnostics) > diagnosticHeight {
 		diagnostics = diagnostics[len(diagnostics)-diagnosticHeight:]
 	}
 	bodyHeight := max(1, value.height-(frameTop+1+len(details)+len(diagnostics)+searchLines+frameBottom))
 	return details, diagnostics, bodyHeight
+}
+
+// diagnosticBudget computes how many lines diagnostics may occupy: the
+// height left after the fixed frame, the detail lines, and the search line,
+// floored at 1 when the status line is present so it's never squeezed to
+// zero. Shared by boundedLayout (which then actually truncates diagnostics
+// to this budget) and View's pre-boundedLayout reservation for the
+// truly-empty-inventory tier, which needs the same number before
+// boundedLayout has run to know how much room diagnostics/search will
+// actually keep.
+func diagnosticBudget(height, detailLines, searchLines int, hasStatus bool) int {
+	statusFloor := 0
+	if hasStatus {
+		statusFloor = 1
+	}
+	budget := height - (frameTop + 1 + detailLines + 1 + searchLines + frameBottom)
+	return max(budget, statusFloor)
 }
 
 // assembleDualBody renders the side-by-side (dual) layout: the list windowed
