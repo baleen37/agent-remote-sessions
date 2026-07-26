@@ -41,7 +41,6 @@ func (value model) View() tea.View {
 	if previewShown && layout == previewDual {
 		listWidth, previewCols = value.splitWidths(width)
 	}
-	body, selectedLine := value.sessionLines(listWidth)
 	var details []string
 	selected, hasSelection := value.selectedSession()
 	if hasSelection {
@@ -72,6 +71,24 @@ func (value model) View() tea.View {
 		}
 		search = append(search, fitLine(prefix+value.query+count, width))
 	}
+	// The truly-empty-inventory hint (emptyStateLines, reached via
+	// sessionLines below) has to pick its tier before boundedLayout runs,
+	// so it needs to know upfront how many lines diagnostics/search will
+	// actually keep — not just how many they start with. hasSelection is
+	// always false for an empty inventory (nothing to select), so details
+	// plays no part in this reservation; reservedDiagnosticLines mirrors
+	// boundedLayout's own diagnosticHeight formula with details fixed at 0.
+	reservedDiagnosticLines := len(diagnostics)
+	if value.height > 0 {
+		statusFloor := 0
+		if value.status != "" {
+			statusFloor = 1
+		}
+		budget := value.height - (frameTop + 1 + 1 + len(search) + frameBottom)
+		budget = max(budget, statusFloor)
+		reservedDiagnosticLines = min(reservedDiagnosticLines, budget)
+	}
+	body, selectedLine := value.sessionLines(listWidth, reservedDiagnosticLines+len(search))
 
 	if value.height > 0 {
 		var bodyHeight int
@@ -175,7 +192,7 @@ func (value model) assembleStackedBody(body []string, selectedLine, width, bodyH
 	return append(list, preview...)
 }
 
-func (value model) sessionLines(width int) ([]string, int) {
+func (value model) sessionLines(width, reservedLines int) ([]string, int) {
 	if len(value.rows) == 0 {
 		if value.query != "" {
 			return []string{fitLine(fmt.Sprintf("  no matches for %q · esc to clear", value.query), width)}, 0
@@ -190,7 +207,7 @@ func (value model) sessionLines(width int) ([]string, int) {
 			message := fmt.Sprintf("  all %d sessions are older than 7d · a to show", value.staleHidden)
 			return []string{fitLine(message, width)}, 0
 		}
-		return value.emptyStateLines(width, value.height), 0
+		return value.emptyStateLines(width, value.height, reservedLines), 0
 	}
 	layout := newRowLayout(value.result.Sessions, width, value.deps.Now(), value.deps.LocalTarget, value.pins)
 	lines := make([]string, 0, len(value.rows))
@@ -234,11 +251,21 @@ const emptyStateCompactMinHeight = 8
 // short screens. height <= 0 means the caller isn't bounding the view (see
 // View's "if value.height > 0" guard), so it keeps the compact form rather
 // than guessing a tier.
-func (value model) emptyStateLines(width, height int) []string {
-	if height > 0 && height < emptyStateCompactMinHeight {
+//
+// reservedLines is however many lines diagnostics and the search/compose
+// line will actually keep once boundedLayout runs (computed the same way
+// boundedLayout computes its own diagnosticHeight, since a truly-empty
+// inventory always has zero details). Diagnostics are independent of the
+// session list — a host can fail to connect while reporting zero sessions
+// — so a tall-enough screen can still be too crowded for the full tier;
+// without this, scrolledBody would clip the box logo into a "N more"
+// indicator, exactly what the tiering is meant to avoid.
+func (value model) emptyStateLines(width, height, reservedLines int) []string {
+	available := height - reservedLines
+	if height > 0 && available < emptyStateCompactMinHeight {
 		return []string{fitLine("  no sessions yet · ars remote add <host>", width)}
 	}
-	if height <= 0 || height < emptyStateFullMinHeight || width < emptyStateFullMinWidth {
+	if height <= 0 || available < emptyStateFullMinHeight || width < emptyStateFullMinWidth {
 		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
 		return []string{"  no sessions yet", "", hint}
 	}

@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/baleen37/agent-remote-sessions/internal/output"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -127,6 +129,110 @@ func TestEmptyStateHeightContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEmptyStateHeightContractWithDiagnostics extends the height contract
+// to diagnostic-line counts of 0/1/2 at and around the full-tier boundary,
+// as requested in review: whatever tier is chosen, total rendered lines
+// must never exceed height once diagnostics are factored in.
+func TestEmptyStateHeightContractWithDiagnostics(t *testing.T) {
+	heights := []int{emptyStateFullMinHeight - 1, emptyStateFullMinHeight, emptyStateFullMinHeight + 1, emptyStateFullMinHeight + 2}
+	for _, height := range heights {
+		for _, diagCount := range []int{0, 1, 2} {
+			name := fmt.Sprintf("height=%d/diagnostics=%d", height, diagCount)
+			t.Run(name, func(t *testing.T) {
+				value := emptyModel(120, height, true)
+				for index := 0; index < diagCount; index++ {
+					value.result.Errors = append(value.result.Errors, output.HostError{
+						Host:    "remote",
+						Message: "error",
+						Code:    "E",
+					})
+				}
+				value.refreshVisible()
+				content := ansi.Strip(value.View().Content)
+				lines := strings.Split(content, "\n")
+				if len(lines) > height {
+					t.Fatalf("height=%d diagnostics=%d rendered %d lines, want <= height:\n%s", height, diagCount, len(lines), content)
+				}
+			})
+		}
+	}
+}
+
+// TestEmptyStateDemotesWhenDiagnosticsCrowdTheBudget guards against a gap
+// found in review: diagnostics (host errors, warnings, the status line) are
+// independent of the session inventory — a host can fail to connect while
+// reporting zero sessions — so a height that comfortably fits the full
+// tier's 8-line box logo on its own can still be too crowded once
+// diagnostics take their share of the budget. Before the fix, emptyStateLines
+// picked its tier from height alone, so boundedLayout would then shrink
+// bodyHeight out from under the already-chosen full tier and scrolledBody
+// would clip the box logo into a "N more" indicator — exactly what the
+// tiering exists to avoid.
+func TestEmptyStateDemotesWhenDiagnosticsCrowdTheBudget(t *testing.T) {
+	t.Run("host-error", func(t *testing.T) {
+		value := emptyModel(120, emptyStateFullMinHeight, true)
+		value.result.Errors = []output.HostError{{Host: "remote1", Message: "connection refused", Code: "ECONNREFUSED"}}
+		value.refreshVisible()
+		content := ansi.Strip(value.View().Content)
+		if strings.Contains(content, "┌──┬──┬──┐") {
+			t.Fatalf("full tier should have been demoted by a host error: %q", content)
+		}
+		if strings.Contains(content, "more") {
+			t.Fatalf("empty state body got clipped into a scroll indicator: %q", content)
+		}
+		if !strings.Contains(content, "connection refused") {
+			t.Fatalf("host error itself must still render: %q", content)
+		}
+		lines := strings.Split(content, "\n")
+		if len(lines) > emptyStateFullMinHeight {
+			t.Fatalf("rendered %d lines, want <= %d:\n%s", len(lines), emptyStateFullMinHeight, content)
+		}
+	})
+
+	t.Run("warning", func(t *testing.T) {
+		value := emptyModel(120, emptyStateFullMinHeight, true)
+		value.result.Warnings = []output.HostError{{Host: "remote2", Message: "slow to respond", Code: "SLOW"}}
+		value.refreshVisible()
+		content := ansi.Strip(value.View().Content)
+		if strings.Contains(content, "┌──┬──┬──┐") {
+			t.Fatalf("full tier should have been demoted by a warning: %q", content)
+		}
+		if strings.Contains(content, "more") {
+			t.Fatalf("empty state body got clipped into a scroll indicator: %q", content)
+		}
+	})
+
+	t.Run("status-line", func(t *testing.T) {
+		value := emptyModel(120, emptyStateFullMinHeight, true)
+		value.status = "kill failed: boom"
+		content := ansi.Strip(value.View().Content)
+		if strings.Contains(content, "┌──┬──┬──┐") {
+			t.Fatalf("full tier should have been demoted by the status line: %q", content)
+		}
+		if strings.Contains(content, "more") {
+			t.Fatalf("empty state body got clipped into a scroll indicator: %q", content)
+		}
+	})
+
+	t.Run("enough-headroom-keeps-full-tier", func(t *testing.T) {
+		// One extra line of height over the boundary is enough to absorb
+		// one diagnostic line without demoting: the control for the three
+		// cases above, proving the demotion is diagnostics-driven and not
+		// just "any diagnostic always demotes".
+		value := emptyModel(120, emptyStateFullMinHeight+1, true)
+		value.result.Errors = []output.HostError{{Host: "remote1", Message: "connection refused", Code: "ECONNREFUSED"}}
+		value.refreshVisible()
+		content := ansi.Strip(value.View().Content)
+		if !strings.Contains(content, "┌──┬──┬──┐") {
+			t.Fatalf("full tier should survive one diagnostic line with one line of headroom: %q", content)
+		}
+		lines := strings.Split(content, "\n")
+		if len(lines) > emptyStateFullMinHeight+1 {
+			t.Fatalf("rendered %d lines, want <= %d:\n%s", len(lines), emptyStateFullMinHeight+1, content)
+		}
+	})
 }
 
 // TestEmptyStateOtherBranchesUnaffected guards the brief's scope boundary:
