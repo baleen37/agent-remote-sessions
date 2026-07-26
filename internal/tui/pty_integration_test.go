@@ -89,7 +89,10 @@ func TestPTYProgressiveUpdatesStayStableDuringNavigation(t *testing.T) {
 	cache := progressivePTYResult("initial")
 	collection <- Update{Result: cache, Loading: []string{"cached"}}
 	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
-		return strings.Contains(value, "initial session 01") &&
+		// The default 65%-preview split narrows the list column enough at 120
+		// columns to truncate the full "initial session NN" title, so this
+		// only asserts the surviving prefix.
+		return strings.Contains(value, "initial s") &&
 			strings.Contains(value, "refreshing")
 	}, "initial progressive snapshot")
 	waitForPTYPreview(t, previewed, cache.Sessions[0].NativeID, "initial selected session")
@@ -130,7 +133,9 @@ func TestPTYProgressiveUpdatesStayStableDuringNavigation(t *testing.T) {
 
 	finalStart := len(capture.String())
 	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
-		return strings.Contains(value[finalStart:], "final session 01")
+		// See the initial-snapshot assertion above: the narrowed list column
+		// truncates the full title, so only the surviving prefix is checked.
+		return strings.Contains(value[finalStart:], "final se")
 	}, "final snapshot after interaction idle")
 	finalDelta := capture.String()[finalStart:]
 	for _, forbidden := range []string{"recent-first", "complete", "loading server"} {

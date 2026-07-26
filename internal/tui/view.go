@@ -38,7 +38,7 @@ func (value model) View() tea.View {
 	listWidth := width
 	previewCols := 0
 	if previewShown {
-		listWidth, previewCols = previewWidth(width)
+		listWidth, previewCols = value.splitWidths(width)
 	}
 	body, selectedLine := value.sessionLines(listWidth)
 	var details []string
@@ -82,7 +82,7 @@ func (value model) View() tea.View {
 		}
 		body = value.scrolledBody(body, selectedLine, listHeight, listWidth)
 		if previewShown && bodyHeight > 2 {
-			body = append(value.panelTitle("SESSIONS", listWidth), body...)
+			body = append(value.splitPanelTitle("SESSIONS", 100-value.previewPct, listWidth), body...)
 		}
 		panelHeight = bodyHeight
 	}
@@ -689,7 +689,7 @@ func (value model) help(width int) string {
 		items = append(items, label)
 	}
 	if value.previewVisible() {
-		items = append(items, "f full")
+		items = append(items, "f full", "</> resize")
 	}
 	items = append(items, action, "r refresh", "q quit", "? help")
 	return joinFooterItems(items, separator, width)
@@ -700,7 +700,7 @@ func (value model) help(width int) string {
 // Higher priority items (navigation, search, quit, help, etc.) are never
 // dropped, so on very narrow terminals the line may still overflow.
 func joinFooterItems(items []string, separator string, width int) string {
-	droppable := []string{"g/G top/end", "P pin", "m msg", "x kill", "!@#$ filter", "a older", "1-9 group", "h/l fold", "f full"}
+	droppable := []string{"g/G top/end", "P pin", "m msg", "x kill", "!@#$ filter", "a older", "1-9 group", "h/l fold", "</> resize", "f full"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {

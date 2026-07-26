@@ -68,6 +68,7 @@ var helpBindings = []helpBinding{
 		featured:       []helpContext{helpPreview},
 	},
 	{key: "f", text: "fullscreen preview", featured: []helpContext{helpPreview}},
+	{key: "< / >", text: "shrink / grow preview split", featured: []helpContext{helpPreview}},
 	{key: "j / k · PgUp / PgDn · Ctrl+U / Ctrl+D", text: "scroll scrollback", featured: []helpContext{helpFullscreen}},
 	{key: "n / N", text: "next / previous match", featured: []helpContext{helpFullscreen}},
 	{key: "P", text: "pin / unpin session", featured: []helpContext{helpSessionRow}},
