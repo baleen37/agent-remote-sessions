@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	maxStatusBytes  = 256
-	interactionIdle = 300 * time.Millisecond
+	maxStatusBytes       = 256
+	interactionIdle      = 300 * time.Millisecond
+	statusDismissSeconds = 5
+	statusTickInterval   = time.Second
 )
 
 type Result struct {
@@ -71,6 +73,37 @@ type interactionIdleMsg struct {
 
 type attachDoneMsg struct {
 	err error
+}
+
+// statusTickMsg drives the error-status auto-dismiss countdown, one second at
+// a time. seq guards it the same way killFireMsg guards the kill grace period
+// (kill.go): a message whose seq no longer matches value.statusSeq belongs to
+// a status that has since changed, and is ignored.
+type statusTickMsg struct {
+	seq uint64
+}
+
+func statusTick(seq uint64) tea.Cmd {
+	return tea.Tick(statusTickInterval, func(time.Time) tea.Msg {
+		return statusTickMsg{seq: seq}
+	})
+}
+
+// updateStatusTick advances the auto-dismiss countdown. The guard re-checks
+// isErrorStatus, not just the seq, in case a non-key message path (PR #48)
+// changed value.status without going through updateModel's before/after
+// comparison in a way that left a stale seq match.
+func (value model) updateStatusTick(message statusTickMsg) (model, tea.Cmd) {
+	if message.seq != value.statusSeq || !isErrorStatus(value.status) {
+		return value, nil
+	}
+	if value.statusRemaining <= 1 {
+		value.status = ""
+		value.statusRemaining = 0
+		return value, nil
+	}
+	value.statusRemaining--
+	return value, statusTick(message.seq)
 }
 
 type model struct {
@@ -130,6 +163,8 @@ type model struct {
 	cancelCollect          context.CancelFunc
 	initialCollect         tea.Cmd
 	status                 string
+	statusSeq              uint64
+	statusRemaining        int
 	width                  int
 	height                 int
 	noColor                bool
@@ -171,7 +206,32 @@ func (value model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return updated, command
 }
 
+// updateModel wraps dispatchModel to centrally arm the error-status
+// auto-dismiss timer: statusTickMsg itself must not re-arm (it never changes
+// value.status), so it is handled before the before/after status capture.
+// Every other message goes through dispatchModel, and if that changed
+// value.status, statusSeq bumps to invalidate any timer already in flight.
+// Setting the same string again is not a change, so it does not reset the
+// countdown — that's intentional, not an oversight.
 func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
+	if tick, ok := message.(statusTickMsg); ok {
+		return value.updateStatusTick(tick)
+	}
+	before := value.status
+	updated, command := dispatchModel(value, message)
+	if updated.status != before {
+		updated.statusSeq++
+		if isErrorStatus(updated.status) {
+			updated.statusRemaining = statusDismissSeconds
+			command = tea.Batch(command, statusTick(updated.statusSeq))
+		} else {
+			updated.statusRemaining = 0
+		}
+	}
+	return updated, command
+}
+
+func dispatchModel(value model, message tea.Msg) (model, tea.Cmd) {
 	switch message := message.(type) {
 	case collectUpdateMsg:
 		if message.generation != value.generation {

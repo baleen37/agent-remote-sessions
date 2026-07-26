@@ -168,8 +168,12 @@ func TestModelKillFireReportsFailureStatus(t *testing.T) {
 	model, command := updateModel(model, killFireMsg{seq: seq})
 	message := command()
 	done := message.(killDoneMsg)
-	model, command = updateModel(model, done)
-	if command != nil {
+	generation := model.generation
+	model, _ = updateModel(model, done)
+	// The error status now arms an auto-dismiss tick, so a command is
+	// expected; what must not happen is a collection restart (unchanged
+	// generation is restartCollection's tell, per model.go).
+	if model.generation != generation {
 		t.Fatal("failed kill should not restart collection")
 	}
 	want := "kill failed: boom"
@@ -348,7 +352,9 @@ func TestModelKillFailedStatusIsErrorStyled(t *testing.T) {
 		t.Fatal("diagnostics() returned no lines for kill failed status")
 	}
 	got := lines[len(lines)-1]
-	want := model.errorText(model.status, 80)
+	// The countdown suffix is rendered-only (model.status itself stays bare),
+	// so the expectation must include it too.
+	want := model.errorText(model.status+" · 5s", 80)
 	if got != want {
 		t.Fatalf("kill failed status rendered = %q, want error-styled %q", got, want)
 	}
@@ -578,8 +584,12 @@ func TestModelGroupKillTotalFailureDoesNotRestartCollection(t *testing.T) {
 	model, command := updateModel(model, killFireMsg{seq: seq})
 	done := command().(killDoneMsg)
 
-	model, command = updateModel(model, done)
-	if command != nil {
+	generation := model.generation
+	model, _ = updateModel(model, done)
+	// The error status now arms an auto-dismiss tick, so a command is
+	// expected; what must not happen is a collection restart (unchanged
+	// generation is restartCollection's tell, per model.go).
+	if model.generation != generation {
 		t.Fatal("a wholly failed batch should not restart collection")
 	}
 	want := "kill failed: 2 of 2 sessions in " + row.project + ": boom"
@@ -606,7 +616,9 @@ func TestModelGroupKillFailedStatusIsErrorStyled(t *testing.T) {
 		t.Fatal("diagnostics() returned no lines for the group kill failed status")
 	}
 	got := lines[len(lines)-1]
-	want := model.errorText(model.status, 80)
+	// The countdown suffix is rendered-only (model.status itself stays bare),
+	// so the expectation must include it too.
+	want := model.errorText(model.status+" · 5s", 80)
 	if got != want {
 		t.Fatalf("group kill failed status rendered = %q, want error-styled %q", got, want)
 	}

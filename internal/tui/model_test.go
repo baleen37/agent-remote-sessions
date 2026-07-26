@@ -98,8 +98,10 @@ func TestPageStepShrinksWhileComposingLikeSearching(t *testing.T) {
 }
 
 // collectionFrom drains a refresh command into its collectUpdateMsg. Refresh
-// batches the collection with a spinner tick, so the batch children run
-// concurrently and the first collectUpdateMsg wins over the slow tick.
+// batches the collection with a spinner tick (and, since the error-status
+// auto-dismiss timer, sometimes a nested batch carrying a statusTick too), so
+// children are drained recursively and concurrently, and the first
+// collectUpdateMsg wins over the slower ticks.
 func collectionFrom(command tea.Cmd) collectUpdateMsg {
 	message := command()
 	batch, ok := message.(tea.BatchMsg)
@@ -108,13 +110,20 @@ func collectionFrom(command tea.Cmd) collectUpdateMsg {
 	}
 	found := make(chan collectUpdateMsg, len(batch))
 	for _, child := range batch {
-		go func(child tea.Cmd) {
-			if update, ok := child().(collectUpdateMsg); ok {
-				found <- update
-			}
-		}(child)
+		go drainForCollection(child, found)
 	}
 	return <-found
+}
+
+func drainForCollection(command tea.Cmd, found chan<- collectUpdateMsg) {
+	switch message := command().(type) {
+	case collectUpdateMsg:
+		found <- message
+	case tea.BatchMsg:
+		for _, child := range message {
+			go drainForCollection(child, found)
+		}
+	}
 }
 
 // initialCommands drains Init's batch into its collectUpdateMsg. The children

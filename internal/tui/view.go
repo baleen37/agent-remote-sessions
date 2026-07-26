@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -699,13 +700,24 @@ func (value model) diagnostics(width int) []string {
 		lines = append(lines, value.mutedText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	if value.status != "" {
-		status := value.mutedText(value.status, width)
-		if strings.HasPrefix(value.status, "attach failed:") || strings.HasPrefix(value.status, "kill failed:") || strings.HasPrefix(value.status, "send failed:") {
-			status = value.errorText(value.status, width)
+		text := value.status
+		status := value.mutedText(text, width)
+		if isErrorStatus(text) {
+			if value.statusRemaining > 0 {
+				text += " · " + strconv.Itoa(value.statusRemaining) + "s"
+			}
+			status = value.errorText(text, width)
 		}
 		lines = append(lines, status)
 	}
 	return lines
+}
+
+// isErrorStatus reports whether status is one of the failure statuses
+// diagnostics() styles as an error, by the same prefixes that arm the
+// auto-dismiss countdown. Extracted so both call sites can't drift apart.
+func isErrorStatus(status string) bool {
+	return strings.HasPrefix(status, "attach failed:") || strings.HasPrefix(status, "kill failed:") || strings.HasPrefix(status, "send failed:")
 }
 
 func diagnosticLine(value output.HostError, localTarget string) string {
