@@ -918,6 +918,11 @@ func (value model) pageStep() int {
 	}
 	diagnostics := value.diagnostics(width)
 	_, _, bodyHeight := value.boundedLayout(details, selected, diagnostics, searchLines, width)
+	if value.previewVisible() && previewLayoutOf(width) == previewStacked {
+		if listRows, _, ok := value.stackedHeights(bodyHeight); ok {
+			return max(1, listRows)
+		}
+	}
 	return max(1, bodyHeight)
 }
 

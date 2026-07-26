@@ -15,6 +15,10 @@ import (
 
 const (
 	previewMinWidth = 100
+	// stackedMinWidth is the floor for the stacked (list-above-preview) layout;
+	// below it the preview is hidden entirely, matching the pre-stacked narrow
+	// behavior.
+	stackedMinWidth = 50
 	previewInterval = 2 * time.Second
 	// previewSeparator is the vertical divider between the list and preview
 	// panels; previewSeparatorWidth is its rendered width, which splitWidths
@@ -38,6 +42,15 @@ const (
 	// splitFlashDuration is how long the panel titles show the split
 	// percentage after a </> adjustment before reverting to their plain text.
 	splitFlashDuration = 1500 * time.Millisecond
+	// panelTitleHeight is the two rows (title + underline) panelTitle spends
+	// out of a panel's row budget.
+	panelTitleHeight = 2
+	// stackedListMinRows and stackedPreviewMinRows are the minimum body rows
+	// (excluding the panel title) each stacked panel needs; below the combined
+	// floor (title heights + these minimums) the preview is silently demoted
+	// and the list renders alone.
+	stackedListMinRows    = 5
+	stackedPreviewMinRows = 3
 )
 
 // splitFlashMsg fires splitFlashDuration after a </> adjustment. seq guards
@@ -146,10 +159,35 @@ type fullPreviewTickMsg struct {
 	key sessionKey
 }
 
+// previewLayout is the width-driven layout the preview panel renders in.
+type previewLayout int
+
+const (
+	previewHidden previewLayout = iota
+	previewStacked
+	previewDual
+)
+
+// previewLayoutOf classifies a content width into one of the three preview
+// layouts: dual (side-by-side) at previewMinWidth and above, stacked
+// (list-above-preview) from stackedMinWidth up to that, and hidden below
+// stackedMinWidth, matching the original narrow-terminal behavior.
+func previewLayoutOf(width int) previewLayout {
+	switch {
+	case width >= previewMinWidth:
+		return previewDual
+	case width >= stackedMinWidth:
+		return previewStacked
+	default:
+		return previewHidden
+	}
+}
+
 // previewVisible reports whether the preview panel should render: enabled by
-// the user, wide enough, and wired with a Preview dependency.
+// the user, wired with a Preview dependency, and wide enough for either the
+// dual or stacked layout.
 func (value model) previewVisible() bool {
-	return value.previewOn && value.deps.Preview != nil && value.contentWidth() >= previewMinWidth
+	return previewLayoutOf(value.contentWidth()) != previewHidden && value.previewOn && value.deps.Preview != nil
 }
 
 // closePreview clears the capture state the panel renders from, so a reopened
@@ -171,6 +209,34 @@ func (value model) splitWidths(total int) (list, preview int) {
 	preview = max(panelMinWidth, min(preview, available-panelMinWidth))
 	list = available - preview
 	return list, preview
+}
+
+// stackedHeights partitions a stacked layout's bodyHeight between the list
+// and preview panels using value.previewPct as a vertical ratio (reusing
+// task 5's split-ratio field, per the brief). Each panel's title
+// (panelTitleHeight rows) is carved out of its own share before the
+// stackedListMinRows/stackedPreviewMinRows floors are checked, so the
+// returned rows are body rows only, not including the title. ok is false
+// when bodyHeight is too small to fit both panels at their floors; callers
+// must then render the list alone. View() and pageStep() both call this so
+// the page-step size and the rendered partition never disagree.
+func (value model) stackedHeights(bodyHeight int) (listRows, previewRows int, ok bool) {
+	minTotal := 2*panelTitleHeight + stackedListMinRows + stackedPreviewMinRows
+	if bodyHeight < minTotal {
+		return 0, 0, false
+	}
+	previewShare := bodyHeight * value.previewPct / 100
+	previewRows = previewShare - panelTitleHeight
+	previewRows = max(stackedPreviewMinRows, previewRows)
+	listRows = bodyHeight - 2*panelTitleHeight - previewRows
+	if listRows < stackedListMinRows {
+		listRows = stackedListMinRows
+		previewRows = bodyHeight - 2*panelTitleHeight - listRows
+		if previewRows < stackedPreviewMinRows {
+			return 0, 0, false
+		}
+	}
+	return listRows, previewRows, true
 }
 
 // syncPreview issues a capture for the current selection when the preview is
