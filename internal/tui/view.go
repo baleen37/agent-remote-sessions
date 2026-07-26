@@ -659,6 +659,23 @@ func (value model) stateText(text string, state session.RuntimeState) string {
 	}
 }
 
+// providerText brands the provider column: claude gets its own coral, codex
+// reuses the selectedCursor teal, and any other provider stays muted.
+func (value model) providerText(provider session.Provider) string {
+	text := string(provider)
+	if value.noColor {
+		return text
+	}
+	switch provider {
+	case session.Claude:
+		return value.styles.providerClaude.Render(text)
+	case session.Codex:
+		return value.styles.selectedCursor.Render(text)
+	default:
+		return value.styles.muted.Render(text)
+	}
+}
+
 func (value model) mutedText(text string, width int) string {
 	text = fitLine(text, width)
 	if value.noColor {

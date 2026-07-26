@@ -240,7 +240,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	if missing := cellsWithoutBackground(row); len(missing) != ansi.StringWidth(row) {
 		t.Fatalf("unselected row unexpectedly has background: %q", row)
 	}
-	for _, identity := range []string{"connection check", "claude", "server", "1d"} {
+	for _, identity := range []string{"connection check", "server", "1d"} {
 		assertSpanForeground(t, row, identity, false)
 	}
 	for _, state := range []string{"●", "attached(1)"} {
@@ -248,6 +248,10 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 		if styled := model.styles.attached.Render(state); !strings.Contains(row, styled) {
 			t.Fatalf("state %q does not use attached style: %q", state, row)
 		}
+	}
+	assertSpanForeground(t, row, "claude", true)
+	if styled := model.styles.providerClaude.Render("claude"); !strings.Contains(row, styled) {
+		t.Fatalf("provider %q does not use the claude coral style: %q", "claude", row)
 	}
 	if got := model.View(); !got.AltScreen {
 		t.Fatal("View() did not request alternate screen")

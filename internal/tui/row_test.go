@@ -168,6 +168,67 @@ func TestSelectedRowKeepsBackgroundAcrossNestedANSIStyles(t *testing.T) {
 	}
 }
 
+func TestProviderColumnUsesBrandColors(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	value = openAllGroups(value)
+
+	content := value.View().Content
+	claudeRow := rowContaining(content, "connection check")
+	codexRow := rowContaining(content, "API repair")
+
+	assertSpanForeground(t, claudeRow, "claude", true)
+	if styled := value.styles.providerClaude.Render("claude"); !strings.Contains(claudeRow, styled) {
+		t.Fatalf("claude provider does not use the coral style: %q", claudeRow)
+	}
+
+	assertSpanForeground(t, codexRow, "codex", true)
+	if styled := value.styles.selectedCursor.Render("codex"); !strings.Contains(codexRow, styled) {
+		t.Fatalf("codex provider does not reuse the selectedCursor teal style: %q", codexRow)
+	}
+}
+
+func TestUnknownProviderColumnStaysMuted(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	items := twoSessions()
+	items[0].Provider = "gemini"
+	value.result.Sessions = items
+	value.refreshVisible()
+
+	row := rowContaining(value.View().Content, "connection check")
+	if styled := value.styles.muted.Render("gemini"); !strings.Contains(row, styled) {
+		t.Fatalf("unknown provider does not use the muted style: %q", row)
+	}
+}
+
+func TestSelectedRowKeepsBackgroundAcrossProviderColor(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	_, usable := contentFrame(value.width)
+	layout := newRowLayout(rowSessions(value.rows), usable, value.deps.Now(), value.deps.LocalTarget, value.pins)
+	line := value.renderRow(value.rows[1], true, layout)
+
+	if missing := cellsWithoutBackground(line); len(missing) > 0 {
+		t.Fatalf("selected background missing from cells %v: %q", missing, line)
+	}
+	if styled := value.styles.providerClaude.Render("claude"); !strings.Contains(line, styled[:strings.Index(styled, "claude")]) {
+		t.Fatalf("provider foreground missing from selected row: %q", line)
+	}
+}
+
+func TestNoColorProviderColumnHasNoANSI(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, true
+	row := activeRow(value.View().Content)
+	if row != ansi.Strip(row) {
+		t.Fatalf("noColor provider column contains ANSI escapes: %q", row)
+	}
+	if !strings.Contains(row, "claude") {
+		t.Fatalf("noColor row missing plain provider text: %q", row)
+	}
+}
+
 func TestSelectedHeaderKeepsBackgroundAcrossWidth(t *testing.T) {
 	value := readyModel()
 	value.width, value.height, value.noColor = 120, 24, false

@@ -144,7 +144,7 @@ func (value model) renderRow(row listRow, selected bool, layout rowLayout) strin
 		column(value.pinnedTitleCell(item), layout.title, false),
 	}
 	if layout.showProvider {
-		fields = append(fields, column(string(item.Provider), layout.provider, false))
+		fields = append(fields, column(value.providerText(item.Provider), layout.provider, false))
 	}
 	fields = append(fields, column(location(item, value.deps.LocalTarget), layout.location, false))
 	fields = append(fields,
