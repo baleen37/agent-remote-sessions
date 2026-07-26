@@ -685,7 +685,7 @@ func (value model) panelTitle(text string, width int) []string {
 	return []string{title, underline}
 }
 
-func (value model) previewHeader(text string, width int) string {
+func (value model) fullscreenHeader(text string, width int) string {
 	if value.noColor {
 		return fitLine(text, width)
 	}
@@ -777,7 +777,7 @@ func (value model) fullscreenPreview(inset, width int) tea.View {
 	lines := []string{value.header(width), ""}
 	selected, ok := value.selectedSession()
 	if ok {
-		lines = append(lines, value.previewHeader(sessionTitle(selected), width), "")
+		lines = append(lines, value.fullscreenHeader(sessionTitle(selected), width), "")
 		searchLine := value.fullscreenSearchLine(width)
 		// The fixed frame the body has to share the screen with: the ars header
 		// and its blank, the title and its blank, then the blank and the close

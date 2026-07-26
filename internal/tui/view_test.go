@@ -261,7 +261,7 @@ func TestSmallHeightBoundsMaximumLengthCWDDetails(t *testing.T) {
 	}
 }
 
-func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
+func TestViewRendersOneLineGroupsAndProviderBrandedLocation(t *testing.T) {
 	model := readyModel()
 	model.noColor = false
 	model.width = 120
