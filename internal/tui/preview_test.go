@@ -77,6 +77,122 @@ func TestPreviewHiddenBelowMinWidth(t *testing.T) {
 	}
 }
 
+// TestPreviewWidthInvariant checks the split-view width contract: the list
+// column, the fixed 3-cell separator, and the preview column must always sum
+// back to the full content width, across the widths the split view actually
+// ships at.
+func TestPreviewWidthInvariant(t *testing.T) {
+	for _, total := range []int{100, 120, 140} {
+		list, preview := previewWidth(total)
+		if got := list + previewSeparatorWidth + preview; got != total {
+			t.Fatalf("previewWidth(%d) = list %d, preview %d; list+%d+preview = %d, want %d", total, list, preview, previewSeparatorWidth, got, total)
+		}
+	}
+}
+
+// TestPreviewSeparatorReplacesGutter locks in the visible three-column
+// separator (" │ ") between the list and preview panels, replacing the old
+// two-space gutter.
+func TestPreviewSeparatorReplacesGutter(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width, value.height = 120, 24
+	content := ansi.Strip(value.View().Content)
+	lines := strings.Split(content, "\n")
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "SESSIONS") && strings.Contains(line, previewSeparator) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("panel title row missing the %q separator:\n%s", previewSeparator, content)
+	}
+}
+
+// TestPanelTitlesConsumeBodyHeightWithoutGrowingFrame verifies the height
+// contract from the task 4 brief: the two panel-title rows (title + underline)
+// are spent out of the same bodyHeight budget boundedLayout already hands to
+// the list, not added on top of it, so total rendered lines never exceed
+// value.height.
+func TestPanelTitlesConsumeBodyHeightWithoutGrowingFrame(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width = 120
+	value.result.Sessions = longSessionList(40)
+	value.refreshVisible()
+	for _, height := range []int{24, 12, 9} {
+		value.height = height
+		if !value.previewVisible() {
+			t.Fatalf("preview should be visible at 120 columns, height %d", height)
+		}
+		content := ansi.Strip(value.View().Content)
+		lines := strings.Count(content, "\n") + 1
+		if lines > value.height {
+			t.Fatalf("height %d: view rendered %d lines, want <= %d:\n%s", height, lines, value.height, content)
+		}
+	}
+}
+
+// TestPanelTitleHiddenWhenBodyTooSmall covers the brief's escape hatch: when
+// bodyHeight is 2 or smaller, the list wins the whole budget and the panel
+// title is omitted rather than starving the (already minimal) session row.
+func TestPanelTitleHiddenWhenBodyTooSmall(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width = 120
+	value.height = frameTop + 1 + 1 + frameBottom + 2 // bodyHeight resolves to 2
+	if !value.previewVisible() {
+		t.Fatal("preview should be visible at 120 columns")
+	}
+	content := ansi.Strip(value.View().Content)
+	if strings.Contains(content, "SESSIONS") {
+		t.Fatalf("panel title rendered despite too-small body height:\n%s", content)
+	}
+}
+
+// TestPreviewTitleScrollIndicatorExcludesTitleRows confirms the ordering the
+// brief calls out explicitly: scrolledBody windows the list body first, and
+// the panel title is prepended only afterward, so the "↑ N more" scroll
+// indicator's hidden-row count reflects only session rows, never the two
+// title rows above them.
+func TestPreviewTitleScrollIndicatorExcludesTitleRows(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width = 120
+	value.height = 16
+	value.result.Sessions = longSessionList(40)
+	value.refreshVisible()
+	for range 30 {
+		value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	}
+	if !value.previewVisible() {
+		t.Fatal("preview should be visible at 120 columns")
+	}
+	content := ansi.Strip(value.View().Content)
+	lines := strings.Split(content, "\n")
+
+	title := lineContaining(t, lines, "SESSIONS")
+	indicator := -1
+	for index, line := range lines {
+		if strings.Contains(line, "more") && strings.Contains(line, "↑") {
+			indicator = index
+			break
+		}
+	}
+	if indicator == -1 {
+		t.Fatalf("no top scroll indicator found:\n%s", content)
+	}
+	if indicator <= title+1 {
+		t.Fatalf("scroll indicator at line %d overlaps the panel title ending at line %d:\n%s", indicator, title+1, content)
+	}
+}
+
 func TestPreviewToggleOff(t *testing.T) {
 	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
 		return []byte("live output"), nil

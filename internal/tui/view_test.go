@@ -254,6 +254,9 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	}
 }
 
+// TestViewKeepsBalancedVerticalRhythm covers the no-preview rhythm: header,
+// pill bar, one blank, then the body starts immediately with no panel title
+// (previewVisible is false without a Preview dependency).
 func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	value := readyModel()
 	value = openAllGroups(value)
@@ -286,6 +289,41 @@ func TestViewKeepsBalancedVerticalRhythm(t *testing.T) {
 	}
 	if secondHeader != activeRow+1 {
 		t.Fatalf("groups are separated by a blank line:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestViewKeepsBalancedVerticalRhythmWithPreview is the split-view variant of
+// the rhythm test: at 120 columns with a Preview dependency wired, the panel
+// title (SESSIONS + underline) sits between the pill bar's blank line and the
+// first group header, consuming two of the body's rows rather than adding
+// extra rows on top of the fixed frame.
+func TestViewKeepsBalancedVerticalRhythmWithPreview(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value = openAllGroups(value)
+	value.width, value.height = 120, 24
+	if !value.previewVisible() {
+		t.Fatal("preview should be visible at 120 columns")
+	}
+	lines := strings.Split(ansi.Strip(value.View().Content), "\n")
+
+	pillBar := lineContaining(t, lines, "[All]")
+	title := lineContaining(t, lines, "SESSIONS")
+	underline := lineContaining(t, lines, "──────")
+	firstHeader := lineContaining(t, lines, "▾ ars (1)")
+
+	if title != pillBar+2 || lines[pillBar+1] != "" {
+		t.Fatalf("panel title is not separated from the pill bar by one blank line:\n%s", strings.Join(lines, "\n"))
+	}
+	if underline != title+1 {
+		t.Fatalf("panel title underline does not immediately follow the title:\n%s", strings.Join(lines, "\n"))
+	}
+	if firstHeader != underline+1 {
+		t.Fatalf("first group header does not immediately follow the underline:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[title], "PREVIEW") {
+		t.Fatalf("preview panel title missing from title row:\n%s", lines[title])
 	}
 }
 
