@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,7 +79,15 @@ func (value model) View() tea.View {
 	// always false for an empty inventory (nothing to select), so details
 	// plays no part in this reservation; reservedDiagnosticLines mirrors
 	// boundedLayout's own diagnosticHeight formula with details fixed at 0.
-	reservedDiagnosticLines := len(diagnostics)
+	//
+	// emptyDiagnosticFloor (updateModel) guards against the reservation
+	// shrinking on its own: an error status's auto-dismiss timer clearing
+	// value.status is not a user action, so it must not be enough on its
+	// own to promote the empty state to a taller tier mid-countdown. The
+	// floor is a lower bound, not the actual count, so it never stops a
+	// *larger* diagnostics count (a newly arrived error) from reserving
+	// more room than before.
+	reservedDiagnosticLines := max(len(diagnostics), value.emptyDiagnosticFloor)
 	if value.height > 0 {
 		statusFloor := 0
 		if value.status != "" {
@@ -699,13 +708,24 @@ func (value model) diagnostics(width int) []string {
 		lines = append(lines, value.mutedText(diagnosticLine(diagnostic, value.deps.LocalTarget), width))
 	}
 	if value.status != "" {
-		status := value.mutedText(value.status, width)
-		if strings.HasPrefix(value.status, "attach failed:") || strings.HasPrefix(value.status, "kill failed:") || strings.HasPrefix(value.status, "send failed:") {
-			status = value.errorText(value.status, width)
+		text := value.status
+		status := value.mutedText(text, width)
+		if isErrorStatus(text) {
+			if value.statusRemaining > 0 {
+				text += " · " + strconv.Itoa(value.statusRemaining) + "s"
+			}
+			status = value.errorText(text, width)
 		}
 		lines = append(lines, status)
 	}
 	return lines
+}
+
+// isErrorStatus reports whether status is one of the failure statuses
+// diagnostics() styles as an error, by the same prefixes that arm the
+// auto-dismiss countdown. Extracted so both call sites can't drift apart.
+func isErrorStatus(status string) bool {
+	return strings.HasPrefix(status, "attach failed:") || strings.HasPrefix(status, "kill failed:") || strings.HasPrefix(status, "send failed:")
 }
 
 func diagnosticLine(value output.HostError, localTarget string) string {

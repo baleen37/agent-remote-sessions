@@ -172,8 +172,12 @@ func TestModelComposeEnterSendFailureStatus(t *testing.T) {
 	model, command := updateModel(model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	message := command()
 	done := message.(sendDoneMsg)
-	model, command = updateModel(model, done)
-	if command != nil {
+	generation := model.generation
+	model, _ = updateModel(model, done)
+	// The error status now arms an auto-dismiss tick, so a command is
+	// expected; what must not happen is a collection restart (unchanged
+	// generation is restartCollection's tell, per model.go).
+	if model.generation != generation {
 		t.Fatal("failed send should not restart collection")
 	}
 	want := "send failed: boom"

@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/output"
+	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -233,6 +236,64 @@ func TestEmptyStateDemotesWhenDiagnosticsCrowdTheBudget(t *testing.T) {
 			t.Fatalf("rendered %d lines, want <= %d:\n%s", len(lines), emptyStateFullMinHeight+1, content)
 		}
 	})
+}
+
+// TestEmptyStateStaysDemotedThroughStatusAutoDismiss guards a cross-task
+// regression found in Task 12 review: emptyStateLines picks its tier fresh
+// on every render from the diagnostics reserved that frame, so the error
+// status's 5s auto-dismiss timer (Task 12) clearing value.status on its own
+// used to shrink that reservation and silently promote the empty state from
+// compact back to the full tier's box logo mid-countdown — a screen
+// structure change with no user input at all. emptyDiagnosticFloor
+// (model.go) exists to prevent exactly this: the floor only rises or gets
+// reset by a real user action (keypress/resize), never falls on its own.
+func TestEmptyStateStaysDemotedThroughStatusAutoDismiss(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 80, emptyStateFullMinHeight, true
+	value.deps.Kill = func(context.Context, session.Session) error {
+		return errors.New("boom")
+	}
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	seq := value.killSeq
+	value, command := updateModel(value, killFireMsg{seq: seq})
+	done := command().(killDoneMsg)
+	value, _ = updateModel(value, done)
+	if !strings.HasPrefix(value.status, "kill failed:") {
+		t.Fatalf("status = %q, want a kill failed status", value.status)
+	}
+
+	// Empty the inventory directly (as emptyModel does) so the truly-empty
+	// branch of sessionLines is exercised alongside the error status.
+	value.result.Sessions = nil
+	value.refreshVisible()
+
+	demoted := ansi.Strip(value.View().Content)
+	if strings.Contains(demoted, "┌──┬──┬──┐") {
+		t.Fatalf("full tier should have been demoted by the error status: %q", demoted)
+	}
+
+	for range statusDismissSeconds {
+		value, _ = updateModel(value, statusTickMsg{seq: value.statusSeq})
+	}
+	if value.status != "" {
+		t.Fatalf("status = %q after %d ticks, want cleared", value.status, statusDismissSeconds)
+	}
+
+	afterDismiss := ansi.Strip(value.View().Content)
+	if strings.Contains(afterDismiss, "┌──┬──┬──┐") {
+		t.Fatalf("empty state promoted to the full tier on its own when the status auto-dismissed (no user input): %q", afterDismiss)
+	}
+	if !strings.Contains(afterDismiss, "no sessions yet") {
+		t.Fatalf("empty state hint missing after auto-dismiss: %q", afterDismiss)
+	}
+
+	// A real user action (any keypress) resets the floor, so the tier is
+	// free to reflect the now-empty diagnostics again.
+	value, _ = updateModel(value, tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	afterInteraction := ansi.Strip(value.View().Content)
+	if !strings.Contains(afterInteraction, "┌──┬──┬──┐") {
+		t.Fatalf("empty state should promote back to the full tier once the user actually interacts: %q", afterInteraction)
+	}
 }
 
 // TestEmptyStateOtherBranchesUnaffected guards the brief's scope boundary:
