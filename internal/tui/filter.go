@@ -123,5 +123,5 @@ func location(item session.Session, localTarget string) string {
 	if item.Host == localTarget {
 		return ""
 	}
-	return item.Host
+	return "[" + item.Host + "]"
 }

@@ -240,7 +240,7 @@ func TestViewRendersOneLineGroupsAndNeutralProviderLocation(t *testing.T) {
 	if missing := cellsWithoutBackground(row); len(missing) != ansi.StringWidth(row) {
 		t.Fatalf("unselected row unexpectedly has background: %q", row)
 	}
-	for _, identity := range []string{"connection check", "server", "1d"} {
+	for _, identity := range []string{"connection check", "[server]", "1d"} {
 		assertSpanForeground(t, row, identity, false)
 	}
 	for _, state := range []string{"●", "attached(1)"} {
@@ -526,6 +526,13 @@ func TestNarrowViewRemovesOptionalColumnsInOrder(t *testing.T) {
 	model := readyModel()
 	model.noColor = true
 	model.height = 24
+	// The second fixture session's [server] location badge would otherwise
+	// claim columns from the shared title/location budget and truncate the
+	// active row's title before the width steps below get a chance to drop
+	// provider and client count; this test is about column removal order, not
+	// the badge, so keep every session local.
+	model.result.Sessions[1].Host = "localhost"
+	model.refreshVisible()
 
 	model.width = 100
 	wide := activeRow(model.View().Content)
