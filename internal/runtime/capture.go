@@ -20,7 +20,7 @@ func CapturePane(ctx context.Context, runner Runner, provider, nativeID string) 
 	name := Key(provider, nativeID)
 	// The trailing colon resolves "=name:" as the session's active pane;
 	// "=name" alone is read as a pane spec and fails to match.
-	return runner.Output(ctx, arsTMUXCommand("capture-pane", "-p", "-t", "="+name+":"))
+	return runner.Output(ctx, arsTMUXCommand("capture-pane", "-e", "-p", "-t", "="+name+":"))
 }
 
 // CapturePaneHistory reads the live pane contents of a local ars-managed
@@ -31,7 +31,7 @@ func CapturePaneHistory(ctx context.Context, runner Runner, provider, nativeID s
 		return nil, fmt.Errorf("tmux runner is nil")
 	}
 	name := Key(provider, nativeID)
-	return runner.Output(ctx, arsTMUXCommand("capture-pane", "-p", "-S", strconv.Itoa(-fullscreenHistoryLines), "-t", "="+name+":"))
+	return runner.Output(ctx, arsTMUXCommand("capture-pane", "-e", "-p", "-S", strconv.Itoa(-fullscreenHistoryLines), "-t", "="+name+":"))
 }
 
 // KillSession terminates a local ars-managed tmux session.

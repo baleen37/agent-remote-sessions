@@ -20,7 +20,7 @@ func TestCapturePaneCapturesTargetPane(t *testing.T) {
 	name := Key("claude", "123e4567-e89b-42d3-a456-426614174000")
 	want := Command{
 		Name: "tmux",
-		Args: []string{"-L", SocketName(), "-f", "/dev/null", "capture-pane", "-p", "-t", "=" + name + ":"},
+		Args: []string{"-L", SocketName(), "-f", "/dev/null", "capture-pane", "-e", "-p", "-t", "=" + name + ":"},
 		Env:  []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
 	}
 	if !reflect.DeepEqual(runner.command, want) {
@@ -53,7 +53,7 @@ func TestCapturePaneHistoryCapturesScrollback(t *testing.T) {
 	name := Key("claude", "123e4567-e89b-42d3-a456-426614174000")
 	want := Command{
 		Name: "tmux",
-		Args: []string{"-L", SocketName(), "-f", "/dev/null", "capture-pane", "-p", "-S", "-500", "-t", "=" + name + ":"},
+		Args: []string{"-L", SocketName(), "-f", "/dev/null", "capture-pane", "-e", "-p", "-S", "-500", "-t", "=" + name + ":"},
 		Env:  []string{"TMUX=", "TMUX_PANE=", "TMUX_TMPDIR=/tmp"},
 	}
 	if !reflect.DeepEqual(runner.command, want) {

@@ -39,7 +39,7 @@ func TestCapturePaneReadsRemotePane(t *testing.T) {
 	if !strings.Contains(script, "has-session -t '="+name+"'") {
 		t.Fatalf("script missing has-session gate:\n%s", script)
 	}
-	if !strings.Contains(script, "capture-pane -p -t '="+name+":'") {
+	if !strings.Contains(script, "capture-pane -e -p -t '="+name+":'") {
 		t.Fatalf("script missing capture-pane:\n%s", script)
 	}
 }
@@ -101,7 +101,7 @@ func TestCapturePaneHistoryReadsRemoteScrollback(t *testing.T) {
 	if !strings.Contains(script, "has-session -t '="+name+"'") {
 		t.Fatalf("script missing has-session gate:\n%s", script)
 	}
-	if !strings.Contains(script, "capture-pane -p -S -500 -t '="+name+":'") {
+	if !strings.Contains(script, "capture-pane -e -p -S -500 -t '="+name+":'") {
 		t.Fatalf("script missing history capture-pane:\n%s", script)
 	}
 }
