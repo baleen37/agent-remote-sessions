@@ -22,14 +22,20 @@ type Host struct {
 const LocalhostTarget = "localhost"
 
 func ConfigPath() (string, error) {
+	return configFilePath("hosts")
+}
+
+// configFilePath resolves a file named name inside the ars config directory:
+// $XDG_CONFIG_HOME/ars, falling back to ~/.config/ars.
+func configFilePath(name string) (string, error) {
 	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
-		return filepath.Join(configHome, "ars", "hosts"), nil
+		return filepath.Join(configHome, "ars", name), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "ars", "hosts"), nil
+	return filepath.Join(home, ".config", "ars", name), nil
 }
 
 func Load(path string) ([]Host, error) {
