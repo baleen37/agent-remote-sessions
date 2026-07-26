@@ -95,7 +95,7 @@ func (value model) View() tea.View {
 	lines = append(lines, details...)
 	lines = append(lines, diagnostics...)
 	lines = append(lines, search...)
-	lines = append(lines, "", value.mutedText(value.help(width), width))
+	lines = append(lines, "", fitLine(value.help(width), width))
 	margin := strings.Repeat(" ", inset)
 	for index, line := range lines {
 		if line != "" {
@@ -705,10 +705,10 @@ func (value model) help(width int) string {
 		separator = "  "
 	}
 	if value.searching {
-		return strings.Join([]string{"type to filter", "enter apply", "esc cancel"}, separator)
+		return value.mutedFooterText(strings.Join([]string{"type to filter", "enter apply", "esc cancel"}, separator))
 	}
 	if value.composing {
-		return strings.Join([]string{"type message", "enter send", "esc cancel"}, separator)
+		return value.mutedFooterText(strings.Join([]string{"type message", "enter send", "esc cancel"}, separator))
 	}
 	action := "enter attach"
 	if row, ok := value.selectedRow(); ok {
@@ -738,14 +738,47 @@ func (value model) help(width int) string {
 		items = append(items, "f full", "</> resize")
 	}
 	items = append(items, action, "r refresh", "q quit", "? help")
-	return joinFooterItems(items, separator, width)
+	items = fitFooterItems(items, separator, width)
+	if value.noColor {
+		return strings.Join(items, separator)
+	}
+	styled := make([]string, len(items))
+	for index, item := range items {
+		styled[index] = value.styleFooterItem(item)
+	}
+	return strings.Join(styled, separator)
 }
 
-// joinFooterItems joins footer hints with separator, dropping the lowest
-// priority droppable hints (in this order) until the line fits width.
-// Higher priority items (navigation, search, quit, help, etc.) are never
-// dropped, so on very narrow terminals the line may still overflow.
-func joinFooterItems(items []string, separator string, width int) string {
+// mutedFooterText renders a footer line that carries no key chips (the
+// searching/composing hints) as a self-contained muted string, matching what
+// styleFooterItem produces for chip-bearing hints so help() always returns a
+// fully styled line and callers never need to wrap it again.
+func (value model) mutedFooterText(text string) string {
+	if value.noColor {
+		return text
+	}
+	return value.styles.muted.Render(text)
+}
+
+// styleFooterItem splits a hint at its first space into a key and a
+// description, rendering the key as a background chip and the description
+// muted. Hints without a space (shouldn't occur given the fixed hint list)
+// are rendered muted in full.
+func (value model) styleFooterItem(item string) string {
+	key, description, found := strings.Cut(item, " ")
+	if !found {
+		return value.styles.muted.Render(item)
+	}
+	return value.styles.keyChip.Render(key) + " " + value.styles.muted.Render(description)
+}
+
+// fitFooterItems drops the lowest priority droppable hints (in this order)
+// until the joined line fits width, returning the surviving items. Higher
+// priority items (navigation, search, quit, help, etc.) are never dropped,
+// so on very narrow terminals the line may still overflow. Drop decisions
+// are made against the plain (unstyled) join so styling never changes which
+// items survive.
+func fitFooterItems(items []string, separator string, width int) []string {
 	droppable := []string{"g/G top/end", "P pin", "m msg", "x kill", "!@#$ filter", "a older", "1-9 group", "h/l fold", "</> resize", "f full"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
@@ -755,7 +788,7 @@ func joinFooterItems(items []string, separator string, width int) string {
 		items = removeItem(items, drop)
 		line = strings.Join(items, separator)
 	}
-	return line
+	return items
 }
 
 func removeItem(items []string, target string) []string {
