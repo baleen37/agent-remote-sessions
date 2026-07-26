@@ -131,6 +131,17 @@ func (value model) View() tea.View {
 	lines = append(lines, diagnostics...)
 	lines = append(lines, search...)
 	lines = append(lines, "", fitLine(value.help(width), width))
+	// boundedLayout's floors (body's 1-line minimum, statusFloor) each hold on
+	// their own, but their sum plus the fixed frame (frameTop, frameBottom,
+	// the loose blank line above details) has no shared floor: at heights
+	// small enough, nobody yields and the assembled view still overflows
+	// value.height. Clamping here is the last resort the brief calls out
+	// (graceless is fine; overflowing is not) and it clamps from the top, not
+	// the bottom, so the always-last line — the footer carrying "q quit" and
+	// "? help" — is the one kept, not the one cut.
+	if value.height > 0 && len(lines) > value.height {
+		lines = lines[len(lines)-value.height:]
+	}
 	margin := strings.Repeat(" ", inset)
 	for index, line := range lines {
 		if line != "" {

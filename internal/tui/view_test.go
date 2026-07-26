@@ -152,6 +152,53 @@ func TestStatusLineSurvivesExtremeStarvation(t *testing.T) {
 	}
 }
 
+// TestViewNeverExceedsHeightAcrossSweep is the height-axis counterpart to the
+// width sweeps that already exist: PR #64's narrow-width regression survived
+// 12 individual reviews because nothing checked every width, and the same
+// structural gap exists on the height axis (agent-deck-followups Task A).
+// It sweeps height 1..30 x width 50/80/120 x status present/absent x
+// errors present/absent and asserts the rendered line count never exceeds
+// height, and that the status line still wins its floor slot whenever the
+// screen is tall enough to show anything past the fixed frame at all.
+func TestViewNeverExceedsHeightAcrossSweep(t *testing.T) {
+	for height := 1; height <= 30; height++ {
+		for _, width := range []int{50, 80, 120} {
+			for _, hasStatus := range []bool{false, true} {
+				for _, hasErrors := range []bool{false, true} {
+					value := readyModel()
+					value.width = width
+					value.height = height
+					value.result.Sessions = longSessionList(40)
+					value.refreshVisible()
+					if hasStatus {
+						value.status = "killing session 00 in 3s · u undo"
+					}
+					if hasErrors {
+						value.result.Errors = []output.HostError{
+							hostError("one", "failed", "first diagnostic"),
+						}
+					}
+
+					content := ansi.Strip(value.View().Content)
+					lines := strings.Count(content, "\n") + 1
+					if lines > height {
+						t.Fatalf("h=%d w=%d status=%v errors=%v: view rendered %d lines, want <= %d:\n%s",
+							height, width, hasStatus, hasErrors, lines, height, content)
+					}
+					// Below height 3 the last-resort tail clamp (see View)
+					// keeps only the footer, so the statusFloor contract
+					// (PR #24) has nothing left to hold onto; from height 3
+					// up it must still win its slot per that contract.
+					if hasStatus && height >= 3 && !strings.Contains(content, value.status) {
+						t.Fatalf("h=%d w=%d errors=%v: status line missing though height had room:\n%s",
+							height, width, hasErrors, content)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestSmallHeightKeepsSelectedRowFooterAndHelpVisible(t *testing.T) {
 	model := readyModel()
 	model.width = 120
