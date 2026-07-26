@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"net"
 	"strings"
 	"time"
 	"unicode"
@@ -82,6 +83,7 @@ func filterSessions(items []session.Session, query, localTarget string) []sessio
 			item.Title,
 			string(item.Provider),
 			location(item, localTarget),
+			searchHost(item, localTarget),
 			session.Project(item.CWD),
 			item.CWD,
 			item.NativeID,
@@ -123,5 +125,39 @@ func location(item session.Session, localTarget string) string {
 	if item.Host == localTarget {
 		return ""
 	}
-	return "[" + item.Host + "]"
+	return "[" + shortHost(item.Host) + "]"
+}
+
+// searchHost returns the full remote host string for the search haystack, so
+// a query still matches the untruncated host (user@, domain suffix, etc.)
+// even though the displayed badge only shows its first label. Local sessions
+// contribute nothing, matching location's blank display.
+func searchHost(item session.Session, localTarget string) string {
+	if item.Host == localTarget {
+		return ""
+	}
+	return item.Host
+}
+
+// shortHost reduces a remote host string to the label the [badge] displays:
+// the user@ prefix is stripped and only the first dot-separated label of the
+// remaining domain is kept, e.g. "baleen@host.example.ts.net" -> "host". IP
+// addresses are left untouched since splitting on "." would leave a
+// meaningless octet. A host that doesn't shorten to anything useful falls
+// back to the original string.
+func shortHost(host string) string {
+	if host == "" || net.ParseIP(host) != nil {
+		return host
+	}
+	shortened := host
+	if _, name, found := strings.Cut(shortened, "@"); found {
+		shortened = name
+	}
+	if label, _, found := strings.Cut(shortened, "."); found {
+		shortened = label
+	}
+	if shortened == "" {
+		return host
+	}
+	return shortened
 }
