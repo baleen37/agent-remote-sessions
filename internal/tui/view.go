@@ -22,6 +22,15 @@ const (
 	frameTop = 3
 	// frameBottom is the blank line above the footer and the footer itself.
 	frameBottom = 2
+	// footerGuaranteedWidth is the terminal width below which the footer's
+	// never-dropped hints ("↑↓/jk move", "/ search", "enter attach",
+	// "r refresh", "q quit", "? help") no longer fit even after
+	// fitFooterItems removes every droppable hint and help() falls back to
+	// the 2-space separator. Below this width fitLine truncates the line
+	// and "q quit"/"? help" can be cut off; measured via
+	// TestFooterQuitAndHelpSurviveWidthSweep in view_test.go, not derivable
+	// from stackedMinWidth or other existing constants.
+	footerGuaranteedWidth = 63
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -859,9 +868,28 @@ func (value model) help(width int) string {
 		items = append(items, "f full", "</> resize")
 	}
 	items = append(items, action, "r refresh", "q quit", "? help")
-	items = fitFooterItems(items, separator, width)
+	fitted := fitFooterItems(items, separator, width)
+	line := strings.Join(fitted, separator)
+	// A 3-space separator can force fitFooterItems to drop a hint that a
+	// 2-space separator would have kept — and once dropping that hint
+	// alone brings the 3-space line back under width, the line no longer
+	// "overflows", so a fallback keyed on overflow never fires (this is
+	// exactly the width-77 regression the width-sweep test caught: 3-space
+	// drops "p preview" and fits, hiding that 2-space wouldn't have had to
+	// drop it at all). Comparing survivor counts instead of overflow catches
+	// that case: refit from the full item list with the 2-space separator
+	// and keep whichever result keeps more hints.
+	if separator == "   " {
+		narrow := fitFooterItems(items, "  ", width)
+		if len(narrow) > len(fitted) {
+			separator = "  "
+			fitted = narrow
+			line = strings.Join(fitted, separator)
+		}
+	}
+	items = fitted
 	if value.noColor {
-		return strings.Join(items, separator)
+		return line
 	}
 	styled := make([]string, len(items))
 	for index, item := range items {
@@ -899,8 +927,15 @@ func (value model) styleFooterItem(item string) string {
 // so on very narrow terminals the line may still overflow. Drop decisions
 // are made against the plain (unstyled) join so styling never changes which
 // items survive.
+//
+// "p preview" and "p preview off" sit near the end (high priority, dropped
+// almost last): the preview toggle is a frequently used action, comparable
+// to "</> resize" and more central than the one-off "f full" fullscreen
+// jump, so it is placed just after "f full" — dropped only once every other
+// droppable hint including "f full" has already gone, but still behind the
+// truly permanent hints (move/search/quit/help/attach/refresh).
 func fitFooterItems(items []string, separator string, width int) []string {
-	droppable := []string{"g/G top/end", "P pin", "m msg", "x kill", "!@#$ filter", "a older", "1-9 group", "h/l fold", "</> resize", "f full"}
+	droppable := []string{"g/G top/end", "P pin", "m msg", "x kill", "!@#$ filter", "a older", "1-9 group", "h/l fold", "</> resize", "f full", "p preview", "p preview off"}
 	line := strings.Join(items, separator)
 	for _, drop := range droppable {
 		if lipgloss.Width(line) <= width {

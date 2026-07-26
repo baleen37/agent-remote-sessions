@@ -1101,12 +1101,21 @@ func TestFooterAtWideWidthShowsAllHints(t *testing.T) {
 	}
 }
 
+// TestFooterAtCommonWidthDropsLowPriorityHintsBeforeHighPriorityOnes is the
+// measured contract update task 13's brief calls for: at width 120 the
+// 3-space separator no longer fits every hint plus "p preview" (task 6
+// added it to help()'s item list without a droppable entry), so
+// fitFooterItems now drops "!@#$ filter" under 3-space spacing. That drop
+// itself makes the 2-space rendering keep strictly more hints for the same
+// width, so help()'s separator-choice fallback (view.go) picks 2-space
+// instead — "!@#$ filter" survives here, spaced tighter, rather than being
+// dropped.
 func TestFooterAtCommonWidthDropsLowPriorityHintsBeforeHighPriorityOnes(t *testing.T) {
 	model := readyModel()
 	model.width = 120
 	content := ansi.Strip(model.View().Content)
-	if strings.Contains(content, "!@#$ filter") {
-		t.Fatalf("footer at width 120 should drop !@#$ filter to make room: %q", content)
+	if !strings.Contains(content, "!@#$ filter") {
+		t.Fatalf("footer at width 120 should keep !@#$ filter once the 2-space fallback recovers it: %q", content)
 	}
 	for _, want := range []string{"? help", "q quit", "r refresh", "enter attach", "/ search", "↑↓/jk move"} {
 		if !strings.Contains(content, want) {
@@ -1115,27 +1124,31 @@ func TestFooterAtCommonWidthDropsLowPriorityHintsBeforeHighPriorityOnes(t *testi
 	}
 }
 
-// TestFooterWithPreviewVisibleAtWideWidthDropsResizeGroupToFitNewHints is the
-// measured contract update task 5's brief calls for: with the preview open,
-// "f full" and "</> resize" add roughly 20 columns to the line, which at
-// width 170 is now enough to push "g/G top/end" and "P pin" past the
-// droppable boundary that TestFooterAtWideWidthShowsAllHints (no preview)
-// still clears untouched.
-func TestFooterWithPreviewVisibleAtWideWidthDropsResizeGroupToFitNewHints(t *testing.T) {
+// TestFooterWithPreviewVisibleAtWideWidthDropsOnlyLowestPriorityHint is the
+// measured contract update task 13's brief calls for. Previously, with the
+// preview open, "f full" and "</> resize" added roughly 20 columns which
+// pushed both "g/G top/end" and "P pin" past the 3-space separator's
+// droppable boundary at width 170. Now that a 3-space drop makes the
+// 2-space rendering strictly wider-fitting, help()'s separator fallback
+// switches to 2-space, which only needs to drop the single lowest-priority
+// droppable hint ("g/G top/end") to fit — everything else, including "P
+// pin" and "p preview" (added to help()'s item list since), survives.
+func TestFooterWithPreviewVisibleAtWideWidthDropsOnlyLowestPriorityHint(t *testing.T) {
 	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
 		return []byte("live"), nil
 	})
 	value.width = 170
 	content := ansi.Strip(value.View().Content)
-	for _, want := range []string{"f full", "</> resize", "!@#$ filter", "1-9 group", "a older", "? help"} {
+	for _, want := range []string{
+		"f full", "</> resize", "!@#$ filter", "1-9 group", "a older", "? help",
+		"P pin", "p preview",
+	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("wide footer with preview missing %q: %q", want, content)
 		}
 	}
-	for _, dropped := range []string{"g/G top/end", "P pin"} {
-		if strings.Contains(content, dropped) {
-			t.Fatalf("wide footer with preview should drop %q to fit the new resize hints: %q", dropped, content)
-		}
+	if strings.Contains(content, "g/G top/end") {
+		t.Fatalf("wide footer with preview should drop g/G top/end to fit: %q", content)
 	}
 }
 
@@ -1320,6 +1333,102 @@ func TestCompletedHealthyEmptyGuidanceUnchanged(t *testing.T) {
 	}
 	if strings.Contains(content, "loading sessions…") {
 		t.Fatalf("completed empty view kept loading copy: %q", content)
+	}
+}
+
+// footerLine extracts the last non-blank rendered line, which is where the
+// footer help lands regardless of layout (hidden, stacked, or dual preview).
+func footerLine(content string) string {
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i]
+		}
+	}
+	return ""
+}
+
+// TestFooterQuitAndHelpSurviveWidthSweep is the regression test for the
+// narrow-width bug found in the final integration review of the agent-deck
+// series (task 13): "q quit" and "? help" disappeared from the footer at
+// widths 40-73 and 77-79 because "p preview" had no droppable entry in
+// fitFooterItems and the 3-space separator (>= width 75) had no fallback to
+// the narrower 2-space one. Sweeping every width, rather than spot-checking
+// a couple of fixed values, is what the earlier per-task reviews lacked —
+// each individually-reasonable footer addition passed review but the
+// combination silently broke a range no single review width happened to hit.
+//
+// Below footerGuaranteedWidth (63) the never-dropped hints alone ("↑↓/jk
+// move", "/ search", "enter attach", "r refresh", "q quit", "? help") no
+// longer fit even with every droppable hint removed and the 2-space
+// separator in play; that floor is measured, not assumed, and is a
+// pre-existing limitation this task does not attempt to fix (see the
+// constant's doc comment in view.go).
+func TestFooterQuitAndHelpSurviveWidthSweep(t *testing.T) {
+	check := func(t *testing.T, label string, build func(width int) model) {
+		t.Helper()
+		prevCount := -1
+		for width := footerGuaranteedWidth; width <= 200; width++ {
+			value := build(width)
+			footer := footerLine(ansi.Strip(value.View().Content))
+			if !strings.Contains(footer, "q quit") {
+				t.Fatalf("%s: width %d missing \"q quit\": %q", label, width, footer)
+			}
+			if !strings.Contains(footer, "? help") {
+				t.Fatalf("%s: width %d missing \"? help\": %q", label, width, footer)
+			}
+			n := 0
+			for _, hint := range []string{
+				"↑↓/jk move", "h/l fold", "g/G top/end", "1-9 group", "!@#$ filter",
+				"a older", "x kill", "m msg", "P pin", "/ search", "esc clear",
+				"p preview", "p preview off", "f full", "</> resize",
+				"enter attach", "enter toggle", "enter expand", "r refresh", "q quit", "? help",
+			} {
+				if strings.Contains(footer, hint) {
+					n++
+				}
+			}
+			if prevCount != -1 && n < prevCount {
+				t.Fatalf("%s: hint count dropped non-monotonically at width %d (%d -> %d): %q", label, width, prevCount, n, footer)
+			}
+			prevCount = n
+		}
+	}
+
+	t.Run("no preview", func(t *testing.T) {
+		check(t, "no preview", func(width int) model {
+			value := readyModel()
+			value.height = 40
+			value.width = width
+			return value
+		})
+	})
+
+	t.Run("preview visible", func(t *testing.T) {
+		check(t, "preview visible", func(width int) model {
+			value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+				return []byte("live"), nil
+			})
+			value.height = 30
+			value.width = width
+			return value
+		})
+	})
+}
+
+// TestFooterBelowGuaranteedWidthIsAPreexistingLimitation documents, rather
+// than asserts a fix for, the sub-footerGuaranteedWidth range: the
+// never-dropped hints alone cannot fit, so "q quit"/"? help" can still be
+// truncated there. This is intentionally not covered by the sweep above —
+// task 13's brief calls for naming the floor, not for making every width
+// down to the terminal minimum work.
+func TestFooterBelowGuaranteedWidthIsAPreexistingLimitation(t *testing.T) {
+	value := readyModel()
+	value.height = 40
+	value.width = footerGuaranteedWidth - 1
+	footer := footerLine(ansi.Strip(value.View().Content))
+	if strings.Contains(footer, "q quit") && strings.Contains(footer, "? help") {
+		t.Fatalf("width %d unexpectedly fits both tail hints; footerGuaranteedWidth could be lowered: %q", footerGuaranteedWidth-1, footer)
 	}
 }
 
