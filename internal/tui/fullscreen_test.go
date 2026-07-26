@@ -342,13 +342,16 @@ func TestFullscreenRendersTitleContentAndCloseHint(t *testing.T) {
 // wide for the split preview column must survive intact fullscreen.
 func TestFullscreenUsesFullContentWidth(t *testing.T) {
 	_, width := contentFrame(120)
-	_, previewCols := previewWidth(width)
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return nil, nil
+	})
+	_, previewCols := value.splitWidths(width)
 	line := strings.Repeat("x", previewCols+20)
 	if len(line) > width {
 		t.Fatalf("test line of %d columns does not fit the %d-column frame", len(line), width)
 	}
 
-	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+	value = previewModel(func(context.Context, session.Session) ([]byte, error) {
 		return []byte(line), nil
 	})
 	value, _ = updateModel(value, drainPreviewMsg(value.syncPreview()))

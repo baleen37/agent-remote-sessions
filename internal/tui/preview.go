@@ -17,7 +17,7 @@ const (
 	previewMinWidth = 100
 	previewInterval = 2 * time.Second
 	// previewSeparator is the vertical divider between the list and preview
-	// panels; previewSeparatorWidth is its rendered width, which previewWidth
+	// panels; previewSeparatorWidth is its rendered width, which splitWidths
 	// and joinPreview must agree on to keep listWidth + previewSeparatorWidth
 	// + previewWidth == contentWidth.
 	previewSeparator      = " │ "
@@ -26,7 +26,104 @@ const (
 	// as a fraction of the terminal height, so a page always leaves visible
 	// overlap with the previous one.
 	fullscreenPageLinesFraction = 2
+	// defaultPreviewPct favors the preview over the list, matching agent-deck:
+	// what a session is doing right now outweighs the list of other sessions.
+	defaultPreviewPct = 65
+	previewPctMin     = 20
+	previewPctMax     = 80
+	previewPctStep    = 5
+	// panelMinWidth guards against a panel shrinking below its title, though
+	// previewMinWidth's gate makes this only a defensive backstop in practice.
+	panelMinWidth = 8
+	// splitFlashDuration is how long the panel titles show the split
+	// percentage after a </> adjustment before reverting to their plain text.
+	splitFlashDuration = 1500 * time.Millisecond
 )
+
+// splitFlashMsg fires splitFlashDuration after a </> adjustment. seq guards
+// against a rapid second adjustment: only the message matching the model's
+// current splitFlashSeq clears the flash, mirroring killDoneMsg's seq guard
+// against a stale timer outracing a newer one.
+type splitFlashMsg struct {
+	seq uint64
+}
+
+// clampPreviewPct resolves the effective preview percentage: an unset (zero)
+// value falls back to the default rather than being clamped up to the
+// minimum, and any configured value is clamped into [previewPctMin,
+// previewPctMax].
+func clampPreviewPct(pct int) int {
+	if pct == 0 {
+		return defaultPreviewPct
+	}
+	if pct < previewPctMin {
+		return previewPctMin
+	}
+	if pct > previewPctMax {
+		return previewPctMax
+	}
+	return pct
+}
+
+// savePreviewPctMsg carries the outcome of the async SavePreviewPct call, so
+// the disk write never blocks the key that triggered it.
+type savePreviewPctMsg struct {
+	err error
+}
+
+// adjustSplit applies a </> step to previewPct, arms the ratio flash overlay,
+// and kicks off an async save of the new percentage. Called only once the
+// caller has confirmed the preview is visible.
+func (value model) adjustSplit(grow bool) (model, tea.Cmd) {
+	delta := previewPctStep
+	if !grow {
+		delta = -previewPctStep
+	}
+	value.previewPct = clampPreviewPct(value.previewPct + delta)
+	value.splitFlash = true
+	value.splitFlashSeq++
+	seq := value.splitFlashSeq
+	return value, tea.Batch(splitFlashTick(seq), value.saveSplitCmd())
+}
+
+// saveSplitCmd issues the async persistence write, if a save function is
+// wired, so a slow disk write cannot block key handling.
+func (value model) saveSplitCmd() tea.Cmd {
+	save := value.deps.SavePreviewPct
+	if save == nil {
+		return nil
+	}
+	pct := value.previewPct
+	return func() tea.Msg {
+		return savePreviewPctMsg{err: save(pct)}
+	}
+}
+
+func splitFlashTick(seq uint64) tea.Cmd {
+	return tea.Tick(splitFlashDuration, func(time.Time) tea.Msg {
+		return splitFlashMsg{seq: seq}
+	})
+}
+
+// updateSplitFlash clears the flash once its matching timer fires. A stale
+// timer (seq no longer matching splitFlashSeq) means a later </> already
+// armed a new one, so this leaves the newer flash alone — mirroring
+// updateKillDone's seq guard against a stale completion clearing state a
+// newer action owns.
+func (value model) updateSplitFlash(message splitFlashMsg) (model, tea.Cmd) {
+	if message.seq != value.splitFlashSeq {
+		return value, nil
+	}
+	value.splitFlash = false
+	return value, nil
+}
+
+func (value model) updateSavePreviewPct(message savePreviewPctMsg) (model, tea.Cmd) {
+	if message.err != nil {
+		value.status = boundedStatus("save split ratio failed: " + message.err.Error())
+	}
+	return value, nil
+}
 
 type previewMsg struct {
 	key     sessionKey
@@ -65,11 +162,14 @@ func (value model) closePreview() model {
 	return value
 }
 
-// previewWidth splits the content width, giving the list priority and the
-// preview roughly 40%.
-func previewWidth(total int) (list, preview int) {
-	preview = total * 2 / 5
-	list = total - preview - previewSeparatorWidth
+// splitWidths splits the content width between the list and preview panels
+// according to value.previewPct, guarding each panel at panelMinWidth so an
+// extreme ratio cannot shrink either below its title.
+func (value model) splitWidths(total int) (list, preview int) {
+	available := total - previewSeparatorWidth
+	preview = available * value.previewPct / 100
+	preview = max(panelMinWidth, min(preview, available-panelMinWidth))
+	list = available - preview
 	return list, preview
 }
 
@@ -479,11 +579,27 @@ func (value model) previewPanel(width, height int) []string {
 		return value.padPanel(lines, width, height)
 	}
 
-	lines = append(lines, value.panelTitle("PREVIEW", width)...)
+	lines = append(lines, value.splitPanelTitle("PREVIEW", value.previewPct, width)...)
 
 	body := value.previewBody(selected, width, height-len(lines))
 	lines = append(lines, body...)
 	return value.padPanel(lines, width, height)
+}
+
+// splitPanelTitle renders a panel's title with a temporary "NAME NN%" flash
+// after a </> ratio adjustment, reverting to the plain name once splitFlash
+// clears. The flash text is additionally gated on previewVisible here, at
+// render time, rather than trusting the key handler's precondition to still
+// hold: a WindowSizeMsg or collectUpdateMsg can narrow the terminal (or drop
+// the selection) between the </> keypress and this render, and PR #48 showed
+// that overlay state left armed across such a non-key path leaves a stale
+// flash on screen once the preview panel it described is gone.
+func (value model) splitPanelTitle(name string, pct int, width int) []string {
+	text := name
+	if value.splitFlash && value.previewVisible() {
+		text = fmt.Sprintf("%s %d%%", name, pct)
+	}
+	return value.panelTitle(text, width)
 }
 
 // panelTitle renders a split-view panel's two-line header: a bold title line

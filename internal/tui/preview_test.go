@@ -80,12 +80,28 @@ func TestPreviewHiddenBelowMinWidth(t *testing.T) {
 // TestPreviewWidthInvariant checks the split-view width contract: the list
 // column, the fixed 3-cell separator, and the preview column must always sum
 // back to the full content width, across the widths the split view actually
-// ships at.
+// ships at and across the adjustable ratio's full range.
 func TestPreviewWidthInvariant(t *testing.T) {
+	value := model{previewPct: defaultPreviewPct}
 	for _, total := range []int{100, 120, 140} {
-		list, preview := previewWidth(total)
-		if got := list + previewSeparatorWidth + preview; got != total {
-			t.Fatalf("previewWidth(%d) = list %d, preview %d; list+%d+preview = %d, want %d", total, list, preview, previewSeparatorWidth, got, total)
+		for pct := previewPctMin; pct <= previewPctMax; pct += previewPctStep {
+			value.previewPct = pct
+			list, preview := value.splitWidths(total)
+			if got := list + previewSeparatorWidth + preview; got != total {
+				t.Fatalf("splitWidths(%d) at pct %d = list %d, preview %d; list+%d+preview = %d, want %d", total, pct, list, preview, previewSeparatorWidth, got, total)
+			}
+		}
+	}
+}
+
+// TestSplitWidthsDefaultFavorsPreview locks in the agent-deck-style default:
+// the preview gets 65% of the content width, the list the remainder.
+func TestSplitWidthsDefaultFavorsPreview(t *testing.T) {
+	value := model{previewPct: defaultPreviewPct}
+	for _, total := range []int{120, 140} {
+		list, preview := value.splitWidths(total)
+		if preview <= list {
+			t.Fatalf("splitWidths(%d) = list %d, preview %d; want preview to be the larger share at the default 65%%", total, list, preview)
 		}
 	}
 }
@@ -214,6 +230,9 @@ func TestPreviewCaptureRendersLivePane(t *testing.T) {
 	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
 		return []byte("first line\nsecond line\n"), nil
 	})
+	// The default 65%-preview split narrows the list column enough at 120 to
+	// truncate "connection check"; widen so the full title still fits.
+	value.width = 140
 	// The first session is attached (live); syncPreview on selection issues a
 	// capture. Deliver its result.
 	command := value.syncPreview()

@@ -50,6 +50,8 @@ type Dependencies struct {
 	Now            func() time.Time
 	NoColor        bool
 	Version        string
+	PreviewPct     int
+	SavePreviewPct func(int) error
 }
 
 type collectUpdateMsg struct {
@@ -101,6 +103,9 @@ type model struct {
 	previewFullContent     []string
 	previewFullErr         string
 	previewFullPending     bool
+	previewPct             int
+	splitFlash             bool
+	splitFlashSeq          uint64
 	previewScrollOffset    int
 	previewSearching       bool
 	previewSearchQuery     string
@@ -144,6 +149,7 @@ func newModel(ctx context.Context, deps Dependencies) model {
 		generation: 1,
 		noColor:    deps.NoColor || noColor,
 		styles:     newViewStyles(true),
+		previewPct: clampPreviewPct(deps.PreviewPct),
 	}
 	collectCtx, cancel := context.WithCancel(ctx)
 	value.cancelCollect = cancel
@@ -198,6 +204,10 @@ func updateModel(value model, message tea.Msg) (model, tea.Cmd) {
 		return value.updateFullPreview(message)
 	case fullPreviewTickMsg:
 		return value.updateFullPreviewTick(message)
+	case splitFlashMsg:
+		return value.updateSplitFlash(message)
+	case savePreviewPctMsg:
+		return value.updateSavePreviewPct(message)
 	case activityMsg:
 		return value.updateActivity(message)
 	case activityTickMsg:
@@ -507,6 +517,10 @@ func (value model) updateKey(message tea.KeyPressMsg) (model, tea.Cmd) {
 	case 'f':
 		if row, ok := value.selectedRow(); ok && row.kind == rowSession && value.previewVisible() {
 			value = value.enterFullscreen()
+		}
+	case '<', '>':
+		if value.previewVisible() {
+			return value.adjustSplit(key.Code == '>')
 		}
 	case '?':
 		value.showHelp = true

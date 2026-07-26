@@ -146,6 +146,14 @@ func main() {
 				},
 				LocalTarget: app.LocalhostTarget,
 				Version:     version,
+				PreviewPct:  loadPreviewPct(),
+				SavePreviewPct: func(pct int) error {
+					path, err := app.SettingsPath()
+					if err != nil {
+						return err
+					}
+					return app.SavePreviewPct(path, pct)
+				},
 			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},
 		Stdout: os.Stdout,
@@ -154,6 +162,17 @@ func main() {
 	exitCode := app.Run(ctx, os.Args[1:], dependencies)
 	stop()
 	os.Exit(exitCode)
+}
+
+// loadPreviewPct reads the persisted preview split percentage, falling back
+// to 0 (which the TUI model treats as "use the default") when the settings
+// path cannot be resolved or the setting is absent/unparsable.
+func loadPreviewPct() int {
+	path, err := app.SettingsPath()
+	if err != nil {
+		return 0
+	}
+	return app.LoadPreviewPct(path, 0)
 }
 
 func newCollector(

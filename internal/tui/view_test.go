@@ -1039,6 +1039,49 @@ func TestFooterAtCommonWidthDropsLowPriorityHintsBeforeHighPriorityOnes(t *testi
 	}
 }
 
+// TestFooterWithPreviewVisibleAtWideWidthDropsResizeGroupToFitNewHints is the
+// measured contract update task 5's brief calls for: with the preview open,
+// "f full" and "</> resize" add roughly 20 columns to the line, which at
+// width 170 is now enough to push "g/G top/end" and "P pin" past the
+// droppable boundary that TestFooterAtWideWidthShowsAllHints (no preview)
+// still clears untouched.
+func TestFooterWithPreviewVisibleAtWideWidthDropsResizeGroupToFitNewHints(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live"), nil
+	})
+	value.width = 170
+	content := ansi.Strip(value.View().Content)
+	for _, want := range []string{"f full", "</> resize", "!@#$ filter", "1-9 group", "a older", "? help"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("wide footer with preview missing %q: %q", want, content)
+		}
+	}
+	for _, dropped := range []string{"g/G top/end", "P pin"} {
+		if strings.Contains(content, dropped) {
+			t.Fatalf("wide footer with preview should drop %q to fit the new resize hints: %q", dropped, content)
+		}
+	}
+}
+
+// TestFooterWithPreviewVisibleAtCommonWidthShowsResizeHint locks in that at
+// the common 120 width, "f full" and "</> resize" still fit — they only
+// compete with hints readyModel's no-preview contract already drops at 120.
+func TestFooterWithPreviewVisibleAtCommonWidthShowsResizeHint(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live"), nil
+	})
+	value.width = 120
+	content := ansi.Strip(value.View().Content)
+	for _, want := range []string{"f full", "</> resize", "? help", "q quit", "enter attach"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("footer with preview at width 120 missing %q: %q", want, content)
+		}
+	}
+	if strings.Contains(content, "!@#$ filter") {
+		t.Fatalf("footer with preview at width 120 should drop !@#$ filter: %q", content)
+	}
+}
+
 func TestHeaderShowsSpinnerFrameWhileCollecting(t *testing.T) {
 	model := readyModel()
 	model.width, model.noColor = 120, true
