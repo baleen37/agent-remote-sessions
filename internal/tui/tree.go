@@ -151,9 +151,22 @@ func groupSessions(items []session.Session, pins map[sessionKey]bool) []sessionG
 		if leftActive != rightActive {
 			return leftActive
 		}
-		return latestActivity(groups[left].sessions).After(latestActivity(groups[right].sessions))
+		return rankedActivity(groups[left].sessions, pins).After(rankedActivity(groups[right].sessions, pins))
 	})
 	return groups
+}
+
+// rankedActivity is the timestamp a group is ordered by: the latest activity
+// among the sessions it actually puts on screen. Auto mode folds saved sessions
+// behind the more row, and ranking a group by one of those would place it above
+// groups whose visible rows are newer — an order the list cannot explain. Groups
+// with nothing live keep their full-inventory recency, since a closed header is
+// all they display.
+func rankedActivity(items []session.Session, pins map[sessionKey]bool) time.Time {
+	if displayed := activeSessions(items, pins); len(displayed) > 0 {
+		return latestActivity(displayed)
+	}
+	return latestActivity(items)
 }
 
 func hasPinned(items []session.Session, pins map[sessionKey]bool) bool {

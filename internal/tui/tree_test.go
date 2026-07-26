@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -153,6 +154,38 @@ func TestBuildRowsGroupsSameProjectAcrossHosts(t *testing.T) {
 	}
 	if len(sessionHosts) != 2 || sessionHosts[0] != "localhost" || sessionHosts[1] != "server" {
 		t.Fatalf("session hosts = %v, want host identity preserved within the project group", sessionHosts)
+	}
+}
+
+// Auto mode folds saved sessions behind the more row, so a folded session must
+// not lift its group above a group whose displayed rows are more recent —
+// otherwise the visible order reads as unsorted.
+func TestBuildRowsRanksGroupsByDisplayedRows(t *testing.T) {
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSession("ars", "ars-live", session.RuntimeRunning, base.Add(-5*time.Hour)),
+		treeSession("blog", "blog-live", session.RuntimeRunning, base.Add(-6*time.Hour)),
+		treeSession("blog", "blog-folded", session.RuntimeSaved, base),
+	}
+	rows := buildRows(items, nil, false, nil)
+	if rows[0].kind != rowHeader || rows[0].project != "ars" {
+		t.Fatalf("first header = %+v, want ars: blog's newest row is older than ars's", rows[0])
+	}
+}
+
+// Ranking follows what each group displays, so expanding a group with an older
+// but freshly revealed session must not reshuffle the groups around it.
+func TestBuildRowsGroupOrderStableWhenFoldedSessionsRevealed(t *testing.T) {
+	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSession("ars", "ars-live", session.RuntimeRunning, base.Add(-5*time.Hour)),
+		treeSession("blog", "blog-live", session.RuntimeRunning, base.Add(-6*time.Hour)),
+		treeSession("blog", "blog-folded", session.RuntimeSaved, base),
+	}
+	auto := headerProjects(buildRows(items, nil, false, nil))
+	opened := headerProjects(buildRows(items, map[string]groupMode{"blog": groupModeOpen}, false, nil))
+	if !reflect.DeepEqual(auto, opened) {
+		t.Fatalf("group order changed when blog expanded: auto=%v opened=%v", auto, opened)
 	}
 }
 
