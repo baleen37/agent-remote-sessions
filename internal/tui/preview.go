@@ -16,7 +16,12 @@ import (
 const (
 	previewMinWidth = 100
 	previewInterval = 2 * time.Second
-	previewGutter   = 2
+	// previewSeparator is the vertical divider between the list and preview
+	// panels; previewSeparatorWidth is its rendered width, which previewWidth
+	// and joinPreview must agree on to keep listWidth + previewSeparatorWidth
+	// + previewWidth == contentWidth.
+	previewSeparator      = " │ "
+	previewSeparatorWidth = 3
 	// fullscreenPageLinesFraction sizes a PgUp/PgDn/Ctrl+U/Ctrl+D scroll step
 	// as a fraction of the terminal height, so a page always leaves visible
 	// overlap with the previous one.
@@ -64,7 +69,7 @@ func (value model) closePreview() model {
 // preview roughly 40%.
 func previewWidth(total int) (list, preview int) {
 	preview = total * 2 / 5
-	list = total - preview - previewGutter
+	list = total - preview - previewSeparatorWidth
 	return list, preview
 }
 
@@ -461,8 +466,9 @@ func splitPreview(content []byte) []string {
 	return strings.Split(text, "\n")
 }
 
-// previewPanel renders the preview column: a session header, a divider, and
-// the tail of the captured pane fitted to the panel box.
+// previewPanel renders the preview column: a "PREVIEW" title, a divider, and
+// the tail of the captured pane fitted to the panel box. The session title is
+// not repeated here since it is already visible on the selected list row.
 func (value model) previewPanel(width, height int) []string {
 	if width <= 0 || height <= 0 {
 		return nil
@@ -473,15 +479,26 @@ func (value model) previewPanel(width, height int) []string {
 		return value.padPanel(lines, width, height)
 	}
 
-	header := sessionTitle(selected)
-	lines = append(lines, value.previewHeader(header, width))
-	if height > 1 {
-		lines = append(lines, value.mutedText(strings.Repeat("─", width), width))
-	}
+	lines = append(lines, value.panelTitle("PREVIEW", width)...)
 
 	body := value.previewBody(selected, width, height-len(lines))
 	lines = append(lines, body...)
 	return value.padPanel(lines, width, height)
+}
+
+// panelTitle renders a split-view panel's two-line header: a bold title line
+// and a muted "─" underline, both padded to exactly width so callers can rely
+// on the rectangular block joinPreview needs.
+func (value model) panelTitle(text string, width int) []string {
+	title := fitLine(text, width)
+	if !value.noColor {
+		title = value.styles.title.Render(title)
+	}
+	if pad := width - lipgloss.Width(title); pad > 0 {
+		title += strings.Repeat(" ", pad)
+	}
+	underline := value.mutedText(strings.Repeat("─", width), width)
+	return []string{title, underline}
 }
 
 func (value model) previewHeader(text string, width int) string {
@@ -524,7 +541,10 @@ func (value model) joinPreview(body []string, listWidth, previewCols, height int
 		height = len(body)
 	}
 	panel := value.previewPanel(previewCols, height)
-	gutter := strings.Repeat(" ", previewGutter)
+	separator := previewSeparator
+	if !value.noColor {
+		separator = value.styles.muted.Render(previewSeparator)
+	}
 	joined := make([]string, height)
 	for index := range height {
 		line := ""
@@ -538,7 +558,7 @@ func (value model) joinPreview(body []string, listWidth, previewCols, height int
 		if index < len(panel) {
 			right = panel[index]
 		}
-		joined[index] = line + gutter + right
+		joined[index] = line + separator + right
 	}
 	return joined
 }

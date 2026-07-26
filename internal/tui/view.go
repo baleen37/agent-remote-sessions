@@ -76,7 +76,14 @@ func (value model) View() tea.View {
 	if value.height > 0 {
 		var bodyHeight int
 		details, diagnostics, bodyHeight = value.boundedLayout(details, selected, diagnostics, len(search), width)
-		body = value.scrolledBody(body, selectedLine, bodyHeight, listWidth)
+		listHeight := bodyHeight
+		if previewShown && bodyHeight > 2 {
+			listHeight = bodyHeight - 2
+		}
+		body = value.scrolledBody(body, selectedLine, listHeight, listWidth)
+		if previewShown && bodyHeight > 2 {
+			body = append(value.panelTitle("SESSIONS", listWidth), body...)
+		}
 		panelHeight = bodyHeight
 	}
 	for index, detail := range details {
