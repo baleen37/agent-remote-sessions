@@ -184,7 +184,7 @@ func TestSplitFlashClearsRenderWhenPreviewHiddenByResize(t *testing.T) {
 	if !value.splitFlash {
 		t.Fatal("splitFlash should be armed right after >")
 	}
-	value, _ = updateModel(value, tea.WindowSizeMsg{Width: previewMinWidth - 1, Height: value.height})
+	value, _ = updateModel(value, tea.WindowSizeMsg{Width: stackedMinWidth - 1, Height: value.height})
 	content := ansi.Strip(value.View().Content)
 	if strings.Contains(content, "%") {
 		t.Fatalf("split flash percentage still rendered after preview hidden by resize:\n%s", content)

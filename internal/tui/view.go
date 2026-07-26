@@ -34,10 +34,11 @@ func (value model) View() tea.View {
 	if value.previewFullscreen {
 		return value.fullscreenPreview(inset, width)
 	}
+	layout := previewLayoutOf(width)
 	previewShown := value.previewVisible()
 	listWidth := width
 	previewCols := 0
-	if previewShown {
+	if previewShown && layout == previewDual {
 		listWidth, previewCols = value.splitWidths(width)
 	}
 	body, selectedLine := value.sessionLines(listWidth)
@@ -72,26 +73,20 @@ func (value model) View() tea.View {
 		search = append(search, fitLine(prefix+value.query+count, width))
 	}
 
-	panelHeight := len(body)
 	if value.height > 0 {
 		var bodyHeight int
 		details, diagnostics, bodyHeight = value.boundedLayout(details, selected, diagnostics, len(search), width)
-		listHeight := bodyHeight
-		if previewShown && bodyHeight > 2 {
-			listHeight = bodyHeight - 2
+		switch {
+		case previewShown && layout == previewStacked:
+			body = value.assembleStackedBody(body, selectedLine, listWidth, bodyHeight)
+		case previewShown && layout == previewDual:
+			body = value.assembleDualBody(body, selectedLine, listWidth, previewCols, bodyHeight)
+		default:
+			body = value.scrolledBody(body, selectedLine, bodyHeight, listWidth)
 		}
-		body = value.scrolledBody(body, selectedLine, listHeight, listWidth)
-		if previewShown && bodyHeight > 2 {
-			body = append(value.splitPanelTitle("SESSIONS", 100-value.previewPct, listWidth), body...)
-		}
-		panelHeight = bodyHeight
 	}
 	for index, detail := range details {
 		details[index] = value.mutedText(detail, width)
-	}
-
-	if previewShown {
-		body = value.joinPreview(body, listWidth, previewCols, panelHeight)
 	}
 
 	lines := []string{value.header(width), value.pillBar(width), ""}
@@ -144,6 +139,40 @@ func (value model) boundedLayout(details []string, selected session.Session, dia
 	}
 	bodyHeight := max(1, value.height-(frameTop+1+len(details)+len(diagnostics)+searchLines+frameBottom))
 	return details, diagnostics, bodyHeight
+}
+
+// assembleDualBody renders the side-by-side (dual) layout: the list windowed
+// to its column (bodyHeight minus the "SESSIONS" title when there's room),
+// the title prepended afterward per the windowing-then-title ordering task 4
+// established, then joined with the preview panel via joinPreview.
+func (value model) assembleDualBody(body []string, selectedLine, listWidth, previewCols, bodyHeight int) []string {
+	listHeight := bodyHeight
+	if bodyHeight > panelTitleHeight {
+		listHeight = bodyHeight - panelTitleHeight
+	}
+	body = value.scrolledBody(body, selectedLine, listHeight, listWidth)
+	if bodyHeight > panelTitleHeight {
+		body = append(value.splitPanelTitle("SESSIONS", 100-value.previewPct, listWidth), body...)
+	}
+	return value.joinPreview(body, listWidth, previewCols, bodyHeight)
+}
+
+// assembleStackedBody renders the narrow list-above-preview (stacked)
+// layout: stackedHeights partitions bodyHeight between the two panels using
+// previewPct as a vertical ratio; when the partition doesn't fit (ok false),
+// the preview is silently demoted and the list alone fills bodyHeight,
+// exactly like the hidden layout, with no error message. Each panel's title
+// is prepended only after that panel's own content is windowed/rendered, so
+// scroll-indicator arithmetic never mistakes a title row for a session row.
+func (value model) assembleStackedBody(body []string, selectedLine, width, bodyHeight int) []string {
+	listRows, previewRows, ok := value.stackedHeights(bodyHeight)
+	if !ok {
+		return value.scrolledBody(body, selectedLine, bodyHeight, width)
+	}
+	list := value.scrolledBody(body, selectedLine, listRows, width)
+	list = append(value.splitPanelTitle("SESSIONS", 100-value.previewPct, width), list...)
+	preview := value.previewPanel(width, previewRows+panelTitleHeight)
+	return append(list, preview...)
 }
 
 func (value model) sessionLines(width int) ([]string, int) {
@@ -681,7 +710,7 @@ func (value model) help(width int) string {
 	if value.query != "" || value.filterActive() {
 		items = append(items, "esc clear")
 	}
-	if value.contentWidth() >= previewMinWidth {
+	if value.contentWidth() >= stackedMinWidth {
 		label := "p preview"
 		if !value.previewOn {
 			label = "p preview off"

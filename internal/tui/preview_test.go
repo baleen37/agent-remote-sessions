@@ -23,6 +23,13 @@ func previewModel(capture func(context.Context, session.Session) ([]byte, error)
 		NoColor:     true,
 	}
 	value := newModel(context.Background(), deps)
+	// Keep the model narrow (hidden layout) through the initial collection
+	// update so its internal syncPreview call cannot claim previewKey before
+	// the test's own explicit syncPreview call does — otherwise that call
+	// would see an unchanged key and skip firing a capture. defaultWidth (80)
+	// now falls in the stacked layout's visible range, so this can no longer
+	// rely on the zero-value width alone the way it could before stacked mode.
+	value.width = stackedMinWidth - 1
 	message, hasCollection, _ := initialCommands(value.Init())
 	if !hasCollection {
 		panic("previewModel: Init did not produce collectUpdateMsg")
@@ -63,17 +70,49 @@ func TestPreviewKeepsDetailAndFooterFullWidth(t *testing.T) {
 	}
 }
 
-func TestPreviewHiddenBelowMinWidth(t *testing.T) {
+func TestPreviewHiddenBelowStackedMinWidth(t *testing.T) {
 	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
 		return []byte("live output"), nil
 	})
-	value.width = previewMinWidth - 1
+	value.width = stackedMinWidth - 1
 	if value.previewVisible() {
-		t.Fatal("preview should be hidden below minimum width")
+		t.Fatal("preview should be hidden below the stacked minimum width")
 	}
+	if got := previewLayoutOf(value.contentWidth()); got != previewHidden {
+		t.Fatalf("previewLayoutOf below stacked minimum = %v, want previewHidden", got)
+	}
+}
+
+// TestPreviewVisibleInStackedRange covers the 50-99 content-width band: too
+// narrow for the dual side-by-side layout, but wide enough for stacked
+// (list-above-preview), so the preview must stay visible rather than hide as
+// it did before stacked mode existed.
+func TestPreviewVisibleInStackedRange(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return []byte("live output"), nil
+	})
+	value.width = stackedMinWidth
+	if !value.previewVisible() {
+		t.Fatal("preview should be visible at the stacked minimum width")
+	}
+	if got := previewLayoutOf(value.contentWidth()); got != previewStacked {
+		t.Fatalf("previewLayoutOf at stacked minimum = %v, want previewStacked", got)
+	}
+
+	value.width = previewMinWidth - 1
+	if !value.previewVisible() {
+		t.Fatal("preview should still be visible just below the dual minimum width")
+	}
+	if got := previewLayoutOf(value.contentWidth()); got != previewStacked {
+		t.Fatalf("previewLayoutOf below dual minimum = %v, want previewStacked", got)
+	}
+
 	value.width = previewMinWidth
 	if !value.previewVisible() {
-		t.Fatal("preview should be visible at minimum width")
+		t.Fatal("preview should be visible at the dual minimum width")
+	}
+	if got := previewLayoutOf(value.contentWidth()); got != previewDual {
+		t.Fatalf("previewLayoutOf at dual minimum = %v, want previewDual", got)
 	}
 }
 
