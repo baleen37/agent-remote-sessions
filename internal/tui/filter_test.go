@@ -58,6 +58,29 @@ func TestFilterSessionsDoesNotExposeLocalTarget(t *testing.T) {
 	}
 }
 
+func TestLocationBracketsRemoteHostAndLeavesLocalBlank(t *testing.T) {
+	local := twoSessions()[0]
+	local.Host = "localhost"
+	if got := location(local, "localhost"); got != "" {
+		t.Fatalf("location(local) = %q, want empty", got)
+	}
+
+	remote := twoSessions()[0]
+	remote.Host = "server"
+	if got := location(remote, "localhost"); got != "[server]" {
+		t.Fatalf("location(remote) = %q, want %q", got, "[server]")
+	}
+}
+
+func TestFilterSessionsMatchesRemoteHostInsideBrackets(t *testing.T) {
+	item := twoSessions()[0]
+	item.Host = "server"
+	got := filterSessions([]session.Session{item}, "server", "localhost")
+	if len(got) != 1 || keyOf(got[0]) != keyOf(item) {
+		t.Fatalf("filterSessions(server) = %#v", got)
+	}
+}
+
 func staleFilterSession(id string, state session.RuntimeState, updated time.Time) session.Session {
 	return session.Session{
 		Host: "localhost",

@@ -271,8 +271,11 @@ func TestPreviewCaptureRendersLivePane(t *testing.T) {
 		return []byte("first line\nsecond line\n"), nil
 	})
 	// The default 65%-preview split narrows the list column enough at 120 to
-	// truncate "connection check"; widen so the full title still fits.
-	value.width = 140
+	// truncate "connection check"; widen so the full title still fits. The
+	// second session's [server] location badge claims two more columns from
+	// the shared title/location budget than the previous unbracketed host
+	// did, so 140 is no longer enough headroom.
+	value.width = 150
 	// The first session is attached (live); syncPreview on selection issues a
 	// capture. Deliver its result.
 	command := value.syncPreview()

@@ -343,6 +343,11 @@ func TestActivityRowRendersNeedsInputSymbol(t *testing.T) {
 	// Auto grouping hides the saved session behind a "… more" row; open the
 	// group so both running rows render.
 	value.groupMode = map[string]groupMode{"ars": groupModeOpen}
+	// The running sessions live on a remote host, so their [server] location
+	// badge takes two more columns from the shared title/location budget than
+	// an unbracketed host did; widen past the default 120 so "running 0" and
+	// "running 1" still fit whole.
+	value.width = 130
 	value.refreshVisible()
 
 	// The footer and legend legitimately contain "?", so only the session rows

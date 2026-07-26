@@ -49,7 +49,12 @@ func TestPTYProgressiveUpdatesStayStableDuringNavigation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 120}); err != nil {
+	// 150 columns (not the usual 120) keeps "initial session NN" and "final
+	// session NN" titles surviving the preview split's truncation: these
+	// fixture sessions are all on a remote host, so their [server] location
+	// badge claims two more columns from the shared title/location budget
+	// than an unbracketed host did.
+	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 150}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -89,9 +94,9 @@ func TestPTYProgressiveUpdatesStayStableDuringNavigation(t *testing.T) {
 	cache := progressivePTYResult("initial")
 	collection <- Update{Result: cache, Loading: []string{"cached"}}
 	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
-		// The default 65%-preview split narrows the list column enough at 120
-		// columns to truncate the full "initial session NN" title, so this
-		// only asserts the surviving prefix.
+		// The default 65%-preview split still narrows the list column enough
+		// to truncate the full "initial session NN" title even at 150
+		// columns, so this only asserts the surviving prefix.
 		return strings.Contains(value, "initial s") &&
 			strings.Contains(value, "refreshing")
 	}, "initial progressive snapshot")
