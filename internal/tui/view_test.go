@@ -349,7 +349,7 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 	}
 	_, width := contentFrame(value.width)
 	details := detailLines(selected, width, value.deps.Now())
-	for _, text := range append(details, "metadata partial (partial)", "attach finished", value.help(width)) {
+	for _, text := range append(details, "metadata partial (partial)", "attach finished") {
 		line := lines[lineContaining(t, plain, text)]
 		want := " " + value.styles.muted.Render(text)
 		if line != want {
@@ -361,6 +361,71 @@ func TestSecondaryUIUsesHierarchyStyles(t *testing.T) {
 	wantSearch := " " + value.styles.selectedCursor.Render("/") + "API" + value.styles.muted.Render("   1/2")
 	if search != wantSearch {
 		t.Fatalf("active search hierarchy = %q, want %q", search, wantSearch)
+	}
+}
+
+// TestFooterWithoutKeyTokenStaysFullyMuted covers the searching/composing
+// hints (view.go's mutedFooterText path): they carry no key token to chip,
+// so the whole line stays muted end to end, same as task 2 split the header
+// case out of TestSecondaryUIUsesHierarchyStyles into its own test.
+func TestFooterWithoutKeyTokenStaysFullyMuted(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 120, 24, false
+	value.searching = true
+	value.refreshVisible()
+
+	_, width := contentFrame(value.width)
+	got := value.help(width)
+	want := value.styles.muted.Render("type to filter   enter apply   esc cancel")
+	if got != want {
+		t.Fatalf("searching footer = %q, want fully muted %q", got, want)
+	}
+}
+
+// TestFooterHelpUsesKeyChips covers the normal (non-searching,
+// non-composing) footer hints: each hint's key token renders as a
+// background chip and its description stays muted, per task 10's brief.
+func TestFooterHelpUsesKeyChips(t *testing.T) {
+	value := readyModel()
+	value.width, value.height, value.noColor = 170, 24, false
+	value.refreshVisible()
+
+	_, width := contentFrame(value.width)
+	got := value.help(width)
+	wantMove := value.styles.keyChip.Render("↑↓/jk") + " " + value.styles.muted.Render("move")
+	if !strings.Contains(got, wantMove) {
+		t.Fatalf("footer help = %q, want to contain chip %q", got, wantMove)
+	}
+	wantSearch := value.styles.keyChip.Render("/") + " " + value.styles.muted.Render("search")
+	if !strings.Contains(got, wantSearch) {
+		t.Fatalf("footer help = %q, want to contain chip %q", got, wantSearch)
+	}
+	wantHelp := value.styles.keyChip.Render("?") + " " + value.styles.muted.Render("help")
+	if !strings.Contains(got, wantHelp) {
+		t.Fatalf("footer help = %q, want to contain chip %q", got, wantHelp)
+	}
+}
+
+// TestFooterHelpWidthInvariantAcrossColor asserts the core width-invariance
+// contract from task 10's brief: stripping ANSI from the colored footer
+// render must equal the noColor render byte for byte, so key chips add SGR
+// only and never widen the line (which would break the width-budget tests).
+func TestFooterHelpWidthInvariantAcrossColor(t *testing.T) {
+	for _, width := range []int{60, 75, 120, 140, 170} {
+		colored := readyModel()
+		colored.width, colored.height, colored.noColor = width, 24, false
+		colored.refreshVisible()
+
+		plain := readyModel()
+		plain.width, plain.height, plain.noColor = width, 24, true
+		plain.refreshVisible()
+
+		_, contentWidth := contentFrame(width)
+		coloredHelp := colored.help(contentWidth)
+		plainHelp := plain.help(contentWidth)
+		if ansi.Strip(coloredHelp) != plainHelp {
+			t.Fatalf("width %d: ansi.Strip(colored help) = %q, want %q", width, ansi.Strip(coloredHelp), plainHelp)
+		}
 	}
 }
 

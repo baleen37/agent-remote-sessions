@@ -13,6 +13,7 @@ type viewStyles struct {
 	failure        lipgloss.Style
 	matched        lipgloss.Style
 	providerClaude lipgloss.Style
+	keyChip        lipgloss.Style
 }
 
 func newViewStyles(dark bool) viewStyles {
@@ -48,6 +49,13 @@ func newViewStyles(dark bool) viewStyles {
 		providerClaude: lipgloss.NewStyle().Foreground(choose(
 			lipgloss.Color("#9A3412"),
 			lipgloss.Color("#FB923C"),
+		)),
+		keyChip: lipgloss.NewStyle().Bold(true).Background(choose(
+			lipgloss.Color("#DDF7F5"),
+			lipgloss.Color("#153B3B"),
+		)).Foreground(choose(
+			lipgloss.Color("#007C83"),
+			lipgloss.Color("#5EEAD4"),
 		)),
 	}
 }
