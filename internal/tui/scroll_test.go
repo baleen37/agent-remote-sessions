@@ -81,7 +81,7 @@ func TestScrollIndicatorCountsHiddenLines(t *testing.T) {
 	value.width, value.height, value.noColor = 80, 10, true
 	value.selectRow(0)
 
-	body, _ := value.sessionLines(value.width)
+	body, _ := value.sessionLines(value.width, 0)
 	total := len(body)
 
 	content := ansi.Strip(value.View().Content)

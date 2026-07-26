@@ -41,7 +41,6 @@ func (value model) View() tea.View {
 	if previewShown && layout == previewDual {
 		listWidth, previewCols = value.splitWidths(width)
 	}
-	body, selectedLine := value.sessionLines(listWidth)
 	var details []string
 	selected, hasSelection := value.selectedSession()
 	if hasSelection {
@@ -72,6 +71,24 @@ func (value model) View() tea.View {
 		}
 		search = append(search, fitLine(prefix+value.query+count, width))
 	}
+	// The truly-empty-inventory hint (emptyStateLines, reached via
+	// sessionLines below) has to pick its tier before boundedLayout runs,
+	// so it needs to know upfront how many lines diagnostics/search will
+	// actually keep — not just how many they start with. hasSelection is
+	// always false for an empty inventory (nothing to select), so details
+	// plays no part in this reservation; reservedDiagnosticLines mirrors
+	// boundedLayout's own diagnosticHeight formula with details fixed at 0.
+	reservedDiagnosticLines := len(diagnostics)
+	if value.height > 0 {
+		statusFloor := 0
+		if value.status != "" {
+			statusFloor = 1
+		}
+		budget := value.height - (frameTop + 1 + 1 + len(search) + frameBottom)
+		budget = max(budget, statusFloor)
+		reservedDiagnosticLines = min(reservedDiagnosticLines, budget)
+	}
+	body, selectedLine := value.sessionLines(listWidth, reservedDiagnosticLines+len(search))
 
 	if value.height > 0 {
 		var bodyHeight int
@@ -175,7 +192,7 @@ func (value model) assembleStackedBody(body []string, selectedLine, width, bodyH
 	return append(list, preview...)
 }
 
-func (value model) sessionLines(width int) ([]string, int) {
+func (value model) sessionLines(width, reservedLines int) ([]string, int) {
 	if len(value.rows) == 0 {
 		if value.query != "" {
 			return []string{fitLine(fmt.Sprintf("  no matches for %q · esc to clear", value.query), width)}, 0
@@ -190,8 +207,7 @@ func (value model) sessionLines(width int) ([]string, int) {
 			message := fmt.Sprintf("  all %d sessions are older than 7d · a to show", value.staleHidden)
 			return []string{fitLine(message, width)}, 0
 		}
-		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
-		return []string{"  no sessions yet", "", hint}, 0
+		return value.emptyStateLines(width, value.height, reservedLines), 0
 	}
 	layout := newRowLayout(value.result.Sessions, width, value.deps.Now(), value.deps.LocalTarget, value.pins)
 	lines := make([]string, 0, len(value.rows))
@@ -207,6 +223,91 @@ func (value model) sessionLines(width int) ([]string, int) {
 		}
 	}
 	return lines, value.selected
+}
+
+// emptyStateFullHeight is the truly-empty body's line count in the full
+// tier (3-line logo + blank + title + blank + 2-line hint). The full tier
+// only applies when the fixed frame (frameTop + blank + frameBottom, see
+// boundedLayout) plus this body fits without scrolledBody clipping it:
+// frameTop(3) + emptyStateFullHeight(8) + frameBottom(2) + 1 (blank line
+// between body and footer) = 14.
+const emptyStateFullHeight = 8
+
+// emptyStateFullMinHeight is the smallest height that fits the full tier's
+// body without scrolledBody truncating it into a "↓ N more" indicator.
+const emptyStateFullMinHeight = frameTop + emptyStateFullHeight + frameBottom + 1
+
+// emptyStateFullMinWidth is the narrowest width the full tier's box logo
+// and copy are designed for.
+const emptyStateFullMinWidth = 60
+
+// emptyStateCompactMinHeight is the smallest height that keeps the compact
+// (pre-existing 3-line) empty state instead of collapsing to one line.
+const emptyStateCompactMinHeight = 8
+
+// emptyStateLines renders the truly-empty-inventory hint, scaled to the
+// available screen size in three tiers: full (box logo + spaced-out copy),
+// compact (the original 3-line hint), and minimal (a single line) for very
+// short screens. height <= 0 means the caller isn't bounding the view (see
+// View's "if value.height > 0" guard), so it keeps the compact form rather
+// than guessing a tier.
+//
+// reservedLines is however many lines diagnostics and the search/compose
+// line will actually keep once boundedLayout runs (computed the same way
+// boundedLayout computes its own diagnosticHeight, since a truly-empty
+// inventory always has zero details). Diagnostics are independent of the
+// session list — a host can fail to connect while reporting zero sessions
+// — so a tall-enough screen can still be too crowded for the full tier;
+// without this, scrolledBody would clip the box logo into a "N more"
+// indicator, exactly what the tiering is meant to avoid.
+func (value model) emptyStateLines(width, height, reservedLines int) []string {
+	available := height - reservedLines
+	if height > 0 && available < emptyStateCompactMinHeight {
+		return []string{fitLine("  no sessions yet · ars remote add <host>", width)}
+	}
+	if height <= 0 || available < emptyStateFullMinHeight || width < emptyStateFullMinWidth {
+		hint := value.mutedText("  start a claude/codex session, or add a remote with: ars remote add <host>", width)
+		return []string{"  no sessions yet", "", hint}
+	}
+	title := "  no sessions yet"
+	if !value.noColor {
+		title = "  " + value.styles.title.Render("no sessions yet")
+	}
+	return []string{
+		"  " + value.emptyStateLogoLine("┌──┬──┬──┐"),
+		"  " + value.emptyStateLogoLine("│● │◐ │○ │"),
+		"  " + value.emptyStateLogoLine("└──┴──┴──┘"),
+		"",
+		title,
+		"",
+		value.mutedText("  start a claude/codex session, or", width),
+		value.mutedText("  add a remote with: ars remote add <host>", width),
+	}
+}
+
+// emptyStateLogoLine renders one row of the static status legend box. Under
+// color, the glyph cells (●/◐/○) pick up the attached/running/saved
+// foregrounds while the box-drawing characters stay muted; the legend is a
+// fixed reference to what the symbols mean, not a live tally, so it always
+// shows one of each glyph regardless of actual session counts.
+func (value model) emptyStateLogoLine(line string) string {
+	if value.noColor {
+		return line
+	}
+	var out strings.Builder
+	for _, glyph := range line {
+		switch glyph {
+		case '●':
+			out.WriteString(value.styles.attached.Render(string(glyph)))
+		case '◐':
+			out.WriteString(value.styles.running.Render(string(glyph)))
+		case '○':
+			out.WriteString(value.styles.saved.Render(string(glyph)))
+		default:
+			out.WriteString(value.styles.muted.Render(string(glyph)))
+		}
+	}
+	return out.String()
 }
 
 func rowSessions(rows []listRow) []session.Session {
