@@ -54,7 +54,7 @@ func capturePaneCommand(name string) string {
 	// "=name" alone is read as a pane spec and fails to match.
 	paneTarget := singleQuote("=" + name + ":")
 	return "if " + tmux + " has-session -t " + sessionTarget + " >/dev/null 2>&1; then " +
-		tmux + " capture-pane -p -t " + paneTarget + "; else " +
+		tmux + " capture-pane -e -p -t " + paneTarget + "; else " +
 		"printf '%s\\n' '" + noLivePaneMarker + "'; fi"
 }
 
@@ -90,7 +90,7 @@ func capturePaneHistoryCommand(name string) string {
 	paneTarget := singleQuote("=" + name + ":")
 	history := strconv.Itoa(-fullscreenHistoryLines)
 	return "if " + tmux + " has-session -t " + sessionTarget + " >/dev/null 2>&1; then " +
-		tmux + " capture-pane -p -S " + history + " -t " + paneTarget + "; else " +
+		tmux + " capture-pane -e -p -S " + history + " -t " + paneTarget + "; else " +
 		"printf '%s\\n' '" + noLivePaneMarker + "'; fi"
 }
 
