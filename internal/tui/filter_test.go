@@ -72,12 +72,61 @@ func TestLocationBracketsRemoteHostAndLeavesLocalBlank(t *testing.T) {
 	}
 }
 
+func TestLocationShortensRemoteHostToFirstLabel(t *testing.T) {
+	remote := twoSessions()[0]
+	remote.Host = "baleen@baleens-macbook.ojos-in.ts.net"
+	if got := location(remote, "localhost"); got != "[baleens-macbook]" {
+		t.Fatalf("location(remote) = %q, want %q", got, "[baleens-macbook]")
+	}
+}
+
 func TestFilterSessionsMatchesRemoteHostInsideBrackets(t *testing.T) {
 	item := twoSessions()[0]
 	item.Host = "server"
 	got := filterSessions([]session.Session{item}, "server", "localhost")
 	if len(got) != 1 || keyOf(got[0]) != keyOf(item) {
 		t.Fatalf("filterSessions(server) = %#v", got)
+	}
+}
+
+// TestFilterSessionsMatchesFullHostDespiteShortenedBadge pins the guarantee
+// task-C's brief calls out: shortening the displayed [badge] to the host's
+// first label must not stop the user from finding a session by any part of
+// its full host string (user@ prefix, domain suffix, or the label itself).
+func TestFilterSessionsMatchesFullHostDespiteShortenedBadge(t *testing.T) {
+	item := twoSessions()[0]
+	item.Host = "baleen@baleens-macbook.ojos-in.ts.net"
+
+	for _, query := range []string{"baleens-macbook", "ojos-in.ts.net", "baleen@"} {
+		t.Run(query, func(t *testing.T) {
+			got := filterSessions([]session.Session{item}, query, "localhost")
+			if len(got) != 1 || keyOf(got[0]) != keyOf(item) {
+				t.Fatalf("filterSessions(query %q) = %#v", query, got)
+			}
+		})
+	}
+}
+
+func TestShortHost(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"user at fqdn", "baleen@baleens-macbook.ojos-in.ts.net", "baleens-macbook"},
+		{"fqdn without user", "baleens-macbook.ojos-in.ts.net", "baleens-macbook"},
+		{"single label", "server", "server"},
+		{"ipv4 address", "192.168.1.10", "192.168.1.10"},
+		{"ipv6 address", "::1", "::1"},
+		{"empty", "", ""},
+		{"user with no host", "baleen@", "baleen@"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := shortHost(testCase.host); got != testCase.want {
+				t.Fatalf("shortHost(%q) = %q, want %q", testCase.host, got, testCase.want)
+			}
+		})
 	}
 }
 
