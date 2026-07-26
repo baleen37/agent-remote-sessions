@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -452,6 +453,144 @@ func TestPreviewLiteralInSearch(t *testing.T) {
 	}
 	if !value.previewOn {
 		t.Fatal("p in search mode must not toggle preview")
+	}
+}
+
+// TestPreviewBodyPreservesColorInColorMode locks in the render-layer half of
+// task 7: a captured pane line's SGR codes survive into the rendered preview
+// body when color is on.
+func TestPreviewBodyPreservesColorInColorMode(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return nil, nil
+	})
+	value.noColor = false
+	item := twoSessions()[0]
+	value.previewContent = []string{"\x1b[31mred text\x1b[0m"}
+	body := value.previewBody(item, 80, 5)
+	if len(body) != 1 || !strings.Contains(body[0], "\x1b[31m") {
+		t.Fatalf("previewBody in color mode stripped SGR: %#v", body)
+	}
+}
+
+// TestPreviewBodyStripsColorUnderNoColor keeps the NO_COLOR contract: with
+// noColor set, previewBody's output must be identical after ansi.Strip.
+func TestPreviewBodyStripsColorUnderNoColor(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return nil, nil
+	})
+	item := twoSessions()[0]
+	value.previewContent = []string{"\x1b[31mred text\x1b[0m", "\x1b[1;32mbold green\x1b[0m"}
+	body := value.previewBody(item, 80, 5)
+	for _, line := range body {
+		if ansi.Strip(line) != line {
+			t.Fatalf("previewBody under NO_COLOR left SGR in output: %q", line)
+		}
+	}
+}
+
+// TestFitANSILineClosesDanglingStyle covers the truncation-bleed bug the
+// brief calls out: a long line whose color never closes within the source
+// text must not leave an open SGR past the truncation point, since padPanel
+// pads directly onto whatever fitANSILine returns and an open color would
+// bleed into that padding.
+func TestFitANSILineClosesDanglingStyle(t *testing.T) {
+	// No reset anywhere in the source line — the pane's own reset is assumed
+	// to live further along in the (unclipped) real output.
+	long := "\x1b[31m" + strings.Repeat("x", 50)
+	fitted := fitANSILine(long, 10)
+	if !strings.HasSuffix(fitted, ansi.ResetStyle) {
+		t.Fatalf("fitANSILine left an unclosed SGR: %q", fitted)
+	}
+	// The reset must be appended after the visible width, not counted toward
+	// it, so the panel's rectangular width contract still holds.
+	if width := lipgloss.Width(fitted); width != 10 {
+		t.Fatalf("fitANSILine width = %d, want 10: %q", width, fitted)
+	}
+}
+
+// TestFitANSILineNoOpForAlreadyClosedLine confirms fitANSILine does not add a
+// spurious trailing reset when the source line already closes its own color
+// well within the fitted width (the common case for short, fully-styled
+// tokens).
+func TestFitANSILineNoOpForAlreadyClosedLine(t *testing.T) {
+	line := "\x1b[31mred\x1b[0m plain"
+	fitted := fitANSILine(line, 80)
+	if fitted != line {
+		t.Fatalf("fitANSILine changed a line that already fits within width and needs no truncation: got %q, want %q", fitted, line)
+	}
+}
+
+// TestPadPanelPreservesWidthWithANSI locks in task 4's rectangular contract
+// under ANSI content: a line carrying SGR codes must still measure exactly
+// width cells after padPanel, since lipgloss.Width (used throughout the
+// panel layout) is ANSI-aware and must not count escape bytes as columns.
+func TestPadPanelPreservesWidthWithANSI(t *testing.T) {
+	value := model{}
+	lines := []string{"\x1b[31mred\x1b[0m"}
+	padded := value.padPanel(lines, 20, 3)
+	if len(padded) != 3 {
+		t.Fatalf("padPanel rows = %d, want 3", len(padded))
+	}
+	for _, line := range padded {
+		if width := lipgloss.Width(line); width != 20 {
+			t.Fatalf("padPanel line width = %d, want 20: %q", width, line)
+		}
+	}
+}
+
+// TestFindMatchesAcrossEmbeddedSGR covers the brief's "SGR-penetrating
+// search" requirement: a color escape landing in the middle of the search
+// term must not defeat the substring match, since findMatches searches the
+// ansi.Strip'd line rather than the raw captured text.
+func TestFindMatchesAcrossEmbeddedSGR(t *testing.T) {
+	lines := []string{"err\x1b[31mor\x1b[0m detected", "all clear"}
+	matches := findMatches(lines, "error")
+	if len(matches) != 1 || matches[0] != 0 {
+		t.Fatalf("findMatches across embedded SGR = %v, want [0]", matches)
+	}
+}
+
+// TestFullscreenBodyPreservesColorForNonMatchLines checks the fullscreen
+// scrollback path keeps a non-matching line's SGR when color is on.
+func TestFullscreenBodyPreservesColorForNonMatchLines(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return nil, nil
+	})
+	value.noColor = false
+	item := twoSessions()[0]
+	value.previewFullContent = []string{"\x1b[31mred text\x1b[0m"}
+	body := value.fullscreenBody(item, 80, 5)
+	if len(body) != 1 || !strings.Contains(body[0], "\x1b[31m") {
+		t.Fatalf("fullscreenBody stripped SGR from a non-match line: %#v", body)
+	}
+}
+
+// TestFullscreenBodyMatchLinesRenderPlainWithHighlight locks in the brief's
+// explicit decision: a line containing an active search match always renders
+// stripped-and-highlighted, never with its original SGR, even in color mode —
+// layering the two would be ambiguous. This also guards PR #50's highlight
+// behavior continuing to work once color capture is on.
+func TestFullscreenBodyMatchLinesRenderPlainWithHighlight(t *testing.T) {
+	value := previewModel(func(context.Context, session.Session) ([]byte, error) {
+		return nil, nil
+	})
+	value.noColor = false
+	item := twoSessions()[0]
+	value.previewFullContent = []string{"\x1b[31mneedle here\x1b[0m"}
+	value.previewSearchActive = true
+	value.previewSearchMatches = []int{0}
+	value.previewSearchQuery = "needle"
+	body := value.fullscreenBody(item, 80, 5)
+	if len(body) != 1 {
+		t.Fatalf("fullscreenBody match line = %#v, want 1 line", body)
+	}
+	// The source color escape must be gone (stripped before highlighting)...
+	if strings.Contains(body[0], "\x1b[31m") {
+		t.Fatalf("match line kept the original SGR instead of rendering plain+highlight: %q", body[0])
+	}
+	// ...while the matched-substring highlight style from PR #50 still fires.
+	if !strings.Contains(body[0], "needle") {
+		t.Fatalf("match line lost its text: %q", body[0])
 	}
 }
 

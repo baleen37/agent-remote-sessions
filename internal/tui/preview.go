@@ -575,7 +575,9 @@ func (value model) currentViewportLine() int {
 }
 
 // findMatches returns the indices of every line in lines containing query as
-// a case-insensitive substring.
+// a case-insensitive substring. Matching is done against each line stripped
+// of ANSI SGR codes: a captured pane's color codes can land in the middle of
+// a word, which would otherwise break a substring match that spans them.
 func findMatches(lines []string, query string) []int {
 	if query == "" {
 		return nil
@@ -583,7 +585,7 @@ func findMatches(lines []string, query string) []int {
 	needle := strings.ToLower(query)
 	var matches []int
 	for index, line := range lines {
-		if strings.Contains(strings.ToLower(line), needle) {
+		if strings.Contains(strings.ToLower(ansi.Strip(line)), needle) {
 			matches = append(matches, index)
 		}
 	}
@@ -709,7 +711,28 @@ func (value model) previewBody(selected session.Session, width, height int) []st
 	}
 	fitted := make([]string, len(lines))
 	for index, line := range lines {
-		fitted[index] = fitLine(ansi.Strip(line), width)
+		if value.noColor {
+			fitted[index] = fitLine(ansi.Strip(line), width)
+		} else {
+			fitted[index] = fitANSILine(line, width)
+		}
+	}
+	return fitted
+}
+
+// fitANSILine truncates a captured pane line to width like fitLine, but stays
+// SGR-aware: fitLine's underlying ansi.Truncate can cut a line while a color
+// is still open (the source line's own reset lived past the cut point), which
+// would otherwise bleed that color into the padding padPanel appends after
+// it. Only a line that was actually truncated needs this: an untruncated line
+// is returned exactly as fitLine produced it, closed or not, since it is not
+// this function's job to fix up already-complete lines. Truncation appends
+// ansi.ResetStyle unconditionally, which is one redundant reset for a line
+// that happened to truncate right at its own close, but that is harmless.
+func fitANSILine(line string, width int) string {
+	fitted := fitLine(line, width)
+	if fitted != line && ansi.Strip(fitted) != fitted {
+		fitted += ansi.ResetStyle
 	}
 	return fitted
 }
@@ -832,11 +855,18 @@ func (value model) fullscreenBody(selected session.Session, width, height int) [
 	}
 	for offset, line := range lines[start : start+rows] {
 		lineIndex := start + offset
-		plain := ansi.Strip(line)
 		if matchSet[lineIndex] {
+			// A matched line renders in plain text plus the matched-substring
+			// highlight rather than keeping the pane's original SGR: layering
+			// the two styles would be ambiguous (which wins where they
+			// overlap) for little benefit, so a search match always displays
+			// in a single, unambiguous color.
+			plain := ansi.Strip(line)
 			fitted = append(fitted, value.highlightMatches(fitLine(plain, width), value.previewSearchQuery))
+		} else if value.noColor {
+			fitted = append(fitted, fitLine(ansi.Strip(line), width))
 		} else {
-			fitted = append(fitted, fitLine(plain, width))
+			fitted = append(fitted, fitANSILine(line, width))
 		}
 	}
 	if botInd {
