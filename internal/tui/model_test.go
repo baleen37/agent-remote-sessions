@@ -467,6 +467,51 @@ func TestModelRefreshCoalescesAndRejectsStaleGenerations(t *testing.T) {
 	}
 }
 
+func TestModelInitSchedulesAutoRefresh(t *testing.T) {
+	value := newModel(context.Background(), Dependencies{
+		Collect: staticCollect(Result{}),
+	})
+
+	batch, ok := value.Init()().(tea.BatchMsg)
+	if !ok || len(batch) != 5 {
+		t.Fatalf("Init batch = %#v, want five commands including auto refresh", batch)
+	}
+}
+
+func TestModelAutoRefreshStartsCollectionWhenIdle(t *testing.T) {
+	value := readyModel()
+	value.collecting = false
+	value.generation = 1
+	collects := 0
+	value.deps.Collect = func(context.Context) <-chan Update {
+		collects++
+		return updates(Update{Done: true})
+	}
+
+	value, command := updateModel(value, autoRefreshTickMsg{})
+
+	if command == nil || !value.collecting || value.generation != 2 || collects != 1 {
+		t.Fatalf("auto refresh command=%v collecting=%t generation=%d collects=%d", command, value.collecting, value.generation, collects)
+	}
+}
+
+func TestModelAutoRefreshSkipsCollectionWhenBusy(t *testing.T) {
+	value := readyModel()
+	value.collecting = true
+	value.generation = 2
+	collects := 0
+	value.deps.Collect = func(context.Context) <-chan Update {
+		collects++
+		return updates(Update{Done: true})
+	}
+
+	value, command := updateModel(value, autoRefreshTickMsg{})
+
+	if command == nil || !value.collecting || value.generation != 2 || collects != 0 {
+		t.Fatalf("busy auto refresh command=%v collecting=%t generation=%d collects=%d", command, value.collecting, value.generation, collects)
+	}
+}
+
 func TestModelRefreshPreservesCanonicalSelection(t *testing.T) {
 	model := readyModel()
 	selected := twoSessions()[1]
