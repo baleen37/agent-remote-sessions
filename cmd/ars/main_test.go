@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,7 +21,59 @@ import (
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 	"github.com/baleen37/agent-remote-sessions/internal/ssh"
 	"github.com/baleen37/agent-remote-sessions/internal/tui"
+	"github.com/baleen37/agent-remote-sessions/internal/update"
 )
+
+func TestRunExplicitUpdatePrintsResult(t *testing.T) {
+	tests := []struct {
+		name        string
+		tag         string
+		wantOutput  string
+		wantInstall bool
+	}{
+		{
+			name:       "already current",
+			tag:        "v1.2.0",
+			wantOutput: "ars v1.2.0 is already up to date\n",
+		},
+		{
+			name:        "updated",
+			tag:         "v1.3.0",
+			wantOutput:  "Updated ars from v1.2.0 to v1.3.0\n",
+			wantInstall: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"tag_name":%q}`, test.tag)
+			}))
+			defer server.Close()
+
+			installed := false
+			deps := update.Dependencies{
+				CurrentVersion: "1.2.0",
+				Client:         server.Client(),
+				ReleaseAPI:     server.URL,
+				Executable: func() (string, error) {
+					return "/usr/local/lib/node_modules/@baleen37/ars/vendor/ars-darwin-arm64", nil
+				},
+				RunCommand: func(context.Context, string, ...string) error {
+					installed = true
+					return nil
+				},
+				CheckTimeout: time.Second,
+			}
+			var stdout bytes.Buffer
+			if err := runExplicitUpdate(context.Background(), deps, &stdout); err != nil {
+				t.Fatal(err)
+			}
+			if stdout.String() != test.wantOutput || installed != test.wantInstall {
+				t.Fatalf("stdout/installed = %q/%v, want %q/%v", stdout.String(), installed, test.wantOutput, test.wantInstall)
+			}
+		})
+	}
+}
 
 func TestNewCollectorLocalEmitsRecentAndReturnsAuthoritativeFinal(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)

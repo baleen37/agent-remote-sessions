@@ -165,12 +165,65 @@ func TestRunReportsConfigurationWriteFailures(t *testing.T) {
 	}
 }
 
+func TestRunUpdatesWithoutLoadingTopology(t *testing.T) {
+	calls := 0
+	deps, stdout, stderr := appDependencies()
+	deps.RunUpdate = func(context.Context) error {
+		calls++
+		return nil
+	}
+	deps.LoadTopology = func(string) ([]Host, error) {
+		t.Fatal("LoadTopology called for update")
+		return nil, nil
+	}
+	deps.Collect = func(context.Context, []Host) Result {
+		t.Fatal("Collect called for update")
+		return Result{}
+	}
+	deps.RunInteractive = func(context.Context, []Host) error {
+		t.Fatal("TUI called for update")
+		return nil
+	}
+
+	if code := Run(context.Background(), []string{"update"}, deps); code != 0 {
+		t.Fatalf("Run() = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if calls != 1 || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("calls/stdout/stderr = %d/%q/%q", calls, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunReportsUpdateFailure(t *testing.T) {
+	deps, _, stderr := appDependencies()
+	deps.RunUpdate = func(context.Context) error {
+		return errors.New("network unavailable")
+	}
+
+	if code := Run(context.Background(), []string{"update"}, deps); code != 1 {
+		t.Fatalf("Run() = %d, want 1", code)
+	}
+	if got := stderr.String(); got != "ars: update: network unavailable\n" {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestRunHelpIncludesUpdateWithoutUpgradeAlias(t *testing.T) {
+	deps, stdout, stderr := appDependencies()
+	if code := Run(context.Background(), []string{"--help"}, deps); code != 0 {
+		t.Fatalf("Run() = %d; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ars update") || strings.Contains(stdout.String(), "ars upgrade") {
+		t.Fatalf("help = %q", stdout.String())
+	}
+}
+
 func TestRunRejectsInvalidUsageBeforeLoadingTopology(t *testing.T) {
 	tests := [][]string{
 		{"list"},
 		{"--json"},
 		{"list", "--json", "devbox"},
 		{"devbox", "extra"},
+		{"update", "extra"},
 		{"remote", "add"},
 		{"remote", "add", "devbox", "extra"},
 		{"local", "set"},
@@ -188,6 +241,17 @@ func TestRunRejectsInvalidUsageBeforeLoadingTopology(t *testing.T) {
 		if !strings.Contains(stderr.String(), "usage:") {
 			t.Fatalf("stderr = %q, want usage", stderr.String())
 		}
+	}
+}
+
+func TestRunDoesNotProvideUpgradeAlias(t *testing.T) {
+	deps, _, stderr := appDependencies()
+	deps.LoadTopology = func(string) ([]Host, error) {
+		t.Fatal("LoadTopology called for rejected upgrade alias")
+		return nil, nil
+	}
+	if code := Run(context.Background(), []string{"upgrade"}, deps); code != 2 {
+		t.Fatalf("Run() = %d, want 2; stderr = %q", code, stderr.String())
 	}
 }
 

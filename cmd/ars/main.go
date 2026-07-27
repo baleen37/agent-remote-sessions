@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -156,6 +157,9 @@ func main() {
 				},
 			}, os.Stdin, os.Stdout, term.IsTerminal)
 		},
+		RunUpdate: func(ctx context.Context) error {
+			return runExplicitUpdate(ctx, updateDependencies(os.Stdin, os.Stdout, os.Stderr), os.Stdout)
+		},
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 	}
@@ -233,7 +237,15 @@ func runTUI(ctx context.Context, deps tui.Dependencies, stdin, stdout *os.File, 
 }
 
 func maybeUpdate(ctx context.Context, stdin, stdout *os.File) error {
-	return update.Maybe(ctx, update.Dependencies{
+	deps := updateDependencies(stdin, stdout, os.Stderr)
+	deps.Choose = func(current, latest string) bool {
+		return tui.ChooseUpdate(ctx, stdin, stdout, current, latest)
+	}
+	return update.Maybe(ctx, deps)
+}
+
+func updateDependencies(stdin io.Reader, stdout, stderr io.Writer) update.Dependencies {
+	return update.Dependencies{
 		CurrentVersion: version,
 		Client:         http.DefaultClient,
 		ReleaseAPI:     update.DefaultReleaseAPI,
@@ -245,17 +257,27 @@ func maybeUpdate(ctx context.Context, stdin, stdout *os.File) error {
 			command := exec.CommandContext(ctx, name, args...)
 			command.Stdin = stdin
 			command.Stdout = stdout
-			command.Stderr = os.Stderr
+			command.Stderr = stderr
 			return command.Run()
 		},
-		Exec: syscall.Exec,
-		Choose: func(current, latest string) bool {
-			return tui.ChooseUpdate(ctx, stdin, stdout, current, latest)
-		},
+		Exec:         syscall.Exec,
 		Args:         os.Args,
 		Environ:      os.Environ(),
 		CheckTimeout: 1500 * time.Millisecond,
-	})
+	}
+}
+
+func runExplicitUpdate(ctx context.Context, deps update.Dependencies, stdout io.Writer) error {
+	result, err := update.Explicit(ctx, deps)
+	if err != nil {
+		return err
+	}
+	if result.Updated {
+		_, err = fmt.Fprintf(stdout, "Updated ars from v%s to v%s\n", result.CurrentVersion, result.LatestVersion)
+	} else {
+		_, err = fmt.Fprintf(stdout, "ars v%s is already up to date\n", result.CurrentVersion)
+	}
+	return err
 }
 
 func combineRuntime(candidates []session.Candidate, states map[string]session.Runtime) []session.Discovered {

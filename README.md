@@ -106,9 +106,15 @@ ars localhost          # search only current-computer sessions
 ars devbox             # search one configured SSH peer
 ars list --json        # return all hosts, sessions, and errors as JSON
 ars remote add devbox  # add an SSH target to the ARS inventory
+ars update             # update the current installation to the latest release
 ars --help             # show all command forms
 ars remote --help      # show remote command help
 ```
+
+`ars update` applies the latest release immediately without a second
+confirmation. It reports success without reinstalling when the current
+version is already latest. The command supports npm and standalone installs;
+development builds do not update themselves.
 
 `ars` and `ars <host>` require a TTY. Use `ars list --json` for a headless,
 one-shot result.
