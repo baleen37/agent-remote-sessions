@@ -136,3 +136,82 @@ func TestMaybeReturnsApplyFailureWithoutExec(t *testing.T) {
 		t.Errorf("exec ran after apply failure: %v", harness.execs)
 	}
 }
+
+func TestExplicitRejectsDevBuild(t *testing.T) {
+	t.Parallel()
+
+	_, err := Explicit(context.Background(), Dependencies{})
+	if err == nil || err.Error() != "updates are unavailable for development builds" {
+		t.Fatalf("Explicit() error = %v", err)
+	}
+}
+
+func TestExplicitReportsUpToDateWithoutApplyingOrExecing(t *testing.T) {
+	t.Parallel()
+
+	harness := newMaybeHarness(t, "v1.2.0", "1.2.0", true, npmExecutable)
+	result, err := Explicit(context.Background(), harness.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Result{CurrentVersion: "1.2.0", LatestVersion: "1.2.0"}
+	if result != want {
+		t.Fatalf("result = %#v, want %#v", result, want)
+	}
+	if len(harness.choices) != 0 || len(harness.commands) != 0 || len(harness.execs) != 0 {
+		t.Fatalf("unexpected side effects: choices=%v commands=%v execs=%v", harness.choices, harness.commands, harness.execs)
+	}
+}
+
+func TestExplicitAppliesWithoutPromptOrReExec(t *testing.T) {
+	t.Parallel()
+
+	harness := newMaybeHarness(t, "v1.3.0", "1.2.0", true, npmExecutable)
+	result, err := Explicit(context.Background(), harness.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Result{CurrentVersion: "1.2.0", LatestVersion: "1.3.0", Updated: true}
+	if result != want {
+		t.Fatalf("result = %#v, want %#v", result, want)
+	}
+	wantCommands := [][]string{{"npm", "install", "-g", "@baleen37/ars@1.3.0"}}
+	if !reflect.DeepEqual(harness.commands, wantCommands) {
+		t.Fatalf("commands = %#v, want %#v", harness.commands, wantCommands)
+	}
+	if len(harness.choices) != 0 || len(harness.execs) != 0 {
+		t.Fatalf("explicit update prompted or re-execed: choices=%v execs=%v", harness.choices, harness.execs)
+	}
+}
+
+func TestExplicitReturnsCheckAndApplyFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("check", func(t *testing.T) {
+		harness := newMaybeHarness(t, "v1.3.0", "1.2.0", true, npmExecutable)
+		harness.deps.ReleaseAPI = "http://127.0.0.1:0/unreachable"
+		if _, err := Explicit(context.Background(), harness.deps); err == nil {
+			t.Fatal("Explicit() = nil error")
+		}
+	})
+
+	t.Run("invalid latest version", func(t *testing.T) {
+		harness := newMaybeHarness(t, "vbanana", "1.2.0", true, npmExecutable)
+		if _, err := Explicit(context.Background(), harness.deps); err == nil {
+			t.Fatal("Explicit() = nil error")
+		}
+	})
+
+	t.Run("apply", func(t *testing.T) {
+		harness := newMaybeHarness(t, "v1.3.0", "1.2.0", true, npmExecutable)
+		harness.deps.RunCommand = func(context.Context, string, ...string) error {
+			return errors.New("exit status 1")
+		}
+		if _, err := Explicit(context.Background(), harness.deps); err == nil {
+			t.Fatal("Explicit() = nil error")
+		}
+		if len(harness.execs) != 0 {
+			t.Fatalf("execs = %v, want none", harness.execs)
+		}
+	})
+}
