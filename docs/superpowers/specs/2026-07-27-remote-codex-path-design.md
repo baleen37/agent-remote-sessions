@@ -65,13 +65,17 @@ during every inventory refresh.
 Remote Codex attach will create its tmux pane with one fixed shell command:
 
 1. select `${SHELL:-/bin/sh}` from the peer environment
-2. invoke it as a login shell with `-l -c`
+2. invoke it as an interactive login shell with `-l -i -c`
 3. `exec codex resume <validated-session-id>` inside that shell
 
 Only the already validated Codex `ResumeSpec` is interpolated. Every executable
 and argument remains POSIX single-quoted before it enters the login-shell
 command. The tmux session name, working directory, and attach target keep their
 existing validation and exact-target syntax.
+
+Interactive mode is required because a provider's `PATH` may be initialized by
+interactive shell startup files. Any startup output or prompts remain confined
+to the attached tmux pane.
 
 Claude retains its existing macOS keychain guard. Local attach retains direct
 execution because local ARS already inherits the interactive launch
@@ -86,7 +90,7 @@ No absolute provider path is sent over the protocol or persisted in cache.
   error path.
 - A missing or empty `SHELL` falls back to `/bin/sh`; if that shell cannot find
   Codex, attach fails normally.
-- Shell startup output is confined to the attached tmux pane.
+- Shell startup output and prompts are confined to the attached tmux pane.
 - No fallback searches a list of guessed installation directories.
 
 ## Verification
