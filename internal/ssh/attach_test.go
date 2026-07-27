@@ -149,7 +149,7 @@ func TestRemoteAttachClaudeUnlocksLockedDarwinKeychainBeforeLaunch(t *testing.T)
 	}
 }
 
-func TestRemoteAttachCodexOmitsKeychainGuard(t *testing.T) {
+func TestRemoteAttachCodexUsesLoginShellWithoutKeychainGuard(t *testing.T) {
 	item := remoteAttachedSession()
 	item.Provider = session.Codex
 	spec := provider.ResumeSpec{Executable: "codex", Args: []string{"resume", item.NativeID}}
@@ -161,8 +161,10 @@ func TestRemoteAttachCodexOmitsKeychainGuard(t *testing.T) {
 	if strings.Contains(script, "unlock-keychain") || strings.Contains(script, "Claude Code-credentials") {
 		t.Fatalf("codex script must not carry the claude keychain guard:\n%s", script)
 	}
-	if !strings.Contains(script, "'codex' 'resume' '"+item.NativeID+"'") {
-		t.Fatalf("codex script missing plain launcher:\n%s", script)
+	want := `exec "${SHELL:-/bin/sh}" -l -c '\''exec '\''\'\'''\''codex'\''\'\'''\'' '\''\'\'''\''resume'\''\'\'''\'' '\''\'\'''\''` +
+		item.NativeID + `'\''\'\'''\'''\'''`
+	if !strings.Contains(script, want) {
+		t.Fatalf("codex script missing login-shell launcher %q:\n%s", want, script)
 	}
 }
 

@@ -72,10 +72,7 @@ func remoteAttachScript(name, cwd string, prov session.Provider, spec provider.R
 	if prov == session.Claude {
 		createArgs = append(createArgs, quotePOSIX(guardedPaneCommand(spec)))
 	} else {
-		createArgs = append(createArgs, quotePOSIX(spec.Executable))
-		for _, arg := range spec.Args {
-			createArgs = append(createArgs, quotePOSIX(arg))
-		}
+		createArgs = append(createArgs, quotePOSIX(loginPaneCommand(spec)))
 	}
 
 	return strings.Join([]string{
@@ -110,6 +107,15 @@ func guardedPaneCommand(spec provider.ResumeSpec) string {
 		words = append(words, quotePOSIX(arg))
 	}
 	return darwinKeychainGuard() + " exec " + strings.Join(words, " ")
+}
+
+func loginPaneCommand(spec provider.ResumeSpec) string {
+	words := []string{quotePOSIX(spec.Executable)}
+	for _, arg := range spec.Args {
+		words = append(words, quotePOSIX(arg))
+	}
+	return `exec "${SHELL:-/bin/sh}" -l -c ` +
+		quotePOSIX("exec "+strings.Join(words, " "))
 }
 
 // darwinKeychainGuard returns a pane-command fragment that unlocks the macOS
