@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	autoRefreshInterval  = time.Minute
 	maxStatusBytes       = 256
 	interactionIdle      = 300 * time.Millisecond
 	statusDismissSeconds = 5
@@ -65,6 +66,8 @@ type collectUpdateMsg struct {
 type spinnerTickMsg struct {
 	generation uint64
 }
+
+type autoRefreshTickMsg struct{}
 
 type interactionIdleMsg struct {
 	generation uint64
@@ -198,6 +201,7 @@ func (value model) Init() tea.Cmd {
 		value.initialCollect,
 		spinnerTick(value.generation),
 		activityTick(),
+		autoRefreshTick(),
 		tea.RequestBackgroundColor,
 	)
 }
@@ -296,6 +300,13 @@ func dispatchModel(value model, message tea.Msg) (model, tea.Cmd) {
 		return value.updateActivity(message)
 	case activityTickMsg:
 		return value.updateActivityTick(message)
+	case autoRefreshTickMsg:
+		next := autoRefreshTick()
+		if value.collecting {
+			return value, next
+		}
+		value, command := value.restartCollection()
+		return value, tea.Batch(command, next)
 	case killFireMsg:
 		return value.updateKillFire(message)
 	case killDoneMsg:
@@ -710,6 +721,12 @@ func (value model) restartCollection() (model, tea.Cmd) {
 func spinnerTick(generation uint64) tea.Cmd {
 	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg {
 		return spinnerTickMsg{generation: generation}
+	})
+}
+
+func autoRefreshTick() tea.Cmd {
+	return tea.Tick(autoRefreshInterval, func(time.Time) tea.Msg {
+		return autoRefreshTickMsg{}
 	})
 }
 

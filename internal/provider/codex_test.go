@@ -281,20 +281,25 @@ func TestCodexReadHistoryDoesNotCopyLargeIrrelevantPayloads(t *testing.T) {
 	}
 }
 
-func TestCodexDiscoverIsAbsentWithoutExecutableOrMetadata(t *testing.T) {
-	t.Run("executable", func(t *testing.T) {
-		home := t.TempDir()
-		writeFile(t, filepath.Join(home, ".codex", "sessions", "valid.jsonl"),
-			codexMeta("99999999-9999-9999-9999-999999999999", "/synthetic/codex", "cli", "user"))
-		t.Setenv("PATH", t.TempDir())
-		assertAbsentResult(t, (codexAdapter{}).Discover(context.Background(), home), session.Codex)
-	})
+func TestCodexDiscoverUsesMetadataWithoutExecutable(t *testing.T) {
+	home := t.TempDir()
+	id := "99999999-9999-9999-9999-999999999999"
+	writeFile(t, filepath.Join(home, ".codex", "sessions", "valid.jsonl"),
+		codexMeta(id, "/synthetic/codex", "cli", "user"))
+	t.Setenv("PATH", t.TempDir())
 
-	t.Run("metadata", func(t *testing.T) {
-		home := t.TempDir()
-		installExecutable(t, "codex")
-		assertAbsentResult(t, (codexAdapter{}).Discover(context.Background(), home), session.Codex)
-	})
+	result := (codexAdapter{}).Discover(context.Background(), home)
+	if result.Status != OK || result.ErrorCode != "" || result.Seen != 1 ||
+		result.Skipped != 0 || len(result.Sessions) != 1 ||
+		result.Sessions[0].NativeID != id {
+		t.Fatalf("Discover() = %#v, want one Codex session from native metadata", result)
+	}
+}
+
+func TestCodexDiscoverIsAbsentWithoutMetadata(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+	assertAbsentResult(t, (codexAdapter{}).Discover(context.Background(), home), session.Codex)
 }
 
 func TestCodexDiscoverBoundsUniqueSessions(t *testing.T) {

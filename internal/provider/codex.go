@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -88,10 +87,6 @@ func (adapter codexAdapter) discoverStream(
 }
 
 func (adapter codexAdapter) historyFiles(ctx context.Context, home string) ([]historyFile, string, error) {
-	if _, err := exec.LookPath("codex"); err != nil {
-		return nil, "", nil
-	}
-
 	root := filepath.Join(home, ".codex", "sessions")
 	if info, err := os.Lstat(root); os.IsNotExist(err) {
 		return nil, "", nil
