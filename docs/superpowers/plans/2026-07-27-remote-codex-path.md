@@ -193,7 +193,6 @@ git commit -m "fix(ssh): resume Codex through login shell"
 > peer's provider PATH is initialized by interactive startup files. Commit
 > `2833684` added `-i` to this launcher; this documents the completed work and
 > does not change the checkbox history above.
-
 ### Task 3: Full and Live Verification
 
 **Files:**
