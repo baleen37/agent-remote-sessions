@@ -23,6 +23,42 @@ type Dependencies struct {
 	CheckTimeout   time.Duration
 }
 
+type Result struct {
+	CurrentVersion string
+	LatestVersion  string
+	Updated        bool
+}
+
+func Explicit(ctx context.Context, deps Dependencies) (Result, error) {
+	current := deps.CurrentVersion
+	if current == "" {
+		return Result{}, fmt.Errorf("updates are unavailable for development builds")
+	}
+	if _, ok := parseVersion(current); !ok {
+		return Result{}, fmt.Errorf("invalid current version %q", current)
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, deps.CheckTimeout)
+	defer cancel()
+	latest, err := FetchLatest(checkCtx, deps.Client, deps.ReleaseAPI)
+	if err != nil {
+		return Result{}, err
+	}
+	if _, ok := parseVersion(latest); !ok {
+		return Result{}, fmt.Errorf("invalid latest version %q", latest)
+	}
+
+	result := Result{CurrentVersion: current, LatestVersion: latest}
+	if !IsNewer(latest, current) {
+		return result, nil
+	}
+	if _, err := apply(ctx, deps, latest); err != nil {
+		return Result{}, err
+	}
+	result.Updated = true
+	return result, nil
+}
+
 // Maybe offers a newer release before the TUI starts. Every skip path
 // (dev build, check failure, up to date, declined prompt) returns nil so
 // startup is never blocked; only a failed apply after the user accepted
@@ -40,15 +76,7 @@ func Maybe(ctx context.Context, deps Dependencies) error {
 	if !deps.Choose(deps.CurrentVersion, latest) {
 		return nil
 	}
-	executable, err := deps.Executable()
-	if err != nil {
-		return fmt.Errorf("locate executable: %w", err)
-	}
-	if IsNPMInstall(executable) {
-		err = ApplyNPM(ctx, deps.RunCommand, latest)
-	} else {
-		err = ApplyBinary(ctx, deps.Client, deps.DownloadBase, latest, deps.GOOS, deps.GOARCH, executable)
-	}
+	executable, err := apply(ctx, deps, latest)
 	if err != nil {
 		return err
 	}
@@ -56,4 +84,20 @@ func Maybe(ctx context.Context, deps Dependencies) error {
 		return fmt.Errorf("start updated ars: %w", err)
 	}
 	return nil
+}
+
+func apply(ctx context.Context, deps Dependencies, latest string) (string, error) {
+	executable, err := deps.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate executable: %w", err)
+	}
+	if IsNPMInstall(executable) {
+		err = ApplyNPM(ctx, deps.RunCommand, latest)
+	} else {
+		err = ApplyBinary(ctx, deps.Client, deps.DownloadBase, latest, deps.GOOS, deps.GOARCH, executable)
+	}
+	if err != nil {
+		return "", err
+	}
+	return executable, nil
 }

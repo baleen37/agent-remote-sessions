@@ -19,6 +19,7 @@ const topLevelHelp = `Usage:
   ars [host]
   ars list --json
   ars remote add <host>
+  ars update
 
 Run "ars remote --help" for remote command help.
 `
@@ -34,6 +35,7 @@ type Dependencies struct {
 	AddHost        func(string, string) error
 	Collect        func(context.Context, []Host) Result
 	RunInteractive func(context.Context, []Host) error
+	RunUpdate      func(context.Context) error
 	Stdout         io.Writer
 	Stderr         io.Writer
 }
@@ -56,6 +58,21 @@ func Run(ctx context.Context, args []string, dependencies Dependencies) int {
 		fmt.Fprint(stdout, remoteHelp)
 		return exitSuccess
 	}
+	if len(args) == 1 && args[0] == "update" {
+		if dependencies.RunUpdate == nil {
+			fmt.Fprintln(stderr, "ars: invalid application dependencies")
+			return exitFailure
+		}
+		if err := dependencies.RunUpdate(ctx); err != nil {
+			fmt.Fprintln(stderr, "ars: update:", err)
+			return exitFailure
+		}
+		return exitSuccess
+	}
+	if len(args) == 1 && args[0] == "upgrade" {
+		fmt.Fprintln(stderr, "usage: ars [host] | ars list --json | ars remote add <host> | ars update")
+		return exitUsage
+	}
 	if len(args) == 3 && args[0] == "remote" && args[1] == "add" {
 		if dependencies.AddHost == nil {
 			fmt.Fprintln(stderr, "ars: invalid application dependencies")
@@ -74,7 +91,7 @@ func Run(ctx context.Context, args []string, dependencies Dependencies) int {
 	}
 	target, jsonMode, valid := parseArguments(args)
 	if !valid {
-		fmt.Fprintln(stderr, "usage: ars [host] | ars list --json | ars remote add <host>")
+		fmt.Fprintln(stderr, "usage: ars [host] | ars list --json | ars remote add <host> | ars update")
 		return exitUsage
 	}
 	if dependencies.LoadTopology == nil ||
