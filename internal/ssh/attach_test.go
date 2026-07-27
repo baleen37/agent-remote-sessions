@@ -161,7 +161,7 @@ func TestRemoteAttachCodexUsesLoginShellWithoutKeychainGuard(t *testing.T) {
 	if strings.Contains(script, "unlock-keychain") || strings.Contains(script, "Claude Code-credentials") {
 		t.Fatalf("codex script must not carry the claude keychain guard:\n%s", script)
 	}
-	want := `exec "${SHELL:-/bin/sh}" -l -c '\''exec '\''\'\'''\''codex'\''\'\'''\'' '\''\'\'''\''resume'\''\'\'''\'' '\''\'\'''\''` +
+	want := `exec "${SHELL:-/bin/sh}" -l -i -c '\''exec '\''\'\'''\''codex'\''\'\'''\'' '\''\'\'''\''resume'\''\'\'''\'' '\''\'\'''\''` +
 		item.NativeID + `'\''\'\'''\'''\'''`
 	if !strings.Contains(script, want) {
 		t.Fatalf("codex script missing login-shell launcher %q:\n%s", want, script)

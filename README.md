@@ -31,8 +31,10 @@ Prerequisites:
 - `tmux` on every managed computer, including the current one
 - a POSIX `/bin/sh` plus `uname`, `mkdir`, `cat`, `chmod`, `rm`, and `rmdir` on
   each remote host
-- `claude` and/or `codex` on each node's `PATH`, with native session metadata
-  under that user's home directory
+- `claude` on each node's collector/non-interactive `PATH`, with native session
+  metadata under that user's home directory
+- Codex metadata under `~/.codex/sessions`; remote Codex attach requires
+  `codex` on the peer's interactive login-shell `PATH`
 
 `fzf` is not used or required.
 
@@ -173,10 +175,13 @@ never rendered row text, determines the attach command.
   `source=cli` or `source=vscode`. Exec, subagent, and unknown sources are
   excluded. Codex titles are empty in schema version 1.
 
-Both adapters require their provider executable on the remote `PATH`, use the
-metadata file modification time as `updated_at`, validate canonical UUIDs, and
-deduplicate by host, provider, and native ID. A missing executable or metadata
-tree is a healthy absent-provider result, not a host failure.
+Claude requires `claude` on the collector's non-interactive `PATH`. Codex
+inventory reads validated `~/.codex/sessions` metadata without collector `PATH`
+dependence; remote Codex attach requires `codex` on the peer's interactive
+login-shell `PATH`. Both adapters use the metadata file modification time as
+`updated_at`, validate canonical UUIDs, and deduplicate by host, provider, and
+native ID. A missing Claude executable or either metadata tree is a healthy
+absent-provider result, not a host failure.
 
 ## Persistent provider runtime
 

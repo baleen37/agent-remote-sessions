@@ -114,7 +114,7 @@ func loginPaneCommand(spec provider.ResumeSpec) string {
 	for _, arg := range spec.Args {
 		words = append(words, quotePOSIX(arg))
 	}
-	return `exec "${SHELL:-/bin/sh}" -l -c ` +
+	return `exec "${SHELL:-/bin/sh}" -l -i -c ` +
 		quotePOSIX("exec "+strings.Join(words, " "))
 }
 

@@ -100,7 +100,7 @@ git commit -m "fix(provider): discover Codex history without PATH"
 
 **Interfaces:**
 - Consumes: validated `provider.ResumeSpec{Executable string, Args []string}` for `session.Codex`
-- Produces: `loginPaneCommand(spec provider.ResumeSpec) string`, a single tmux pane shell-command that runs the fixed resume spec through `${SHELL:-/bin/sh} -l -c`
+- Produces: `loginPaneCommand(spec provider.ResumeSpec) string`, a single tmux pane shell-command that runs the fixed resume spec through `${SHELL:-/bin/sh} -l -i -c`
 
 - [ ] **Step 1: Change the Codex attach test to require login-shell execution**
 
@@ -121,7 +121,7 @@ func TestRemoteAttachCodexUsesLoginShellWithoutKeychainGuard(t *testing.T) {
 		strings.Contains(script, "Claude Code-credentials") {
 		t.Fatalf("codex script must not carry the claude keychain guard:\n%s", script)
 	}
-	want := `exec "${SHELL:-/bin/sh}" -l -c 'exec '\''codex'\'' '\''resume'\'' '\''` +
+	want := `exec "${SHELL:-/bin/sh}" -l -i -c 'exec '\''codex'\'' '\''resume'\'' '\''` +
 		item.NativeID + `'\'''`
 	if !strings.Contains(script, want) {
 		t.Fatalf("codex script missing login-shell launcher %q:\n%s", want, script)
@@ -163,7 +163,7 @@ func loginPaneCommand(spec provider.ResumeSpec) string {
 	for _, arg := range spec.Args {
 		words = append(words, quotePOSIX(arg))
 	}
-	return `exec "${SHELL:-/bin/sh}" -l -c ` +
+	return `exec "${SHELL:-/bin/sh}" -l -i -c ` +
 		quotePOSIX("exec " + strings.Join(words, " "))
 }
 ```
@@ -189,6 +189,10 @@ git add internal/ssh/attach.go internal/ssh/attach_test.go
 git commit -m "fix(ssh): resume Codex through login shell"
 ```
 
+> Execution note: live verification later discovered and confirmed that the
+> peer's provider PATH is initialized by interactive startup files. Commit
+> `2833684` added `-i` to this launcher; this documents the completed work and
+> does not change the checkbox history above.
 ### Task 3: Full and Live Verification
 
 **Files:**
