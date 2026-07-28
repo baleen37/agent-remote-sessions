@@ -206,8 +206,17 @@ new client.
 
 If the provider exits, its tmux session ends and the native history remains in
 `Recent`. A host reboot or loss of the ARS tmux server ends the live process but
-does not remove native history. ARS does not discover or adopt providers that
-were started outside its own tmux server.
+does not remove native history.
+
+Before creating an ARS runtime, selection checks standard per-user tmux
+servers for one exact `claude --resume <native-id>` or
+`codex resume <native-id>` process. A unique match is attached without
+detaching existing clients or changing that tmux server. Detach from an
+external runtime with its normal tmux binding, usually `prefix d`.
+
+Bare `claude` or `codex` processes, arbitrary `tmux -S` sockets, and ambiguous
+matches are not adopted. External runtimes remain under `Recent` and do not
+gain ARS preview, send, or kill behavior.
 
 ## JSON schema version 1
 
