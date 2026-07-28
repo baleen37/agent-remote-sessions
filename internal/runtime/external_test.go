@@ -13,6 +13,7 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -115,21 +116,23 @@ func TestResolveExternalRejectsOversizedRunnerOutput(t *testing.T) {
 }
 
 type externalFixture struct {
-	processes        string
-	argv             map[int][]string
-	cmdline          map[int][]byte
-	panes            map[string]string
-	failSocket       string
-	symlinkDirectory bool
-	symlinkSocket    string
-	badOwner         string
-	sanitizePaneTab  bool
-	unreadableDir    bool
-	regularEntries   int
-	fallbackEntries  int
-	virtualEntries   int
-	mutateSocket     string
-	assertTmuxArgv   bool
+	processes            string
+	argv                 map[int][]string
+	cmdline              map[int][]byte
+	panes                map[string]string
+	failSocket           string
+	symlinkDirectory     bool
+	symlinkSocket        string
+	badOwner             string
+	sanitizePaneTab      bool
+	unreadableDir        bool
+	regularEntries       int
+	fallbackEntries      int
+	mutateSocket         string
+	helperUnavailable    bool
+	helperMalformed      bool
+	assertNoHelperOrphan bool
+	assertTmuxArgv       bool
 }
 
 type externalSystemRunner struct{}
@@ -234,21 +237,22 @@ func TestExternalResolverScriptFailsClosedOnSocketDirectoryTraversal(t *testing.
 	}
 }
 
-func TestExternalResolverScriptStopsLargeDirectoryTraversalAtEntryLimit(t *testing.T) {
+func TestExternalResolverScriptBoundsRealDirectoryTraversalAtEntryLimit(t *testing.T) {
 	const selected = "123e4567-e89b-42d3-a456-426614174000"
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	_, found, err := runExternalFixtureContext(t, ctx, externalFixture{
-		processes:      "100 1 claude\n",
-		argv:           map[int][]string{100: {"claude", "--resume", selected}},
-		virtualEntries: 100_000,
+		processes:            "100 1 claude\n",
+		argv:                 map[int][]string{100: {"claude", "--resume", selected}},
+		regularEntries:       4097,
+		assertNoHelperOrphan: true,
 	}, session.Claude, selected)
 	if err == nil || found || !strings.Contains(err.Error(), "entries exceed limit") {
 		t.Fatalf("ResolveExternal() = found %t, err %v, want bounded directory entry error", found, err)
 	}
 }
 
-func TestExternalResolverScriptFailsClosedWhenInventoriedSocketChanges(t *testing.T) {
+func TestExternalResolverScriptFailsClosedWhenInventoriedSocketIsReplacedAtSamePath(t *testing.T) {
 	const selected = "123e4567-e89b-42d3-a456-426614174000"
 	_, found, err := runExternalFixture(t, externalFixture{
 		processes:    "100 1 claude\n",
@@ -258,6 +262,30 @@ func TestExternalResolverScriptFailsClosedWhenInventoriedSocketChanges(t *testin
 	}, session.Claude, selected)
 	if err == nil || found || !strings.Contains(err.Error(), "invalid external tmux socket") {
 		t.Fatalf("ResolveExternal() = found %t, err %v, want changed socket error", found, err)
+	}
+}
+
+func TestExternalResolverScriptFailsClosedWhenDirectoryHelperIsUnavailable(t *testing.T) {
+	const selected = "123e4567-e89b-42d3-a456-426614174000"
+	_, found, err := runExternalFixture(t, externalFixture{
+		processes:         "100 1 claude\n",
+		argv:              map[int][]string{100: {"claude", "--resume", selected}},
+		helperUnavailable: true,
+	}, session.Claude, selected)
+	if err == nil || found || !strings.Contains(err.Error(), "cannot inspect external tmux socket directory") {
+		t.Fatalf("ResolveExternal() = found %t, err %v, want unavailable helper error", found, err)
+	}
+}
+
+func TestExternalResolverScriptFailsClosedOnMalformedDirectoryHelperOutput(t *testing.T) {
+	const selected = "123e4567-e89b-42d3-a456-426614174000"
+	_, found, err := runExternalFixture(t, externalFixture{
+		processes:       "100 1 claude\n",
+		argv:            map[int][]string{100: {"claude", "--resume", selected}},
+		helperMalformed: true,
+	}, session.Claude, selected)
+	if err == nil || found || !strings.Contains(err.Error(), "cannot inspect external tmux socket directory") {
+		t.Fatalf("ResolveExternal() = found %t, err %v, want malformed helper error", found, err)
 	}
 }
 
@@ -678,39 +706,53 @@ func runExternalFixtureContext(t *testing.T, ctx context.Context, fixture extern
 	writeExternalExecutable(t, filepath.Join(bin, "ps"), "#!/bin/sh\ncat \"$ARS_EXTERNAL_ROOT/processes\"\n")
 	writeExternalExecutable(t, filepath.Join(bin, "uname"), "#!/bin/sh\nprintf 'Linux\\n'\n")
 	writeExternalExecutable(t, filepath.Join(bin, "head"), "#!/bin/sh\npath=$3\ncase \"$path\" in /proc/*/cmdline) pid=${path#/proc/}; pid=${pid%/cmdline}; exec /usr/bin/head -c \"$2\" \"$ARS_EXTERNAL_ROOT/argv/$pid\" ;; *) exec /usr/bin/head \"$@\" ;; esac\n")
-	writeExternalExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\nfor value in \"$@\"; do path=$value; done\nif [ -n \"$ARS_MUTATE_SOCKET\" ] && [ \"$path\" = \"$ARS_MUTATE_DIRECTORY\" ] && [ -e \"$ARS_EXTERNAL_ROOT/find-complete\" ] && [ ! -e \"$ARS_EXTERNAL_ROOT/socket-mutated\" ]; then\n  rm -f -- \"$ARS_MUTATE_SOCKET\"\n  : >\"$ARS_MUTATE_SOCKET\"\n  : >\"$ARS_EXTERNAL_ROOT/socket-mutated\"\nfi\nif [ \"$path\" = \"$ARS_BAD_OWNER\" ]; then printf 'srwx------ 1 999 0 0 Jan 1 00:00 %s\\n' \"$path\"; exit 0; fi\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
-	find := `#!/bin/sh
-if [ "${ARS_VIRTUAL_ENTRIES:-0}" -eq 0 ]; then
-	/usr/bin/find "$@"
-	status=$?
-	: >"$ARS_EXTERNAL_ROOT/find-complete"
-	exit "$status"
-fi
-directory=$1
-while [ "$#" -gt 0 ] && [ "$1" != -exec ]; do shift; done
-	[ "$#" -ge 8 ] || exit 2
-	shift
-	shell=$1
-	helper=$2
-	inventory=$3
-	count_file=$4
-	status_file=$5
-	producer_file=$6
-	limit=$ARS_VIRTUAL_ENTRIES
-emitted=0
-while [ "$emitted" -lt "$limit" ]; do
-	set --
-	batch=0
-	while [ "$batch" -lt 1024 ] && [ "$emitted" -lt "$limit" ]; do
-		set -- "$@" "$directory/virtual-$emitted"
-		batch=$((batch + 1))
-		emitted=$((emitted + 1))
-	done
-	"$shell" "$helper" "$inventory" "$count_file" "$status_file" "$producer_file" "$@" || :
-done
-: >"$ARS_EXTERNAL_ROOT/find-overrun"
+	writeExternalExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\nexit 97\n")
+	writeExternalExecutable(t, filepath.Join(bin, "find"), "#!/bin/sh\nexit 97\n")
+	realPython, pythonErr := exec.LookPath("python3")
+	if pythonErr != nil && !fixture.helperUnavailable {
+		t.Skip("python3 is required for the Linux directory-helper fixture")
+	}
+	transformer := `import os
+import sys
+
+fake_uid, bad_owner, mode = sys.argv[1:4]
+directory = sys.argv[4] if len(sys.argv) > 4 else ""
+paths = sys.argv[5] if len(sys.argv) > 5 else ""
+for raw in sys.stdin:
+    fields = raw.rstrip("\n").split("\t")
+    path = b""
+    if mode == "inventory" and len(fields) == 6:
+        with open(os.path.join(paths, fields[0]), "rb") as value:
+            path = value.read()
+        if path == os.fsencode(bad_owner):
+            fields[3] = "999"
+    elif mode == "stat-entry" and len(fields) == 4:
+        with open(directory, "rb") as value:
+            path = value.read()
+        if path == os.fsencode(bad_owner):
+            fields[2] = "999"
+    print("\t".join(fields))
 `
-	writeExternalExecutable(t, filepath.Join(bin, "find"), find)
+	if err := os.WriteFile(filepath.Join(root, "transform-helper.py"), []byte(transformer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	python := "#!/bin/sh\n"
+	if fixture.helperUnavailable {
+		python += "exit 127\n"
+	} else if fixture.helperMalformed {
+		python += "printf 'malformed\\n'\n"
+	} else {
+		python += "if [ \"${ARS_TRACK_HELPER:-}\" = 1 ]; then printf '%s\\n' \"$$\" >\"$ARS_EXTERNAL_ROOT/helper.pid\"; fi\n" +
+			"if [ -n \"${ARS_MUTATE_SOCKET:-}\" ] && [ \"${2:-}\" = stat-entry ] && [ ! -e \"$ARS_EXTERNAL_ROOT/socket-mutated\" ]; then\n" +
+			"  \"$ARS_REAL_PYTHON\" -c 'import os,socket,sys; p=sys.argv[1]; os.unlink(p); s=socket.socket(socket.AF_UNIX); s.bind(p); s.close()' \"$ARS_MUTATE_SOCKET\"\n" +
+			"  : >\"$ARS_EXTERNAL_ROOT/socket-mutated\"\n" +
+			"fi\n" +
+			"output=\"$ARS_EXTERNAL_ROOT/helper-output.$$\"\n" +
+			"trap 'rm -f -- \"$output\"' 0 HUP INT TERM\n" +
+			"\"$ARS_REAL_PYTHON\" \"$@\" >\"$output\" || exit $?\n" +
+			"\"$ARS_REAL_PYTHON\" \"$ARS_EXTERNAL_ROOT/transform-helper.py\" \"$ARS_FAKE_UID\" \"$ARS_BAD_OWNER\" \"${2:-}\" \"${3:-}\" \"${4:-}\" <\"$output\"\n"
+	}
+	writeExternalExecutable(t, filepath.Join(bin, "python3"), python)
 	tmux := "#!/bin/sh\nsocket=$2\nname=$(basename \"$socket\")\nprintf '%s\\n' \"$@\" >>\"$ARS_EXTERNAL_ROOT/tmux-args\"\nif [ \"$name\" = \"$ARS_FAIL_SOCKET\" ]; then exit 1; fi\nif [ \"${ARS_SANITIZE_PANE_TAB:-}\" = 1 ]; then\n  previous=\n  format=\n  for value in \"$@\"; do\n    if [ \"$previous\" = -F ]; then format=$value; fi\n    previous=$value\n  done\n  case \"$format\" in *'|'*) printf '$1:0.0|100\\n' ;; *) printf '$1:0.0_100\\n' ;; esac\n  exit 0\nfi\ncat \"$ARS_EXTERNAL_PANES/$name\"\n"
 	writeExternalExecutable(t, filepath.Join(bin, "tmux"), tmux)
 	t.Setenv("ARS_EXTERNAL_ROOT", root)
@@ -725,7 +767,10 @@ done
 	}
 	t.Setenv("ARS_BAD_OWNER", badOwner)
 	t.Setenv("ARS_FAKE_UID", uid)
-	t.Setenv("ARS_VIRTUAL_ENTRIES", strconv.Itoa(fixture.virtualEntries))
+	t.Setenv("ARS_REAL_PYTHON", realPython)
+	if fixture.assertNoHelperOrphan {
+		t.Setenv("ARS_TRACK_HELPER", "1")
+	}
 	t.Setenv("ARS_MUTATE_DIRECTORY", tmuxDirectory)
 	mutateSocket := ""
 	if fixture.mutateSocket != "" {
@@ -736,9 +781,23 @@ done
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	target, found, err := ResolveExternal(ctx, externalSystemRunner{}, name, nativeID)
 	assertNoExternalResolverWorkdirs(t, root)
-	if fixture.virtualEntries > 0 {
-		if _, statErr := os.Stat(filepath.Join(root, "find-overrun")); !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatalf("large directory producer was not stopped: %v", statErr)
+	if fixture.mutateSocket != "" {
+		if _, statErr := os.Stat(filepath.Join(root, "socket-mutated")); statErr != nil {
+			t.Fatalf("same-path socket replacement did not run: %v", statErr)
+		}
+	}
+	if fixture.assertNoHelperOrphan {
+		data, readErr := os.ReadFile(filepath.Join(root, "helper.pid"))
+		if readErr != nil {
+			t.Fatalf("read directory helper PID: %v", readErr)
+		}
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr != nil {
+			t.Fatalf("parse directory helper PID: %v", parseErr)
+		}
+		process, findErr := os.FindProcess(pid)
+		if findErr == nil && process.Signal(os.Signal(syscall.Signal(0))) == nil {
+			t.Fatalf("directory helper PID %d is still alive", pid)
 		}
 	}
 	if fixture.assertTmuxArgv {
