@@ -442,6 +442,61 @@ func TestExternalResolverScriptUsesExactDarwinArgv(t *testing.T) {
 	}
 }
 
+func TestDarwinArgvWatchdogTimesOutAndReapsOSAScript(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required for the Darwin argv watchdog fixture")
+	}
+	root := t.TempDir()
+	runner := filepath.Join(root, "runner.py")
+	if err := os.WriteFile(runner, []byte(darwinArgvWatchdogScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(root, "osascript.pid")
+	osascript := filepath.Join(root, "osascript")
+	writeExternalExecutable(t, osascript, "#!/bin/sh\nprintf '%s\\n' \"$$\" >\"$1\"\ntrap '' TERM\nwhile :; do :; done\n")
+	candidates := filepath.Join(root, "candidates")
+	if err := os.WriteFile(candidates, []byte("100\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	started := time.Now()
+	command := exec.CommandContext(
+		ctx,
+		python,
+		runner,
+		"1",
+		filepath.Join(root, "valid-candidates"),
+		filepath.Join(root, "argv-error"),
+		candidates,
+		osascript,
+		pidFile,
+	)
+	if err := command.Run(); err == nil {
+		t.Fatal("Darwin argv watchdog succeeded for a hanging osascript")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("Darwin argv watchdog exceeded test deadline: %v", ctx.Err())
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("Darwin argv watchdog took %v, want at most 5s", elapsed)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := os.FindProcess(pid)
+	if err == nil && process.Signal(os.Signal(syscall.Signal(0))) == nil {
+		t.Fatalf("timed-out osascript PID %d is still alive", pid)
+	}
+}
+
 func TestExternalResolverScript(t *testing.T) {
 	const selected = "123e4567-e89b-42d3-a456-426614174000"
 	tests := []struct {

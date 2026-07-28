@@ -97,6 +97,44 @@ func ExternalResolverScript() string {
 	return externalResolverScript
 }
 
+const darwinArgvWatchdogScript = `import math
+import subprocess
+import sys
+
+def fail():
+    raise SystemExit(1)
+
+try:
+    if len(sys.argv) < 7:
+        fail()
+    timeout = float(sys.argv[1])
+    if not math.isfinite(timeout) or timeout <= 0:
+        fail()
+    output_path, error_path, candidates_path = sys.argv[2:5]
+    with open(error_path, "wb") as error:
+        completed = subprocess.run(
+            sys.argv[5:],
+            stdout=subprocess.PIPE,
+            stderr=error,
+            timeout=timeout,
+            check=True,
+        )
+    output = completed.stdout
+    if output and not output.endswith(b"\n"):
+        fail()
+    with open(candidates_path, "rb") as candidates:
+        allowed = set(candidates.read().splitlines())
+    seen = set()
+    for candidate in output.splitlines():
+        if not candidate or candidate not in allowed or candidate in seen:
+            fail()
+        seen.add(candidate)
+    with open(output_path, "wb") as destination:
+        destination.write(output)
+except (OSError, ValueError, subprocess.SubprocessError):
+    fail()
+`
+
 const externalResolverScript = `set -eu
 LC_ALL=C
 export LC_ALL
@@ -361,7 +399,14 @@ function run(arguments) {
 	}
 }
 ARS_JXA
-	if ! /usr/bin/osascript -l JavaScript "$work/argv.js" "$provider" "$resume_arg" "$native_id" "$work/candidates" >"$work/valid-candidates" 2>"$work/argv-error"; then
+	command -v python3 >/dev/null 2>&1 || {
+		echo "ars: cannot inspect external process argv" >&2
+		exit 1
+	}
+	cat >"$work/argv-watchdog.py" <<'PY'
+` + darwinArgvWatchdogScript + `PY
+	if ! python3 "$work/argv-watchdog.py" 30 "$work/valid-candidates" "$work/argv-error" "$work/candidates" \
+		/usr/bin/osascript -l JavaScript "$work/argv.js" "$provider" "$resume_arg" "$native_id" "$work/candidates"; then
 		echo "ars: cannot inspect external process argv" >&2
 		exit 1
 	fi
