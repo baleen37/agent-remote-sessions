@@ -130,6 +130,30 @@ func TestDisposableTmuxReusesExternalProviderWithoutDetachingExistingClient(t *t
 	fixture.defaultTmux.assertUnchanged(t)
 }
 
+func TestExternalTmuxSnapshotDetectsWindowPaneAndGlobalOptionChanges(t *testing.T) {
+	fixture := newDisposableTmuxFixture(t)
+	external := newExternalTmuxFixture(t, fixture)
+
+	before := external.snapshot(t)
+	if err := external.runner.Run(
+		context.Background(),
+		externalTmuxCommand("new-window", "-d", "-n", "review-window"),
+		nil, io.Discard, io.Discard,
+	); err != nil {
+		t.Fatalf("create external review window: %v", err)
+	}
+	if err := external.runner.Run(
+		context.Background(),
+		externalTmuxCommand("set-option", "-g", "status-left", "review-left"),
+		nil, io.Discard, io.Discard,
+	); err != nil {
+		t.Fatalf("set external review option: %v", err)
+	}
+	if after := external.snapshot(t); after == before {
+		t.Fatal("external snapshot ignored window, pane, or global option changes")
+	}
+}
+
 func TestOwnedTmuxCleanupReportsKillError(t *testing.T) {
 	want := errors.New("kill failed")
 	err := cleanupOwnedTmux(context.Background(), func(context.Context) error { return want }, "unused", 0)
@@ -238,10 +262,11 @@ type externalTmuxFixture struct {
 }
 
 type externalTmuxSnapshot struct {
-	sessions       string
-	keys           string
-	statusRight    string
-	statusInterval string
+	sessions      string
+	windows       string
+	panes         string
+	keys          string
+	globalOptions string
 }
 
 func newExternalTmuxFixture(t *testing.T, fixture *disposableTmuxFixture) *externalTmuxFixture {
@@ -340,10 +365,11 @@ func (external *externalTmuxFixture) snapshot(t *testing.T) externalTmuxSnapshot
 		return string(value)
 	}
 	return externalTmuxSnapshot{
-		sessions:       output("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_created}"),
-		keys:           output("list-keys", "-T", "root"),
-		statusRight:    output("show-options", "-g", "-v", "status-right"),
-		statusInterval: output("show-options", "-g", "-v", "status-interval"),
+		sessions:      output("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_created}"),
+		windows:       output("list-windows", "-a", "-F", "#{session_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_panes}"),
+		panes:         output("list-panes", "-a", "-F", "#{session_id}\t#{window_id}\t#{pane_id}\t#{window_index}\t#{pane_index}\t#{pane_pid}"),
+		keys:          output("list-keys", "-T", "root"),
+		globalOptions: output("show-options", "-g"),
 	}
 }
 
