@@ -229,7 +229,7 @@ func runRemoteAttachScriptFixture(t *testing.T, mode string) (string, string, er
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	uid := os.Getuid()
+	uid := os.Getpid()
 	tmuxDir := filepath.Join(root, "tmux-"+strconv.Itoa(uid))
 	if mode != "none" {
 		if err := os.Mkdir(tmuxDir, 0o700); err != nil {
@@ -243,7 +243,10 @@ func runRemoteAttachScriptFixture(t *testing.T, mode string) (string, string, er
 	}
 	calls := filepath.Join(root, "tmux-calls")
 	writeRemoteAttachExecutable(t, filepath.Join(bin, "id"), "#!/bin/sh\necho "+strconv.Itoa(uid)+"\n")
-	writeRemoteAttachExecutable(t, filepath.Join(bin, "ps"), "#!/bin/sh\nif [ \"$1\" = -U ]; then printf '100 1 sh\\n101 100 claude\\n'; exit 0; fi\nif [ \"$1\" = -p ]; then printf 'claude --resume 123e4567-e89b-42d3-a456-426614174000\\n'; fi\n")
+	writeRemoteAttachExecutable(t, filepath.Join(bin, "ps"), "#!/bin/sh\nprintf '100 1 sh\\n101 100 claude\\n'\n")
+	writeRemoteAttachExecutable(t, filepath.Join(bin, "uname"), "#!/bin/sh\nprintf 'Linux\\n'\n")
+	writeRemoteAttachExecutable(t, filepath.Join(bin, "head"), "#!/bin/sh\nprintf 'claude\\000--resume\\000123e4567-e89b-42d3-a456-426614174000\\000'\n")
+	writeRemoteAttachExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
 	writeRemoteAttachExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$ARS_REMOTE_ATTACH_CALLS\"\nif [ \"$1\" = -L ]; then\n  case \"$5\" in has-session) exit 1 ;; *) exit 0 ;; esac\nfi\nif [ \"$1\" = -S ]; then\n  case \"$5\" in\n    list-panes)\n      [ \"$2\" = \"$ARS_REMOTE_ATTACH_SOCKET\" ] || exit 0\n      case \"$ARS_REMOTE_ATTACH_MODE\" in conflict) printf '$1:0.0|100\\n$2:0.0|100\\n' ;; *) printf '$1:0.0|100\\n' ;; esac\n      exit 0 ;;\n    attach-session)\n      if [ \"$ARS_REMOTE_ATTACH_MODE\" = vanished ]; then echo 'vanished external target' >&2; exit 1; fi\n      exit 0 ;;\n  esac\nfi\nexit 1\n")
 	item := remoteAttachedSession()
 	attach, err := NewAttachCommand(context.Background(), item.Host, item, remoteClaudeSpec())
@@ -258,6 +261,7 @@ func runRemoteAttachScriptFixture(t *testing.T, mode string) (string, string, er
 		"ARS_REMOTE_ATTACH_CALLS="+calls,
 		"ARS_REMOTE_ATTACH_MODE="+mode,
 		"ARS_REMOTE_ATTACH_SOCKET="+filepath.Join(tmuxDir, "external"),
+		"ARS_FAKE_UID="+strconv.Itoa(uid),
 	)
 	output, err := command.CombinedOutput()
 	data, readErr := os.ReadFile(calls)

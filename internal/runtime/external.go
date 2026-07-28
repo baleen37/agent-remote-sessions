@@ -98,29 +98,36 @@ func ExternalResolverScript() string {
 }
 
 const externalResolverScript = `set -eu
+LC_ALL=C
+export LC_ALL
 provider=$1
 native_id=$2
 uid=$(id -u)
 tmp_base=${TMPDIR:-/tmp}
 case "$tmp_base" in /*) ;; *) tmp_base=/tmp ;; esac
 work=$(mktemp -d "$tmp_base/ars-external.XXXXXX")
+argv_helper=
+argv_watch=
 cleanup() {
-	rm -f -- "$work/processes" "$work/parents" "$work/candidates" "$work/valid-candidates" "$work/panes" "$work/all-panes" "$work/matches" "$work/resolve-status" "$work/resolve-steps"
-	rmdir -- "$work"
+	if [ -n "$argv_watch" ]; then
+		kill "$argv_watch" 2>/dev/null || :
+		wait "$argv_watch" 2>/dev/null || :
+	fi
+	if [ -n "$argv_helper" ]; then
+		kill -KILL "$argv_helper" 2>/dev/null || :
+		wait "$argv_helper" 2>/dev/null || :
+	fi
+	rm -r -- "$work"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 ps -U "$uid" -o pid=,ppid=,comm= >"$work/processes"
-process_bytes=$(wc -c <"$work/processes" | tr -d ' ')
-[ "$process_bytes" -le 2097152 ] || {
-	echo "ars: external process table exceeds limit" >&2
-	exit 1
-}
 : >"$work/parents"
 : >"$work/candidates"
 if ! awk -v provider="$provider" -v parents="$work/parents" -v candidates="$work/candidates" '
 {
+	bytes += length($0) + 1
 	pid = $1
 	ppid = $2
 	comm = $0
@@ -133,12 +140,15 @@ if ! awk -v provider="$provider" -v parents="$work/parents" -v candidates="$work
 	print pid "\t" ppid > parents
 	name = comm
 	sub(/^.*\//, "", name)
-	if (name == provider) print pid > candidates
+	if (name == provider) {
+		print pid > candidates
+		candidate_count++
+	}
 }
 END {
 	close(parents)
 	close(candidates)
-	if (NR > 65536 || invalid) exit 1
+	if (bytes > 2097152 || NR > 65536 || candidate_count > 256 || invalid) exit 1
 }
 ' "$work/processes"; then
 	echo "ars: invalid external process table" >&2
@@ -146,24 +156,252 @@ END {
 fi
 
 : >"$work/valid-candidates"
-while IFS= read -r candidate; do
-	args=$(ps -p "$candidate" -o args=)
-	case "$provider" in
-	claude)
-		case "$args" in
-			"claude --resume $native_id"|/claude\ --resume\ "$native_id"|/*/claude\ --resume\ "$native_id") printf '%s\n' "$candidate" >>"$work/valid-candidates" ;;
-			*) : ;;
-		esac
-		;;
-	codex)
-		case "$args" in
-			"codex resume $native_id"|/codex\ resume\ "$native_id"|/*/codex\ resume\ "$native_id") printf '%s\n' "$candidate" >>"$work/valid-candidates" ;;
-			*) : ;;
-		esac
-		;;
-	*) : ;;
-	esac
-done <"$work/candidates"
+if [ -s "$work/candidates" ]; then
+platform=$(uname -s)
+case "$provider" in
+claude) resume_arg=--resume ;;
+codex) resume_arg=resume ;;
+*) echo "ars: unsupported external process provider" >&2; exit 1 ;;
+esac
+
+case "$platform" in
+Linux)
+	provider_hex=$(printf '%s' "$provider" | od -An -tx1 -v | tr -d ' \n')
+	resume_hex=$(printf '%s' "$resume_arg" | od -An -tx1 -v | tr -d ' \n')
+	native_id_hex=$(printf '%s' "$native_id" | od -An -tx1 -v | tr -d ' \n')
+	while IFS= read -r candidate; do
+		if ! head -c 65537 "/proc/$candidate/cmdline" >"$work/argv-raw"; then
+			echo "ars: cannot inspect external process argv" >&2
+			exit 1
+		fi
+		argv_bytes=$(wc -c <"$work/argv-raw" | tr -d ' ')
+		[ "$argv_bytes" -le 65536 ] || {
+			echo "ars: invalid external process argv" >&2
+			exit 1
+		}
+		od -An -tx1 -v "$work/argv-raw" >"$work/argv-hex"
+		if awk -v candidate="$candidate" -v provider="$provider_hex" -v resume="$resume_hex" -v native_id="$native_id_hex" '
+{
+	for (field = 1; field <= NF; field++) {
+		token = tolower($field)
+		if (length(token) != 2 || token !~ /^[0-9a-f][0-9a-f]$/) invalid = 1
+		bytes++
+		if (bytes > 65536) oversized = 1
+		if (token == "00") {
+			argv[++argc] = current
+			current = ""
+			terminated = 1
+		} else {
+			current = current token
+			terminated = 0
+		}
+	}
+}
+END {
+	if (invalid || oversized || bytes == 0 || !terminated) exit 42
+	if (argc != 3) exit 0
+	executable = argv[1]
+	provider_length = length(provider)
+	executable_length = length(executable)
+	provider_match = executable == provider
+	if (!provider_match && executable_length > provider_length + 1) {
+		provider_match = substr(executable, executable_length - provider_length + 1) == provider &&
+			substr(executable, executable_length - provider_length - 1, 2) == "2f"
+	}
+	if (provider_match && argv[2] == resume && argv[3] == native_id) print candidate
+}
+' "$work/argv-hex" >>"$work/valid-candidates"; then
+			:
+		else
+			status=$?
+			if [ "$status" -eq 42 ]; then
+				echo "ars: invalid external process argv" >&2
+			else
+				echo "ars: cannot inspect external process argv" >&2
+			fi
+			exit 1
+		fi
+	done <"$work/candidates"
+	;;
+Darwin)
+	[ -x /usr/bin/osascript ] || {
+		echo "ars: cannot inspect external process argv" >&2
+		exit 1
+	}
+	cat >"$work/argv.js" <<'ARS_JXA'
+ObjC.import('Foundation')
+ObjC.bindFunction('sysctl', ['int', ['^v', 'I', '^v', '^v', '^v', 'Q']])
+ObjC.bindFunction('exit', ['void', ['int']])
+ObjC.bindFunction('alarm', ['unsigned int', ['unsigned int']])
+
+function fail() {
+	$.exit(1)
+}
+
+var deadline = Date.now() + 10000
+
+function checkDeadline() {
+	if (Date.now() > deadline) fail()
+}
+
+function put32(pointer, offset, value) {
+	pointer[offset] = value & 255
+	pointer[offset + 1] = (value >>> 8) & 255
+	pointer[offset + 2] = (value >>> 16) & 255
+	pointer[offset + 3] = (value >>> 24) & 255
+}
+
+function uint32(pointer, offset) {
+	return pointer[offset] + pointer[offset + 1] * 256 +
+		pointer[offset + 2] * 65536 + pointer[offset + 3] * 16777216
+}
+
+function uint64(pointer) {
+	var value = 0
+	var factor = 1
+	for (var index = 0; index < 8; index++) {
+		value += pointer[index] * factor
+		factor *= 256
+	}
+	return value
+}
+
+function asciiBytes(value) {
+	var result = []
+	for (var index = 0; index < value.length; index++) {
+		var code = value.charCodeAt(index)
+		if (code > 127) fail()
+		result.push(code)
+	}
+	return result
+}
+
+function equalBytes(actual, expected) {
+	if (actual.length !== expected.length) return false
+	for (var index = 0; index < actual.length; index++) {
+		if (actual[index] !== expected[index]) return false
+	}
+	return true
+}
+
+function basename(value) {
+	var start = 0
+	for (var index = 0; index < value.length; index++) {
+		if (value[index] === 47) start = index + 1
+	}
+	return value.slice(start)
+}
+
+function candidates(path) {
+	var data = $.NSData.dataWithContentsOfFile(path)
+	if (!data || data.length > 4096) fail()
+	var pointer = data.bytes
+	var values = []
+	var current = ''
+	for (var index = 0; index < data.length; index++) {
+		var byte = pointer[index]
+		if (byte === 10) {
+			if (!/^[1-9][0-9]*$/.test(current)) fail()
+			var pid = Number(current)
+			if (!Number.isSafeInteger(pid) || pid > 2147483647) fail()
+			values.push(pid)
+			current = ''
+		} else {
+			if (byte < 48 || byte > 57) fail()
+			current += String.fromCharCode(byte)
+		}
+	}
+	if (current !== '' || values.length > 256) fail()
+	return values
+}
+
+function processArgv(pid) {
+	checkDeadline()
+	var mib = $.NSMutableData.dataWithLength(12)
+	var mibBytes = mib.mutableBytes
+	put32(mibBytes, 0, 1)
+	put32(mibBytes, 4, 49)
+	put32(mibBytes, 8, pid)
+	var output = $.NSMutableData.dataWithLength(65536)
+	var size = $.NSMutableData.dataWithLength(8)
+	size.mutableBytes[2] = 1
+	var dummy = $.NSMutableData.dataWithLength(1)
+	if ($.sysctl(mib.mutableBytes, 3, output.mutableBytes, size.mutableBytes, dummy.mutableBytes, 0) !== 0) fail()
+	checkDeadline()
+	var length = uint64(size.mutableBytes)
+	if (!Number.isSafeInteger(length) || length < 5 || length > 65536) fail()
+	var pointer = output.bytes
+	var argc = uint32(pointer, 0)
+	if (argc !== 3) return null
+	var offset = 4
+	while (offset < length && pointer[offset] !== 0) offset++
+	if (offset === length) fail()
+	while (offset < length && pointer[offset] === 0) offset++
+	if (offset === length) fail()
+	var argv = []
+	for (var argument = 0; argument < argc; argument++) {
+		var value = []
+		while (offset < length && pointer[offset] !== 0) value.push(pointer[offset++])
+		if (offset === length) fail()
+		offset++
+		argv.push(value)
+	}
+	return argv
+}
+
+function run(arguments) {
+	if (arguments.length !== 4) fail()
+	$.alarm(10)
+	var provider = asciiBytes(arguments[0])
+	var resume = asciiBytes(arguments[1])
+	var nativeID = asciiBytes(arguments[2])
+	var pids = candidates(arguments[3])
+	var matches = ''
+	for (var index = 0; index < pids.length; index++) {
+		var argv = processArgv(pids[index])
+		if (argv !== null && equalBytes(basename(argv[0]), provider) &&
+			equalBytes(argv[1], resume) && equalBytes(argv[2], nativeID)) {
+			matches += String(pids[index]) + '\n'
+		}
+	}
+	$.alarm(0)
+	if (matches !== '') {
+		var data = $(matches).dataUsingEncoding($.NSUTF8StringEncoding)
+		$.NSFileHandle.fileHandleWithStandardOutput.writeData(data)
+	}
+}
+ARS_JXA
+	/usr/bin/osascript -l JavaScript "$work/argv.js" "$provider" "$resume_arg" "$native_id" "$work/candidates" >"$work/valid-candidates" 2>"$work/argv-error" &
+	argv_helper=$!
+	(
+		sleep 30
+		kill "$argv_helper" 2>/dev/null || :
+		sleep 1
+		kill -KILL "$argv_helper" 2>/dev/null || :
+	) </dev/null >/dev/null 2>&1 &
+	argv_watch=$!
+	if wait "$argv_helper"; then
+		argv_status=0
+	else
+		argv_status=$?
+	fi
+	argv_helper=
+	kill "$argv_watch" 2>/dev/null || :
+	wait "$argv_watch" 2>/dev/null || :
+	argv_watch=
+	if [ "$argv_status" -ne 0 ]; then
+		echo "ars: cannot inspect external process argv" >&2
+		exit 1
+	fi
+	;;
+*) echo "ars: unsupported external process platform" >&2; exit 1 ;;
+esac
+fi
+
+if [ ! -s "$work/valid-candidates" ]; then
+	printf 'none\n'
+	exit 0
+fi
 
 match_panes() {
 	socket=$1
@@ -201,7 +439,7 @@ END { if (NR > 16384 || invalid) exit 1 }
 resolve_matches() {
 	: >"$work/resolve-status"
 	: >"$work/resolve-steps"
-	if ! awk -F '\t' -v parents="$work/parents" -v candidates="$work/valid-candidates" -v status="$work/resolve-status" -v steps_file="$work/resolve-steps" -v max_steps="20000" '
+	if ! awk -F '\t' -v parents="$work/parents" -v candidates="$work/valid-candidates" -v status="$work/resolve-status" -v steps_file="$work/resolve-steps" -v max_steps="4096" '
 FILENAME == parents {
 	parent[$1] = $2
 	next
@@ -272,6 +510,7 @@ END {
 : >"$work/matches"
 : >"$work/all-panes"
 socket_count=0
+entry_count=0
 pane_total=0
 pane_rows=0
 tmux_base=${TMUX_TMPDIR:-/tmp}
@@ -280,7 +519,7 @@ owned_path() {
 	owner=$(ls -ldn "$1" | awk 'NF >= 3 { print $3; exit }')
 	[ "$owner" = "$uid" ]
 }
-inspect_socket_dir() {
+scan_socket_dir() {
 	directory=$1
 	if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
 		return 0
@@ -289,7 +528,41 @@ inspect_socket_dir() {
 		echo "ars: invalid external tmux socket directory" >&2
 		return 2
 	fi
-	for socket in "$directory"/*; do
+	if [ ! -r "$directory" ] || [ ! -x "$directory" ]; then
+		echo "ars: cannot inspect external tmux socket directory" >&2
+		return 2
+	fi
+	for socket in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+		if [ ! -e "$socket" ] && [ ! -L "$socket" ]; then
+			continue
+		fi
+		entry_count=$((entry_count + 1))
+		if [ "$entry_count" -gt 4096 ]; then
+			echo "ars: external tmux socket directory entries exceed limit" >&2
+			return 2
+		fi
+		if [ -L "$socket" ]; then
+			echo "ars: invalid external tmux socket" >&2
+			return 2
+		fi
+		[ -S "$socket" ] || continue
+		socket_count=$((socket_count + 1))
+		if [ "$socket_count" -gt 64 ]; then
+			echo "ars: external tmux socket count exceeds limit" >&2
+			return 2
+		fi
+	done
+}
+match_socket_dir() {
+	directory=$1
+	if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+		return 0
+	fi
+	if [ -L "$directory" ] || [ ! -d "$directory" ] || [ ! -r "$directory" ] || [ ! -x "$directory" ] || ! owned_path "$directory"; then
+		echo "ars: invalid external tmux socket directory" >&2
+		return 2
+	fi
+	for socket in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
 		if [ ! -e "$socket" ] && [ ! -L "$socket" ]; then
 			continue
 		fi
@@ -300,11 +573,6 @@ inspect_socket_dir() {
 		[ -S "$socket" ] || continue
 		if ! owned_path "$socket"; then
 			echo "ars: invalid external tmux socket" >&2
-			return 2
-		fi
-		socket_count=$((socket_count + 1))
-		if [ "$socket_count" -gt 64 ]; then
-			echo "ars: external tmux socket count exceeds limit" >&2
 			return 2
 		fi
 		if ! match_panes "$socket"; then
@@ -318,9 +586,13 @@ inspect_socket_dir() {
 
 primary_dir=$tmux_base/tmux-$uid
 fallback_dir=/tmp/tmux-$uid
-inspect_socket_dir "$primary_dir" || exit 1
+scan_socket_dir "$primary_dir" || exit 1
 if [ "$fallback_dir" != "$primary_dir" ]; then
-	inspect_socket_dir "$fallback_dir" || exit 1
+	scan_socket_dir "$fallback_dir" || exit 1
+fi
+match_socket_dir "$primary_dir" || exit 1
+if [ "$fallback_dir" != "$primary_dir" ]; then
+	match_socket_dir "$fallback_dir" || exit 1
 fi
 
 resolve_matches || exit 1

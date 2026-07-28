@@ -621,15 +621,10 @@ func exerciseRemoteExternalTmuxReuse(t *testing.T, server *ephemeralSSHD) {
 	}
 	start.Env = append(start.Env, "ARS_TEST_PROVIDER_PID="+externalPID)
 	start.Env = append(start.Env, "GO_WANT_REMOTE_PROVIDER=1")
+	t.Cleanup(func() { cleanupRemoteExternalTmux(t, server, externalSocket, externalPID) })
 	if output, err := start.CombinedOutput(); err != nil {
 		t.Fatalf("start remote external tmux provider: %v: %s", err, output)
 	}
-	t.Cleanup(func() {
-		command := integrationNamedTmuxCommand(context.Background(), server.tmux, server.tmuxTemp, externalSocket, "kill-server")
-		if output, err := command.CombinedOutput(); err != nil && integrationPathExists(filepath.Join(server.tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), externalSocket)) {
-			t.Errorf("cleanup remote external tmux: %v: %s", err, output)
-		}
-	})
 	providerPID := readIntegrationProviderPID(t, externalPID)
 	first := startIntegrationTmuxClient(t, integrationNamedTmuxCommand(
 		context.Background(), server.tmux, server.tmuxTemp, externalSocket,
@@ -669,6 +664,51 @@ func exerciseRemoteExternalTmuxReuse(t *testing.T, server *ephemeralSSHD) {
 	if err := os.Remove(externalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("remove stale owned remote external tmux socket: %v", err)
 	}
+}
+
+func cleanupRemoteExternalTmux(t *testing.T, server *ephemeralSSHD, name, pidPath string) {
+	t.Helper()
+	socket := filepath.Join(server.tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), name)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	command := integrationNamedTmuxCommand(ctx, server.tmux, server.tmuxTemp, name, "kill-server")
+	_, _ = command.CombinedOutput()
+	cancel()
+
+	providerPID := 0
+	if data, err := os.ReadFile(pidPath); err == nil {
+		providerPID, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("read external provider PID for cleanup: %v", err)
+	}
+	if providerPID > 0 && integrationProcessExists(providerPID) {
+		_ = syscall.Kill(providerPID, syscall.SIGTERM)
+		if !waitIntegrationProcessExit(providerPID, time.Second) {
+			_ = syscall.Kill(providerPID, syscall.SIGKILL)
+			if !waitIntegrationProcessExit(providerPID, time.Second) {
+				t.Errorf("external provider PID %d survived bounded cleanup", providerPID)
+			}
+		}
+	}
+	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("remove external tmux socket %s: %v", socket, err)
+	}
+	if providerPID > 0 && integrationProcessExists(providerPID) {
+		t.Errorf("external provider PID %d leaked after cleanup", providerPID)
+	}
+	if integrationPathExists(socket) {
+		t.Errorf("external tmux socket %s leaked after cleanup", socket)
+	}
+}
+
+func waitIntegrationProcessExit(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !integrationProcessExists(pid) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return !integrationProcessExists(pid)
 }
 
 type remoteExternalSnapshot struct {
@@ -881,7 +921,16 @@ func (capture *integrationCapture) String() string {
 
 func waitIntegrationAttachOutput(t *testing.T, client *integrationAttachClient, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("test deadline is required to wait for SSH attach output")
+	}
+	cap := time.Now().Add(30 * time.Second)
+	if cap.Before(deadline) {
+		deadline = cap
+	} else {
+		deadline = deadline.Add(-time.Second)
+	}
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-client.done:

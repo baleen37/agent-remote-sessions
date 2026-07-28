@@ -380,6 +380,41 @@ func (runner resolverDelayRunner) Output(ctx context.Context, command Command) (
 	return runner.Runner.Output(ctx, command)
 }
 
+type arsCreateRunner struct {
+	Runner
+	created chan struct{}
+	once    sync.Once
+}
+
+func newARSCreateRunner(runner Runner) *arsCreateRunner {
+	return &arsCreateRunner{Runner: runner, created: make(chan struct{})}
+}
+
+func (runner *arsCreateRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
+	err := runner.Runner.Run(ctx, command, stdin, stdout, stderr)
+	if command.Name == "tmux" && len(command.Args) > 4 && command.Args[4] == "new-session" {
+		runner.once.Do(func() { close(runner.created) })
+	}
+	return err
+}
+
+func waitForARSCreate(t *testing.T, created <-chan struct{}, done <-chan error) {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("test deadline is required to wait for ARS creation")
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-created:
+	case err := <-done:
+		t.Fatalf("attach exited before ARS creation: %v", err)
+	case <-timer.C:
+		t.Fatal("ARS creation did not finish before test deadline")
+	}
+}
+
 type externalAttachStartRunner struct {
 	Runner
 	started chan struct{}
@@ -511,7 +546,8 @@ func (external *externalTmuxFixture) cleanup(t *testing.T) {
 
 func (fixture *disposableTmuxFixture) attachAndDetach(t *testing.T) int {
 	t.Helper()
-	command, err := NewAttachCommand(context.Background(), fixture.runner, fixture.item, provider.ResumeSpec{
+	runner := newARSCreateRunner(resolverDelayRunner{Runner: fixture.runner, output: []byte("none\n")})
+	command, err := NewAttachCommand(context.Background(), runner, fixture.item, provider.ResumeSpec{
 		Executable: "claude",
 		Args:       []string{"--resume", fixture.item.NativeID},
 	})
@@ -534,6 +570,7 @@ func (fixture *disposableTmuxFixture) attachAndDetach(t *testing.T) int {
 	var output synchronizedBuffer
 	go func() { _, _ = io.Copy(&output, master) }()
 
+	waitForARSCreate(t, runner.created, done)
 	beforePID := waitForProviderPIDOrAttachExit(t, fixture.pidPath, done, &output)
 	waitForAttachedClients(t, fixture.runner, fixture.item, 1)
 	if _, err := master.Write([]byte{0x11}); err != nil {
@@ -555,7 +592,8 @@ func (fixture *disposableTmuxFixture) attachAndDetach(t *testing.T) int {
 // caller can still run cleanup.
 func (fixture *disposableTmuxFixture) attachAndReadStatusOptions(t *testing.T) (statusRight, statusInterval string) {
 	t.Helper()
-	command, err := NewAttachCommand(context.Background(), fixture.runner, fixture.item, provider.ResumeSpec{
+	runner := newARSCreateRunner(resolverDelayRunner{Runner: fixture.runner, output: []byte("none\n")})
+	command, err := NewAttachCommand(context.Background(), runner, fixture.item, provider.ResumeSpec{
 		Executable: "claude",
 		Args:       []string{"--resume", fixture.item.NativeID},
 	})
@@ -578,6 +616,7 @@ func (fixture *disposableTmuxFixture) attachAndReadStatusOptions(t *testing.T) (
 	var output synchronizedBuffer
 	go func() { _, _ = io.Copy(&output, master) }()
 
+	waitForARSCreate(t, runner.created, done)
 	waitForProviderPIDOrAttachExit(t, fixture.pidPath, done, &output)
 	waitForAttachedClients(t, fixture.runner, fixture.item, 1)
 
