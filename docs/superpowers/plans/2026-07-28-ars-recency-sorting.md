@@ -26,6 +26,7 @@
 - Test: `internal/tui/tree_test.go:25-60`
 - Test: `internal/tui/tree_test.go:160-205`
 - Test: `internal/tui/pin_test.go:85-160`
+- Create: `docs/scenarios/recency-sorting.md`
 
 **Interfaces:**
 - Consumes: `groupSessions(items []session.Session, pins map[sessionKey]bool) []sessionGroup`, `latestActivity(items []session.Session) time.Time`, and the existing stable input order.
@@ -188,34 +189,88 @@ Run:
 ```bash
 go test ./...
 go vet ./...
-go build -o /tmp/ars-recency-sorting ./cmd/ars
+ars_sorting_tmp="$(mktemp -d)"
+go build -o "$ars_sorting_tmp/ars" ./cmd/ars
 git diff --check
 ```
 
 Expected: every command exits 0.
 
-- [ ] **Step 6: Verify the rendered order in a real terminal**
+- [ ] **Step 6: Write and run a falsifiable TUI scenario**
 
-Start the production build in a fresh tmux server:
+Create `docs/scenarios/recency-sorting.md`:
 
-```bash
-tmux -L ars-sorting kill-server 2>/dev/null || true
-tmux -L ars-sorting new-session -d -x 120 -y 30 /tmp/ars-recency-sorting
-tmux -L ars-sorting capture-pane -p
+```markdown
+# recency-sorting: project groups follow latest activity
+
+**What this covers**: The recency-first project ordering rendered by the ARS
+TUI from a freshly built binary.
+
+## Pre-state
+
+Build `./cmd/ars` into a new `mktemp -d` directory. Use a dedicated tmux server
+label derived from that directory. Capture `ars list --json` immediately before
+starting the TUI; the JSON inventory is the authoritative record.
+
+## Steps
+
+1. From the JSON sessions, group by the basename of `cwd` and calculate each
+   project's maximum `updated_at`.
+2. Start the fresh binary in a 120x30 tmux session and wait until collection
+   completes.
+3. Capture the pane and read the project headers from top to bottom.
+4. Open and close one project with `l` and `h`, then capture the pane again.
+
+## Expected
+
+- Unpinned project headers appear in descending maximum `updated_at` order.
+  The scenario fails if an older project appears above a newer project.
+- The second capture has the same project order as the first. The scenario
+  fails if folding changes the order.
+- The pane contains no panic and the stderr log is empty. Any panic or stderr
+  output fails the scenario.
+
+If the live inventory has fewer than two project groups, report the scenario as
+blocked rather than passed.
+
+## Cleanup
+
+Quit the TUI, stop only the dedicated tmux server, and remove only the temporary
+build directory created by this run.
+
+## Sharp edges
+
+Automatic folding can hide saved session rows. Project ranking still uses the
+latest activity across every session in the JSON inventory.
 ```
 
-Compare the captured project and session order with the inventory timestamps.
-Confirm pinned rows lead their tiers and the remaining visible rows are
-newest-first. Exercise group open/close once and capture again to confirm the
-project order stays fixed. Stop only the dedicated verification server:
+Run the scenario with a fresh build and authoritative JSON capture:
 
 ```bash
-tmux -L ars-sorting kill-server
+ars_sorting_tmp="$(mktemp -d)"
+ars_sorting_tmux="ars-sorting-$(basename "$ars_sorting_tmp")"
+go build -o "$ars_sorting_tmp/ars" ./cmd/ars
+"$ars_sorting_tmp/ars" list --json >"$ars_sorting_tmp/inventory.json"
+tmux -L "$ars_sorting_tmux" new-session -d -x 120 -y 30 \
+  "$ars_sorting_tmp/ars 2>$ars_sorting_tmp/stderr.log"
+tmux -L "$ars_sorting_tmux" capture-pane -p >"$ars_sorting_tmp/before.txt"
+```
+
+Compare header order in `before.txt` against the per-project maximum
+`updated_at` derived from `inventory.json`. Send `l` and `h` to one group, then
+capture `after.txt` and compare the header order again. Record concrete header
+and timestamp evidence. Clean up only the resources created above:
+
+```bash
+tmux -L "$ars_sorting_tmux" send-keys q
+tmux -L "$ars_sorting_tmux" kill-server 2>/dev/null || true
+rm -rf "$ars_sorting_tmp"
 ```
 
 - [ ] **Step 7: Commit the implementation**
 
 ```bash
-git add internal/tui/tree.go internal/tui/tree_test.go internal/tui/pin_test.go
+git add internal/tui/tree.go internal/tui/tree_test.go internal/tui/pin_test.go \
+  docs/scenarios/recency-sorting.md
 git commit -m "fix(tui): sort sessions by recent activity"
 ```
