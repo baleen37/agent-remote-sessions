@@ -133,6 +133,7 @@ type externalFixture struct {
 	helperMalformed      bool
 	assertNoHelperOrphan bool
 	assertTmuxArgv       bool
+	resolverTimeout      time.Duration
 }
 
 type externalSystemRunner struct{}
@@ -239,13 +240,12 @@ func TestExternalResolverScriptFailsClosedOnSocketDirectoryTraversal(t *testing.
 
 func TestExternalResolverScriptBoundsRealDirectoryTraversalAtEntryLimit(t *testing.T) {
 	const selected = "123e4567-e89b-42d3-a456-426614174000"
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	_, found, err := runExternalFixtureContext(t, ctx, externalFixture{
+	_, found, err := runExternalFixture(t, externalFixture{
 		processes:            "100 1 claude\n",
 		argv:                 map[int][]string{100: {"claude", "--resume", selected}},
 		regularEntries:       4097,
 		assertNoHelperOrphan: true,
+		resolverTimeout:      45 * time.Second,
 	}, session.Claude, selected)
 	if err == nil || found || !strings.Contains(err.Error(), "entries exceed limit") {
 		t.Fatalf("ResolveExternal() = found %t, err %v, want bounded directory entry error", found, err)
@@ -834,6 +834,11 @@ for raw in sys.stdin:
 	t.Setenv("ARS_MUTATE_SOCKET", mutateSocket)
 	t.Setenv("TMUX_TMPDIR", root)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if fixture.resolverTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, fixture.resolverTimeout)
+		defer cancel()
+	}
 	target, found, err := ResolveExternal(ctx, externalSystemRunner{}, name, nativeID)
 	assertNoExternalResolverWorkdirs(t, root)
 	if fixture.mutateSocket != "" {
