@@ -107,10 +107,9 @@ func activeSessions(items []session.Session, pins map[sessionKey]bool) []session
 	return active
 }
 
-// groupSessions buckets sessions by project and orders both tiers. Pins are
-// the outermost key at each tier — a pinned session leads its group and a group
-// holding one leads the list — and the existing state-then-recency ordering
-// decides the rest within each tier, so unpinning restores the previous order.
+// groupSessions buckets sessions by project and orders both tiers by pin then
+// recency. A pinned session leads its group and a group holding one leads the
+// list; unpinning restores newest-first order.
 func groupSessions(items []session.Session, pins map[sessionKey]bool) []sessionGroup {
 	positions := make(map[string]int)
 	var groups []sessionGroup
@@ -132,11 +131,6 @@ func groupSessions(items []session.Session, pins map[sessionKey]bool) []sessionG
 			if leftPinned != rightPinned {
 				return leftPinned
 			}
-			leftSaved := members[left].Runtime.State == session.RuntimeSaved
-			rightSaved := members[right].Runtime.State == session.RuntimeSaved
-			if leftSaved != rightSaved {
-				return rightSaved
-			}
 			return members[left].UpdatedAt.After(members[right].UpdatedAt)
 		})
 	}
@@ -146,27 +140,9 @@ func groupSessions(items []session.Session, pins map[sessionKey]bool) []sessionG
 		if leftPinned != rightPinned {
 			return leftPinned
 		}
-		leftActive := groupState(groups[left].sessions) != session.RuntimeSaved
-		rightActive := groupState(groups[right].sessions) != session.RuntimeSaved
-		if leftActive != rightActive {
-			return leftActive
-		}
-		return rankedActivity(groups[left].sessions, pins).After(rankedActivity(groups[right].sessions, pins))
+		return latestActivity(groups[left].sessions).After(latestActivity(groups[right].sessions))
 	})
 	return groups
-}
-
-// rankedActivity is the timestamp a group is ordered by: the latest activity
-// among the sessions it actually puts on screen. Auto mode folds saved sessions
-// behind the more row, and ranking a group by one of those would place it above
-// groups whose visible rows are newer — an order the list cannot explain. Groups
-// with nothing live keep their full-inventory recency, since a closed header is
-// all they display.
-func rankedActivity(items []session.Session, pins map[sessionKey]bool) time.Time {
-	if displayed := activeSessions(items, pins); len(displayed) > 0 {
-		return latestActivity(displayed)
-	}
-	return latestActivity(items)
 }
 
 func hasPinned(items []session.Session, pins map[sessionKey]bool) bool {

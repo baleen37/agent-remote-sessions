@@ -26,12 +26,12 @@ func treeSessionOnHost(host, project, id string, state session.RuntimeState, upd
 	}
 }
 
-func TestBuildRowsGroupsAndOrdersByStateThenActivity(t *testing.T) {
+func TestBuildRowsGroupsAndOrdersByActivity(t *testing.T) {
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	items := []session.Session{
-		treeSession("blog", "blog-old", session.RuntimeSaved, base.Add(-3*time.Hour)),
+		treeSession("blog", "blog-running", session.RuntimeRunning, base.Add(-3*time.Hour)),
 		treeSession("ars", "ars-saved", session.RuntimeSaved, base),
-		treeSession("ars", "ars-live", session.RuntimeRunning, base.Add(-2*time.Hour)),
+		treeSession("ars", "ars-running", session.RuntimeRunning, base.Add(-2*time.Hour)),
 	}
 	modes := map[string]groupMode{"ars": groupModeOpen, "blog": groupModeOpen}
 	rows := buildRows(items, modes, false, nil)
@@ -42,10 +42,10 @@ func TestBuildRowsGroupsAndOrdersByStateThenActivity(t *testing.T) {
 		last    bool
 	}{
 		{rowHeader, "ars", "", false},
-		{rowSession, "ars", "ars-live", false},
-		{rowSession, "ars", "ars-saved", true},
+		{rowSession, "ars", "ars-saved", false},
+		{rowSession, "ars", "ars-running", true},
 		{rowHeader, "blog", "", false},
-		{rowSession, "blog", "blog-old", true},
+		{rowSession, "blog", "blog-running", true},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %d, want %d", len(rows), len(want))
@@ -62,7 +62,7 @@ func TestBuildRowsGroupsAndOrdersByStateThenActivity(t *testing.T) {
 	if rows[0].count != 2 || rows[0].state != session.RuntimeRunning {
 		t.Fatalf("ars header = %+v", rows[0])
 	}
-	if rows[3].count != 1 || rows[3].state != session.RuntimeSaved {
+	if rows[3].count != 1 || rows[3].state != session.RuntimeRunning {
 		t.Fatalf("blog header = %+v", rows[3])
 	}
 }
@@ -157,24 +157,38 @@ func TestBuildRowsGroupsSameProjectAcrossHosts(t *testing.T) {
 	}
 }
 
-// Auto mode folds saved sessions behind the more row, so a folded session must
-// not lift its group above a group whose displayed rows are more recent —
-// otherwise the visible order reads as unsorted.
-func TestBuildRowsRanksGroupsByDisplayedRows(t *testing.T) {
+func TestBuildRowsRanksGroupsByLatestActivity(t *testing.T) {
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	items := []session.Session{
-		treeSession("ars", "ars-live", session.RuntimeRunning, base.Add(-5*time.Hour)),
-		treeSession("blog", "blog-live", session.RuntimeRunning, base.Add(-6*time.Hour)),
-		treeSession("blog", "blog-folded", session.RuntimeSaved, base),
+		treeSession("ars", "ars-running", session.RuntimeRunning, base.Add(-5*time.Hour)),
+		treeSession("blog", "blog-running", session.RuntimeRunning, base.Add(-6*time.Hour)),
+		treeSession("blog", "blog-saved", session.RuntimeSaved, base),
 	}
 	rows := buildRows(items, nil, false, nil)
-	if rows[0].kind != rowHeader || rows[0].project != "ars" {
-		t.Fatalf("first header = %+v, want ars: blog's newest row is older than ars's", rows[0])
+	if rows[0].kind != rowHeader || rows[0].project != "blog" {
+		t.Fatalf("first header = %+v, want blog with the latest activity", rows[0])
 	}
 }
 
-// Ranking follows what each group displays, so expanding a group with an older
-// but freshly revealed session must not reshuffle the groups around it.
+func TestBuildRowsKeepsInputOrderWhenActivityTies(t *testing.T) {
+	updated := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	items := []session.Session{
+		treeSession("blog", "blog-first", session.RuntimeSaved, updated),
+		treeSession("ars", "ars-first", session.RuntimeRunning, updated),
+		treeSession("ars", "ars-second", session.RuntimeSaved, updated),
+	}
+	modes := map[string]groupMode{"ars": groupModeOpen, "blog": groupModeOpen}
+	rows := buildRows(items, modes, false, nil)
+	if projects := headerProjects(rows); !reflect.DeepEqual(projects, []string{"blog", "ars"}) {
+		t.Fatalf("group order = %v, want stable input order", projects)
+	}
+	if ids := sessionIDs(rows); !reflect.DeepEqual(ids, []string{"blog-first", "ars-first", "ars-second"}) {
+		t.Fatalf("session order = %v, want stable input order", ids)
+	}
+}
+
+// Group mode is applied after all-member activity ranking, so expanding a
+// group must not reshuffle the projects around it.
 func TestBuildRowsGroupOrderStableWhenFoldedSessionsRevealed(t *testing.T) {
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	items := []session.Session{
