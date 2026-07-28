@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,20 @@ import (
 )
 
 const runSSHDIntegration = "ARS_TEST_EPHEMERAL_SSHD"
+
+func init() {
+	if os.Getenv("GO_WANT_REMOTE_PROVIDER") != "1" {
+		return
+	}
+	if err := os.WriteFile(os.Getenv("ARS_TEST_PROVIDER_PID"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		os.Exit(1)
+	}
+	signal.Ignore(syscall.SIGHUP)
+	fmt.Println("ARS_REMOTE_PROVIDER_ATTACHED")
+	for {
+		time.Sleep(time.Second)
+	}
+}
 
 func TestEphemeralSSHDCollectsAndAttaches(t *testing.T) {
 	if os.Getenv(runSSHDIntegration) != "1" {
@@ -88,6 +103,7 @@ func TestEphemeralSSHDCollectsAndAttaches(t *testing.T) {
 	t.Setenv("PATH", server.clientBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	exerciseRemoteAttachHandoff(t, server)
 	server.cleanupTmux(t)
+	exerciseRemoteExternalTmuxReuse(t, server)
 	defaultTmux.assertUnchanged(t)
 }
 
@@ -116,6 +132,7 @@ type ephemeralSSHD struct {
 	target       string
 	clientConfig string
 	clientBin    string
+	remoteBin    string
 	remoteTemp   string
 	tmuxTemp     string
 	providerPID  string
@@ -154,6 +171,9 @@ func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *epheme
 	}
 	providerPID := filepath.Join(root, "provider.pid")
 	writeIntegrationExecutable(t, filepath.Join(remoteBin, "tmux"), "#!/bin/sh\n"+
+		"if [ \"$1\" = -S ]; then\n"+
+		"  if case \"$2\" in /tmp/tmux-*) true ;; *) false ;; esac; then exit 0; fi\n"+
+		"fi\n"+
 		"export TMUX_TMPDIR="+singleQuote(tmuxTemp)+"\n"+
 		"exec "+singleQuote(tmux)+" \"$@\"\n")
 	writeIntegrationExecutable(t, filepath.Join(remoteBin, "claude"), "#!/bin/sh\n"+
@@ -177,6 +197,7 @@ func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *epheme
 	forceCommand := filepath.Join(root, "force-command")
 	forceScript := "#!/bin/sh\n" +
 		"export TMPDIR=" + singleQuote(remoteTemp) + "\n" +
+		"export TMUX_TMPDIR=" + singleQuote(tmuxTemp) + "\n" +
 		"export PATH=" + singleQuote(remoteBin+":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin") + "\n" +
 		"export ARS_TEST_PROVIDER_PID=" + singleQuote(providerPID) + "\n" +
 		"exec /bin/sh -c \"$SSH_ORIGINAL_COMMAND\"\n"
@@ -268,6 +289,7 @@ func startEphemeralSSHD(t *testing.T, sshd, ssh, sshKeygen, tmux string) *epheme
 		target:       "ars-integration",
 		clientConfig: clientConfig,
 		clientBin:    clientBin,
+		remoteBin:    remoteBin,
 		remoteTemp:   remoteTemp,
 		tmuxTemp:     tmuxTemp,
 		providerPID:  providerPID,
@@ -449,6 +471,12 @@ func integrationTmuxCommand(ctx context.Context, tmux, tempDir string, ars bool,
 	return command
 }
 
+func integrationNamedTmuxCommand(ctx context.Context, tmux, tempDir, name string, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, tmux, append([]string{"-L", name, "-f", "/dev/null"}, args...)...)
+	command.Env = integrationTmuxEnv(tempDir)
+	return command
+}
+
 func integrationTmuxEnv(tempDir string) []string {
 	environment := make([]string, 0, len(os.Environ())+3)
 	for _, value := range os.Environ() {
@@ -561,6 +589,139 @@ func verifyUnknownHostKeyRejected(t *testing.T, ssh string, server *ephemeralSSH
 	}
 }
 
+func exerciseRemoteExternalTmuxReuse(t *testing.T, server *ephemeralSSHD) {
+	t.Helper()
+	const externalSocket = "external"
+	item, err := session.BindDiscovered(server.target, session.Discovered{Candidate: session.Candidate{
+		Provider:  session.Claude,
+		NativeID:  "123e4567-e89b-42d3-a456-426614174000",
+		UpdatedAt: time.Date(2026, 7, 19, 1, 2, 3, 0, time.UTC),
+		CWD:       server.root,
+		Title:     "External SSH",
+	}, Runtime: session.Runtime{State: session.RuntimeSaved}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalBin := filepath.Join(server.root, "external-bin")
+	if err := os.Mkdir(externalBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	externalClaude := filepath.Join(externalBin, "claude")
+	if err := os.Symlink(os.Args[0], externalClaude); err != nil {
+		t.Fatal(err)
+	}
+	start := integrationNamedTmuxCommand(
+		context.Background(), server.tmux, server.tmuxTemp, externalSocket,
+		"new-session", "-d", "-s", "external", "-c", server.root,
+		externalClaude, "--resume", item.NativeID,
+	)
+	externalPID := filepath.Join(server.root, "external-provider.pid")
+	if err := os.Remove(externalPID); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	start.Env = append(start.Env, "ARS_TEST_PROVIDER_PID="+externalPID)
+	start.Env = append(start.Env, "GO_WANT_REMOTE_PROVIDER=1")
+	if output, err := start.CombinedOutput(); err != nil {
+		t.Fatalf("start remote external tmux provider: %v: %s", err, output)
+	}
+	t.Cleanup(func() {
+		command := integrationNamedTmuxCommand(context.Background(), server.tmux, server.tmuxTemp, externalSocket, "kill-server")
+		if output, err := command.CombinedOutput(); err != nil && integrationPathExists(filepath.Join(server.tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), externalSocket)) {
+			t.Errorf("cleanup remote external tmux: %v: %s", err, output)
+		}
+	})
+	providerPID := readIntegrationProviderPID(t, externalPID)
+	first := startIntegrationTmuxClient(t, integrationNamedTmuxCommand(
+		context.Background(), server.tmux, server.tmuxTemp, externalSocket,
+		"attach-session", "-t", "=external",
+	))
+	waitIntegrationAttachOutput(t, first, "ARS_REMOTE_PROVIDER_ATTACHED")
+	waitRemoteExternalClients(t, server, externalSocket, 1)
+	before := remoteExternalTmuxSnapshot(t, server, externalSocket)
+
+	command, err := NewAttachCommand(context.Background(), server.target, item, provider.ResumeSpec{
+		Executable: "claude",
+		Args:       []string{"--resume", item.NativeID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := startIntegrationAttachClient(t, command)
+	waitIntegrationAttachOutput(t, second, "ARS_REMOTE_PROVIDER_ATTACHED")
+	waitRemoteExternalClients(t, server, externalSocket, 2, second)
+	second.detachExternal(t)
+	waitRemoteExternalClients(t, server, externalSocket, 1)
+	if err := syscall.Kill(providerPID, 0); err != nil {
+		t.Fatalf("external provider PID %d did not survive second detach: %v", providerPID, err)
+	}
+	if integrationPathExists(server.tmuxSocket) {
+		t.Fatalf("external attach created an ARS runtime socket: %s", server.tmuxSocket)
+	}
+	if after := remoteExternalTmuxSnapshot(t, server, externalSocket); after != before {
+		t.Fatalf("remote external tmux changed:\nbefore: %#v\nafter:  %#v", before, after)
+	}
+	first.detachExternal(t)
+	stop := integrationNamedTmuxCommand(context.Background(), server.tmux, server.tmuxTemp, externalSocket, "kill-server")
+	if output, err := stop.CombinedOutput(); err != nil {
+		t.Fatalf("stop remote external tmux after reuse scenario: %v: %s", err, output)
+	}
+	externalPath := filepath.Join(server.tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), externalSocket)
+	if err := os.Remove(externalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove stale owned remote external tmux socket: %v", err)
+	}
+}
+
+type remoteExternalSnapshot struct {
+	keys     string
+	options  string
+	sessions string
+	windows  string
+	panes    string
+}
+
+func remoteExternalTmuxSnapshot(t *testing.T, server *ephemeralSSHD, name string) remoteExternalSnapshot {
+	t.Helper()
+	output := func(args ...string) string {
+		command := integrationNamedTmuxCommand(context.Background(), server.tmux, server.tmuxTemp, name, args...)
+		value, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("snapshot remote external tmux %q: %v: %s", args, err, value)
+		}
+		return string(value)
+	}
+	return remoteExternalSnapshot{
+		keys:     output("list-keys", "-T", "root"),
+		options:  output("show-options", "-g"),
+		sessions: output("list-sessions", "-F", "#{session_id}\\t#{session_name}\\t#{session_attached}\\t#{session_created}"),
+		windows:  output("list-windows", "-a", "-F", "#{session_id}\\t#{window_id}\\t#{window_index}\\t#{window_name}"),
+		panes:    output("list-panes", "-a", "-F", "#{session_id}\\t#{window_id}\\t#{pane_id}\\t#{pane_index}\\t#{pane_pid}"),
+	}
+}
+
+func waitRemoteExternalClients(t *testing.T, server *ephemeralSSHD, name string, want int, clients ...*integrationAttachClient) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, client := range clients {
+			select {
+			case err := <-client.done:
+				t.Fatalf("remote external attach exited before %d clients: %v; output: %q", want, err, client.output.String())
+			default:
+			}
+		}
+		command := integrationNamedTmuxCommand(context.Background(), server.tmux, server.tmuxTemp, name, "list-sessions", "-F", "#{session_attached}")
+		output, err := command.Output()
+		if err == nil {
+			clients, parseErr := strconv.Atoi(strings.TrimSpace(string(output)))
+			if parseErr == nil && clients == want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("remote external attached clients did not become %d", want)
+}
+
 func exerciseRemoteAttachHandoff(t *testing.T, server *ephemeralSSHD) {
 	t.Helper()
 	item, err := session.BindDiscovered(server.target, session.Discovered{Candidate: session.Candidate{
@@ -655,6 +816,38 @@ func (client *integrationAttachClient) detach(t *testing.T) {
 		t.Fatalf("write remote Ctrl+Q: %v", err)
 	}
 	client.wait(t, "remote Ctrl+Q")
+}
+
+func (client *integrationAttachClient) detachExternal(t *testing.T) {
+	t.Helper()
+	if _, err := client.master.Write([]byte{0x02, 'd'}); err != nil {
+		t.Fatalf("write external Ctrl+B d: %v", err)
+	}
+	client.wait(t, "remote external Ctrl+B d")
+}
+
+func startIntegrationTmuxClient(t *testing.T, command *exec.Cmd) *integrationAttachClient {
+	t.Helper()
+	master, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 100}); err != nil {
+		_ = master.Close()
+		_ = terminal.Close()
+		t.Fatal(err)
+	}
+	client := &integrationAttachClient{master: master, terminal: terminal, done: make(chan error, 1)}
+	command.Stdin = terminal
+	command.Stdout = terminal
+	command.Stderr = terminal
+	go func() { client.done <- command.Run() }()
+	go func() { _, _ = io.Copy(&client.output, master) }()
+	t.Cleanup(func() {
+		_ = client.master.Close()
+		_ = client.terminal.Close()
+	})
+	return client
 }
 
 func (client *integrationAttachClient) wait(t *testing.T, label string) {

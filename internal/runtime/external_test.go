@@ -120,7 +120,7 @@ type externalFixture struct {
 	symlinkDirectory bool
 	symlinkSocket    string
 	badOwner         string
-	requirePaneTab   bool
+	sanitizePaneTab  bool
 }
 
 type externalSystemRunner struct{}
@@ -157,16 +157,19 @@ func TestExternalResolverScriptAcceptsZeroSessionID(t *testing.T) {
 	}
 }
 
-func TestExternalResolverScriptUsesTabSeparatedPaneFormat(t *testing.T) {
+func TestExternalResolverScriptUsesPrintablePaneSeparator(t *testing.T) {
 	const selected = "123e4567-e89b-42d3-a456-426614174000"
 	_, found, err := runExternalFixture(t, externalFixture{
-		processes:      "100 1 zsh\n101 100 claude\n",
-		args:           map[int]string{101: "claude --resume " + selected},
-		panes:          map[string]string{"default": "$1:0.0\t100\n"},
-		requirePaneTab: true,
+		processes:       "100 1 zsh\n101 100 claude\n",
+		args:            map[int]string{101: "claude --resume " + selected},
+		panes:           map[string]string{"default": "$1:0.0|100\n"},
+		sanitizePaneTab: true,
 	}, session.Claude, selected)
 	if err != nil || !found {
-		t.Fatalf("ResolveExternal() = found %t, err %v, want a tab-delimited pane query", found, err)
+		t.Fatalf("ResolveExternal() = found %t, err %v, want a printable tmux pane separator", found, err)
+	}
+	if !strings.Contains(ExternalResolverScript(), "#{session_id}:#{window_index}.#{pane_index}|#{pane_pid}") {
+		t.Fatal("external resolver does not request pipe-delimited pane rows")
 	}
 }
 
@@ -389,13 +392,13 @@ func runExternalFixtureContext(t *testing.T, ctx context.Context, fixture extern
 	writeExternalExecutable(t, filepath.Join(bin, "id"), "#!/bin/sh\necho "+uid+"\n")
 	writeExternalExecutable(t, filepath.Join(bin, "ps"), "#!/bin/sh\nif [ \"$1\" = \"-U\" ]; then cat \"$ARS_EXTERNAL_ROOT/processes\"; exit 0; fi\nawk -F '\\t' -v pid=\"$2\" '$1 == pid {sub(/^[^\\t]*\\t/, \"\"); print; exit}' \"$ARS_EXTERNAL_ROOT/args\"\n")
 	writeExternalExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\nfor value in \"$@\"; do path=$value; done\nif [ \"$path\" = \"$ARS_BAD_OWNER\" ]; then printf 'srwx------ 1 999 0 0 Jan 1 00:00 %s\\n' \"$path\"; exit 0; fi\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
-	tmux := "#!/bin/sh\nsocket=$2\nname=$(basename \"$socket\")\nprintf '%s\\n' \"$@\" >>\"$ARS_EXTERNAL_ROOT/tmux-args\"\nif [ \"$name\" = \"$ARS_FAIL_SOCKET\" ]; then exit 1; fi\nif [ \"${ARS_REQUIRE_PANE_TAB:-}\" = 1 ]; then\n  previous=\n  format=\n  for value in \"$@\"; do\n    if [ \"$previous\" = -F ]; then format=$value; fi\n    previous=$value\n  done\n  tab=$(printf '\\t')\n  case \"$format\" in *\"$tab\"*) ;; *) exit 1 ;; esac\nfi\ncat \"$ARS_EXTERNAL_PANES/$name\"\n"
+	tmux := "#!/bin/sh\nsocket=$2\nname=$(basename \"$socket\")\nprintf '%s\\n' \"$@\" >>\"$ARS_EXTERNAL_ROOT/tmux-args\"\nif [ \"$name\" = \"$ARS_FAIL_SOCKET\" ]; then exit 1; fi\nif [ \"${ARS_SANITIZE_PANE_TAB:-}\" = 1 ]; then\n  previous=\n  format=\n  for value in \"$@\"; do\n    if [ \"$previous\" = -F ]; then format=$value; fi\n    previous=$value\n  done\n  case \"$format\" in *'|'*) printf '$1:0.0|100\\n' ;; *) printf '$1:0.0_100\\n' ;; esac\n  exit 0\nfi\ncat \"$ARS_EXTERNAL_PANES/$name\"\n"
 	writeExternalExecutable(t, filepath.Join(bin, "tmux"), tmux)
 	t.Setenv("ARS_EXTERNAL_ROOT", root)
 	t.Setenv("ARS_EXTERNAL_PANES", panes)
 	t.Setenv("ARS_FAIL_SOCKET", fixture.failSocket)
-	if fixture.requirePaneTab {
-		t.Setenv("ARS_REQUIRE_PANE_TAB", "1")
+	if fixture.sanitizePaneTab {
+		t.Setenv("ARS_SANITIZE_PANE_TAB", "1")
 	}
 	badOwner := filepath.Join(root, "no-bad-owner")
 	if fixture.badOwner != "" {

@@ -167,7 +167,7 @@ done <"$work/candidates"
 
 match_panes() {
 	socket=$1
-	if ! tmux -S "$socket" -f /dev/null list-panes -a -F '#{session_id}:#{window_index}.#{pane_index}	#{pane_pid}' >"$work/panes"; then
+	if ! tmux -S "$socket" -f /dev/null list-panes -a -F '#{session_id}:#{window_index}.#{pane_index}|#{pane_pid}' >"$work/panes"; then
 		echo "ars: cannot inspect external tmux socket" >&2
 		return 2
 	fi
@@ -177,7 +177,7 @@ match_panes() {
 		echo "ars: external tmux pane table exceeds limit" >&2
 		return 2
 	fi
-	if ! awk -F '\t' '
+	if ! awk -F '|' '
 {
 	if (NF != 2 || $1 !~ /^\$[0-9]+:[0-9]+\.[0-9]+$/ || $2 !~ /^[1-9][0-9]*$/) {
 		invalid = 1
@@ -195,7 +195,7 @@ END { if (NR > 16384 || invalid) exit 1 }
 		echo "ars: external tmux pane row count exceeds limit" >&2
 		return 2
 	fi
-	awk -F '\t' -v socket="$socket" '{ print socket "\t" $1 "\t" $2 }' "$work/panes" >>"$work/all-panes"
+	awk -F '|' -v socket="$socket" '{ print socket "\t" $1 "\t" $2 }' "$work/panes" >>"$work/all-panes"
 }
 
 resolve_matches() {

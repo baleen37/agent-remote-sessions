@@ -55,6 +55,7 @@ func NewAttachCommand(
 		arsruntime.Key(string(item.Provider), item.NativeID),
 		item.CWD,
 		item.Provider,
+		item.NativeID,
 		spec,
 	)
 	return &AttachCommand{
@@ -62,10 +63,18 @@ func NewAttachCommand(
 	}, nil
 }
 
-func remoteAttachScript(name, cwd string, prov session.Provider, spec provider.ResumeSpec) string {
+func remoteAttachScript(name, cwd string, prov session.Provider, nativeID string, spec provider.ResumeSpec) string {
 	command := tmuxShellPrefix()
 	execCommand := "TMUX= TMUX_PANE= TMUX_TMPDIR=/tmp exec tmux -L " + arsruntime.SocketName() + " -f /dev/null"
 	target := quotePOSIX("=" + name)
+	resolver := strings.Join([]string{
+		"/bin/sh",
+		"-c",
+		quotePOSIX(arsruntime.ExternalResolverScript()),
+		"ars-external",
+		quotePOSIX(string(prov)),
+		quotePOSIX(nativeID),
+	}, " ")
 	createArgs := []string{
 		"new-session", "-d", "-s", quotePOSIX(name), "-c", quotePOSIX(cwd),
 	}
@@ -80,16 +89,41 @@ func remoteAttachScript(name, cwd string, prov session.Provider, spec provider.R
 		"if " + command + " has-session -t " + target + " >/dev/null 2>&1; then",
 		"  :",
 		"else",
-		"  if " + command + " " + strings.Join(createArgs, " ") + "; then",
-		"    :",
-		"  else",
-		"    create_status=$?",
-		"    if " + command + " has-session -t " + target + " >/dev/null 2>&1; then",
+		"  external_result=$(" + resolver + ")",
+		"  create_ars_runtime() {",
+		"    if " + command + " " + strings.Join(createArgs, " ") + "; then",
 		"      :",
 		"    else",
-		"      exit \"$create_status\"",
+		"      create_status=$?",
+		"      if " + command + " has-session -t " + target + " >/dev/null 2>&1; then",
+		"        :",
+		"      else",
+		"        return \"$create_status\"",
+		"      fi",
 		"    fi",
-		"  fi",
+		"  }",
+		"  case \"$external_result\" in",
+		"    none)",
+		"      create_ars_runtime",
+		"      ;;",
+		"    match*)",
+		"      tab=$(printf '\\t')",
+		"      kind=",
+		"      socket=",
+		"      pane=",
+		"      extra=",
+		"      IFS=\"$tab\" read -r kind socket pane extra <<EOF",
+		"$external_result",
+		"EOF",
+		"      [ \"$kind\" = match ] || exit 1",
+		"      [ -n \"$socket\" ] && [ -n \"$pane\" ] && [ -z \"$extra\" ] || exit 1",
+		"      TMUX= TMUX_PANE= exec tmux -S \"$socket\" -f /dev/null attach-session -t \"$pane\"",
+		"      ;;",
+		"    *)",
+		"      echo \"ars: invalid external tmux result\" >&2",
+		"      exit 1",
+		"      ;;",
+		"  esac",
 		"fi",
 		command + " bind-key -n C-q detach-client",
 		command + " set-option -g status-right " + quotePOSIX(arsruntime.DetachHint()),
