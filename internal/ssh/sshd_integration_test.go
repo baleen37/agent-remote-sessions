@@ -693,7 +693,7 @@ func remoteExternalTmuxSnapshot(t *testing.T, server *ephemeralSSHD, name string
 		keys:     output("list-keys", "-T", "root"),
 		options:  output("show-options", "-g"),
 		sessions: output("list-sessions", "-F", "#{session_id}\\t#{session_name}\\t#{session_attached}\\t#{session_created}"),
-		windows:  output("list-windows", "-a", "-F", "#{session_id}\\t#{window_id}\\t#{window_index}\\t#{window_name}"),
+		windows:  output("list-windows", "-a", "-F", "#{session_id}\\t#{window_id}\\t#{window_index}"),
 		panes:    output("list-panes", "-a", "-F", "#{session_id}\\t#{window_id}\\t#{pane_id}\\t#{pane_index}\\t#{pane_pid}"),
 	}
 }

@@ -132,9 +132,6 @@ func TestRemoteAttachEmbedsSharedExternalResolverBeforeCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := command.command.Args[3]
-	if strings.Contains(script, "\t") {
-		t.Fatalf("remote attach command contains a literal tab:\n%s", script)
-	}
 	has := strings.Index(script, "has-session -t '="+remoteRuntimeKey(item)+"'")
 	resolve := strings.Index(
 		script,
@@ -146,6 +143,13 @@ func TestRemoteAttachEmbedsSharedExternalResolverBeforeCreate(t *testing.T) {
 	}
 	if !strings.Contains(script, "ars-external 'claude' '"+item.NativeID+"'") {
 		t.Fatalf("resolver does not pass provider and ID as separate quoted words:\n%s", script)
+	}
+	resolver := arsruntime.ExternalResolverScript()
+	if !strings.Contains(resolver, "-F '#{session_id}:#{window_index}.#{pane_index}|#{pane_pid}'") {
+		t.Fatalf("resolver does not use a printable pane-table separator:\n%s", resolver)
+	}
+	if !strings.Contains(resolver, `printf 'match\t%s\t%s\n' "$socket" "$pane"`) {
+		t.Fatalf("resolver does not preserve the public tab-separated match protocol:\n%s", resolver)
 	}
 }
 
@@ -184,6 +188,9 @@ func TestRemoteExternalConflictCannotReachNewSession(t *testing.T) {
 	if !strings.Contains(calls, "list-panes -a") {
 		t.Fatalf("remote external conflict did not inspect panes:\n%s", calls)
 	}
+	if !strings.Contains(output, "ars: external tmux conflict") || strings.Contains(output, "invalid external tmux pane table") {
+		t.Fatalf("remote external conflict did not reach the resolver conflict branch; output: %s", output)
+	}
 	for _, forbidden := range []string{"new-session", "bind-key", "set-option", "attach-session"} {
 		if strings.Contains(calls, forbidden) {
 			t.Fatalf("remote external conflict reached a later tmux action %q:\n%s", forbidden, calls)
@@ -195,6 +202,9 @@ func TestRemoteVanishedExternalTargetCannotReachNewSession(t *testing.T) {
 	calls, output, err := runRemoteAttachScriptFixture(t, "vanished")
 	if err == nil {
 		t.Fatalf("remote vanished external target succeeded; output: %s; calls: %s", output, calls)
+	}
+	if !strings.Contains(output, "vanished external target") {
+		t.Fatalf("remote vanished target did not reach external attach; output: %s", output)
 	}
 	for _, want := range []string{"list-panes -a", "attach-session -t $1:0.0"} {
 		if !strings.Contains(calls, want) {
@@ -234,7 +244,7 @@ func runRemoteAttachScriptFixture(t *testing.T, mode string) (string, string, er
 	calls := filepath.Join(root, "tmux-calls")
 	writeRemoteAttachExecutable(t, filepath.Join(bin, "id"), "#!/bin/sh\necho "+strconv.Itoa(uid)+"\n")
 	writeRemoteAttachExecutable(t, filepath.Join(bin, "ps"), "#!/bin/sh\nif [ \"$1\" = -U ]; then printf '100 1 sh\\n101 100 claude\\n'; exit 0; fi\nif [ \"$1\" = -p ]; then printf 'claude --resume 123e4567-e89b-42d3-a456-426614174000\\n'; fi\n")
-	writeRemoteAttachExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$ARS_REMOTE_ATTACH_CALLS\"\nif [ \"$1\" = -L ]; then\n  case \"$5\" in has-session) exit 1 ;; *) exit 0 ;; esac\nfi\nif [ \"$1\" = -S ]; then\n  case \"$5\" in\n    list-panes)\n      [ \"$2\" = \"$ARS_REMOTE_ATTACH_SOCKET\" ] || exit 0\n      case \"$ARS_REMOTE_ATTACH_MODE\" in conflict) printf '$1:0.0\\t100\\n$2:0.0\\t100\\n' ;; *) printf '$1:0.0\\t100\\n' ;; esac\n      exit 0 ;;\n    attach-session) [ \"$ARS_REMOTE_ATTACH_MODE\" = vanished ] && exit 1; exit 0 ;;\n  esac\nfi\nexit 1\n")
+	writeRemoteAttachExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$ARS_REMOTE_ATTACH_CALLS\"\nif [ \"$1\" = -L ]; then\n  case \"$5\" in has-session) exit 1 ;; *) exit 0 ;; esac\nfi\nif [ \"$1\" = -S ]; then\n  case \"$5\" in\n    list-panes)\n      [ \"$2\" = \"$ARS_REMOTE_ATTACH_SOCKET\" ] || exit 0\n      case \"$ARS_REMOTE_ATTACH_MODE\" in conflict) printf '$1:0.0|100\\n$2:0.0|100\\n' ;; *) printf '$1:0.0|100\\n' ;; esac\n      exit 0 ;;\n    attach-session)\n      if [ \"$ARS_REMOTE_ATTACH_MODE\" = vanished ]; then echo 'vanished external target' >&2; exit 1; fi\n      exit 0 ;;\n  esac\nfi\nexit 1\n")
 	item := remoteAttachedSession()
 	attach, err := NewAttachCommand(context.Background(), item.Host, item, remoteClaudeSpec())
 	if err != nil {

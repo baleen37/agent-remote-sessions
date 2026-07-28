@@ -150,7 +150,7 @@ func TestExternalResolverScriptAcceptsZeroSessionID(t *testing.T) {
 	target, found, err := runExternalFixture(t, externalFixture{
 		processes: "100 1 zsh\n101 100 claude\n",
 		args:      map[int]string{101: "claude --resume " + selected},
-		panes:     map[string]string{"default": "$0:0.0\t100\n"},
+		panes:     map[string]string{"default": "$0:0.0|100\n"},
 	}, session.Claude, selected)
 	if err != nil || !found || target.Pane != "$0:0.0" {
 		t.Fatalf("ResolveExternal() = (%#v, %t, %v), want pane %q, true, nil", target, found, err, "$0:0.0")
@@ -190,7 +190,7 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "100 1 zsh\n101 100 claude\n",
 				args:      map[int]string{101: "claude --resume " + selected},
-				panes:     map[string]string{"default": "$1:0.0\t100\n"},
+				panes:     map[string]string{"default": "$1:0.0|100\n"},
 			},
 			wantPane: "$1:0.0", wantSocket: "default", wantFound: true,
 		},
@@ -200,7 +200,7 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "110 1 zsh\n111 110 /Applications/Claude Code/claude\n",
 				args:      map[int]string{111: "/Applications/Claude Code/claude --resume " + selected},
-				panes:     map[string]string{"default": "$11:0.0\t110\n"},
+				panes:     map[string]string{"default": "$11:0.0|110\n"},
 			},
 			wantPane: "$11:0.0", wantSocket: "default", wantFound: true,
 		},
@@ -210,7 +210,7 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "200 1 zsh\n201 200 env\n202 201 codex\n",
 				args:      map[int]string{202: "codex resume " + selected},
-				panes:     map[string]string{"default": "$2:1.0\t200\n"},
+				panes:     map[string]string{"default": "$2:1.0|200\n"},
 			},
 			wantPane: "$2:1.0", wantSocket: "default", wantFound: true,
 		},
@@ -218,14 +218,14 @@ func TestExternalResolverScript(t *testing.T) {
 			name: "bare provider", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "300 1 claude\n", args: map[int]string{300: "claude"},
-				panes: map[string]string{"default": "$3:0.0\t300\n"},
+				panes: map[string]string{"default": "$3:0.0|300\n"},
 			},
 		},
 		{
 			name: "shell text is not provider process", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "400 1 sh\n", args: map[int]string{400: "sh -c echo claude --resume " + selected},
-				panes: map[string]string{"default": "$4:0.0\t400\n"},
+				panes: map[string]string{"default": "$4:0.0|400\n"},
 			},
 		},
 		{
@@ -233,7 +233,7 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "500 1 claude\n600 1 claude\n",
 				args:      map[int]string{500: "claude --resume " + selected, 600: "claude --resume " + selected},
-				panes:     map[string]string{"default": "$5:0.0\t500\n", "other": "$6:0.0\t600\n"},
+				panes:     map[string]string{"default": "$5:0.0|500\n", "other": "$6:0.0|600\n"},
 			},
 			wantError: "external tmux conflict",
 		},
@@ -246,7 +246,7 @@ func TestExternalResolverScript(t *testing.T) {
 			name: "rejects symlinked socket", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "700 1 claude\n", args: map[int]string{700: "claude --resume " + selected},
-				panes: map[string]string{"default": "$7:0.0\t700\n"}, symlinkSocket: "default",
+				panes: map[string]string{"default": "$7:0.0|700\n"}, symlinkSocket: "default",
 			},
 			wantError: "resolve external tmux",
 		},
@@ -254,7 +254,7 @@ func TestExternalResolverScript(t *testing.T) {
 			name: "rejects symlinked socket directory", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "800 1 claude\n", args: map[int]string{800: "claude --resume " + selected},
-				panes: map[string]string{"default": "$8:0.0\t800\n"}, symlinkDirectory: true,
+				panes: map[string]string{"default": "$8:0.0|800\n"}, symlinkDirectory: true,
 			},
 			wantError: "resolve external tmux",
 		},
@@ -262,7 +262,7 @@ func TestExternalResolverScript(t *testing.T) {
 			name: "rejects socket owned by another user", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "900 1 claude\n", args: map[int]string{900: "claude --resume " + selected},
-				panes: map[string]string{"default": "$9:0.0\t900\n"}, badOwner: "default",
+				panes: map[string]string{"default": "$9:0.0|900\n"}, badOwner: "default",
 			},
 			wantError: "resolve external tmux",
 		},
@@ -290,17 +290,17 @@ func TestExternalResolverScriptRejectsBoundaries(t *testing.T) {
 		name    string
 		fixture externalFixture
 	}{
-		{name: "65 sockets", fixture: externalFixture{panes: externalPanes(65, "$1:0.0\t1\n")}},
-		{name: "16385 panes", fixture: externalFixture{panes: map[string]string{"default": externalRows(16_385, "$1:0.", "\t1\n")}}},
+		{name: "65 sockets", fixture: externalFixture{panes: externalPanes(65, "$1:0.0|1\n")}},
+		{name: "16385 panes", fixture: externalFixture{panes: map[string]string{"default": externalRows(16_385, "$1:0.", "|1\n")}}},
 		{name: "16385 panes across sockets", fixture: externalFixture{panes: map[string]string{
-			"first":  externalRows(8_192, "$1:0.", "\t1\n"),
-			"second": externalRows(8_193, "$1:0.", "\t1\n"),
+			"first":  externalRows(8_192, "$1:0.", "|1\n"),
+			"second": externalRows(8_193, "$1:0.", "|1\n"),
 		}}},
 		{name: "65537 processes", fixture: externalFixture{processes: externalProcesses(65_537)}},
-		{name: "257 deep chain", fixture: externalFixture{processes: externalChain(258, selected), args: map[int]string{258: "claude --resume " + selected}, panes: map[string]string{"default": "$1:0.0\t1\n"}}},
+		{name: "257 deep chain", fixture: externalFixture{processes: externalChain(258, selected), args: map[int]string{258: "claude --resume " + selected}, panes: map[string]string{"default": "$1:0.0|1\n"}}},
 		{name: "malformed process", fixture: externalFixture{processes: "bad row\n"}},
 		{name: "malformed pane", fixture: externalFixture{panes: map[string]string{"default": "$1:0.0 bad\n"}}},
-		{name: "oversized pane output", fixture: externalFixture{panes: map[string]string{"default": strings.Repeat("$1:0.0\t1\n", maxInspectOutputBytes/9+1)}}},
+		{name: "oversized pane output", fixture: externalFixture{panes: map[string]string{"default": strings.Repeat("$1:0.0|1\n", maxInspectOutputBytes/9+1)}}},
 		{name: "oversized process output", fixture: externalFixture{processes: strings.Repeat("1 0 sh\n", maxInspectOutputBytes/7+1)}},
 	}
 	for _, test := range tests {
@@ -320,7 +320,7 @@ func TestExternalResolverScriptBoundsCandidateAncestryWork(t *testing.T) {
 	_, found, err := runExternalFixtureContext(t, ctx, externalFixture{
 		processes: externalCandidateChains(80, 256),
 		args:      externalCandidateChainArgs(80, 256, selected),
-		panes:     map[string]string{"default": "$1:0.0\t1\n"},
+		panes:     map[string]string{"default": "$1:0.0|1\n"},
 	}, session.Claude, selected)
 	if err == nil || found || !strings.Contains(err.Error(), "external tmux resolver work exceeds limit") {
 		t.Fatalf("ResolveExternal() = found %t, err %v, want bounded work error", found, err)
