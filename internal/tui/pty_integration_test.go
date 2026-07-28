@@ -292,7 +292,8 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 		CWD:       root,
 		Title:     "PTY fixture provider",
 	}
-	runner := ptyTempTmuxRunner{tempDir: tmuxTemp}
+	tmuxRunner := ptyTempTmuxRunner{tempDir: tmuxTemp}
+	runner := newPTYARSCreateRunner(tmuxRunner)
 	socket := filepath.Join(tmuxTemp, "tmux-"+strconv.Itoa(os.Getuid()), arsruntime.SocketName())
 	providerPID := 0
 	cleaned := false
@@ -300,7 +301,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 		if cleaned {
 			return
 		}
-		if err := cleanupPTYFixture(runner, socket, providerPID); err != nil {
+		if err := cleanupPTYFixture(tmuxRunner, socket, providerPID); err != nil {
 			t.Errorf("cleanup PTY ARS tmux: %v", err)
 			return
 		}
@@ -384,6 +385,7 @@ func runPTYAttachDetachFixture(t *testing.T) ptyAttachDetachResult {
 	if _, err := master.Write([]byte{'\r'}); err != nil {
 		t.Fatalf("write Enter to attach: %v", err)
 	}
+	waitForPTYARSCreate(t, runner.created, runDone, &capture)
 	beforePID := waitForPTYPID(t, pidPath, runDone, &capture)
 	providerPID = beforePID
 	waitForPTYOutput(t, &capture, runDone, func(value string) bool {
@@ -476,6 +478,51 @@ func (capture *ptyCapture) String() string {
 }
 
 type ptyTempTmuxRunner struct{ tempDir string }
+
+type ptyARSCreateRunner struct {
+	arsruntime.Runner
+	created chan struct{}
+	once    sync.Once
+}
+
+func newPTYARSCreateRunner(runner arsruntime.Runner) *ptyARSCreateRunner {
+	return &ptyARSCreateRunner{Runner: runner, created: make(chan struct{})}
+}
+
+func (runner *ptyARSCreateRunner) Run(
+	ctx context.Context,
+	command arsruntime.Command,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+) error {
+	err := runner.Runner.Run(ctx, command, stdin, stdout, stderr)
+	if command.Name == "tmux" && len(command.Args) > 4 && command.Args[4] == "new-session" {
+		runner.once.Do(func() { close(runner.created) })
+	}
+	return err
+}
+
+func waitForPTYARSCreate(
+	t *testing.T,
+	created <-chan struct{},
+	runDone <-chan error,
+	capture *ptyCapture,
+) {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("test deadline is required to wait for ARS creation")
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-created:
+	case err := <-runDone:
+		t.Fatalf("TUI exited before ARS creation: %v; output: %q", err, capture.String())
+	case <-timer.C:
+		t.Fatalf("ARS creation did not finish before test deadline; output: %q", capture.String())
+	}
+}
 
 func cleanupPTYFixture(runner ptyTempTmuxRunner, socket string, providerPID int) error {
 	if !ptyPathExists(socket) && providerPID == 0 {
