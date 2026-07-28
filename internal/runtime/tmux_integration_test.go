@@ -52,6 +52,15 @@ func TestDisposableTmuxSetsStatusOptionsWhileAttached(t *testing.T) {
 }
 
 func TestDisposableTmuxReusesExternalProviderWithoutDetachingExistingClient(t *testing.T) {
+	testDisposableTmuxReusesExternalProvider(t, 0, 5*time.Second)
+}
+
+func TestDisposableTmuxStartsClientWaitAfterExternalAttachStarts(t *testing.T) {
+	testDisposableTmuxReusesExternalProvider(t, 750*time.Millisecond, 500*time.Millisecond)
+}
+
+func testDisposableTmuxReusesExternalProvider(t *testing.T, resolverDelay, clientWait time.Duration) {
+	t.Helper()
 	fixture := newDisposableTmuxFixture(t)
 	external := newExternalTmuxFixture(t, fixture)
 
@@ -71,10 +80,19 @@ func TestDisposableTmuxReusesExternalProviderWithoutDetachingExistingClient(t *t
 			firstTerminal, firstTerminal, firstTerminal,
 		)
 	}()
-	external.waitForAttachedClients(t, 1, firstDone)
+	external.waitForAttachedClients(t, 1, 5*time.Second, nil, firstDone)
 	before := external.snapshot(t)
 
-	command, err := NewAttachCommand(context.Background(), fixture.runner, fixture.item, provider.ResumeSpec{
+	attachBase := Runner(fixture.runner)
+	if resolverDelay > 0 {
+		attachBase = resolverDelayRunner{
+			Runner: attachBase,
+			delay:  resolverDelay,
+			output: []byte("match\t" + external.socket + "\t" + external.paneID(t) + "\n"),
+		}
+	}
+	attachRunner := newExternalAttachStartRunner(attachBase)
+	command, err := NewAttachCommand(context.Background(), attachRunner, fixture.item, provider.ResumeSpec{
 		Executable: "claude",
 		Args:       []string{"--resume", fixture.item.NativeID},
 	})
@@ -96,7 +114,12 @@ func TestDisposableTmuxReusesExternalProviderWithoutDetachingExistingClient(t *t
 	secondDone := make(chan error, 1)
 	go func() { secondDone <- command.Run() }()
 
-	external.waitForAttachedClients(t, 2, secondDone)
+	waitForExternalAttachStart(t, attachRunner.started, secondDone, func() string {
+		return external.attachDiagnostic(fixture)
+	})
+	external.waitForAttachedClients(t, 2, clientWait, func() string {
+		return external.attachDiagnostic(fixture)
+	}, secondDone)
 	if pid := waitForProviderPID(t, external.pidPath); pid != external.providerPID {
 		t.Fatalf("external provider restarted: %d -> %d", external.providerPID, pid)
 	}
@@ -115,7 +138,7 @@ func TestDisposableTmuxReusesExternalProviderWithoutDetachingExistingClient(t *t
 	case <-time.After(5 * time.Second):
 		t.Fatal("external attach command did not return after Ctrl+B d")
 	}
-	external.waitForAttachedClients(t, 1)
+	external.waitForAttachedClients(t, 1, 5*time.Second, nil)
 	if after := external.snapshot(t); after != before {
 		t.Fatalf("external tmux changed:\nbefore: %#v\nafter:  %#v", before, after)
 	}
@@ -142,6 +165,13 @@ func TestExternalTmuxSnapshotDetectsWindowPaneAndGlobalOptionChanges(t *testing.
 	); err != nil {
 		t.Fatalf("create external review window: %v", err)
 	}
+	afterWindow := external.snapshot(t)
+	if afterWindow.windows == before.windows {
+		t.Fatal("external snapshot ignored window changes")
+	}
+	if afterWindow.panes == before.panes {
+		t.Fatal("external snapshot ignored pane changes")
+	}
 	if err := external.runner.Run(
 		context.Background(),
 		externalTmuxCommand("set-option", "-g", "status-left", "review-left"),
@@ -149,8 +179,8 @@ func TestExternalTmuxSnapshotDetectsWindowPaneAndGlobalOptionChanges(t *testing.
 	); err != nil {
 		t.Fatalf("set external review option: %v", err)
 	}
-	if after := external.snapshot(t); after == before {
-		t.Fatal("external snapshot ignored window, pane, or global option changes")
+	if afterOptions := external.snapshot(t); afterOptions.globalOptions == afterWindow.globalOptions {
+		t.Fatal("external snapshot ignored global option changes")
 	}
 }
 
@@ -332,16 +362,69 @@ func externalTmuxCommand(args ...string) Command {
 	}
 }
 
-func (external *externalTmuxFixture) waitForAttachedClients(t *testing.T, want int, dones ...<-chan error) {
+type resolverDelayRunner struct {
+	Runner
+	delay  time.Duration
+	output []byte
+}
+
+func (runner resolverDelayRunner) Output(ctx context.Context, command Command) ([]byte, error) {
+	if command.Name == "/bin/sh" {
+		select {
+		case <-time.After(runner.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return append([]byte(nil), runner.output...), nil
+	}
+	return runner.Runner.Output(ctx, command)
+}
+
+type externalAttachStartRunner struct {
+	Runner
+	started chan struct{}
+	once    sync.Once
+}
+
+func newExternalAttachStartRunner(runner Runner) *externalAttachStartRunner {
+	return &externalAttachStartRunner{Runner: runner, started: make(chan struct{})}
+}
+
+func (runner *externalAttachStartRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
+	if command.Name == "tmux" && len(command.Args) > 4 && command.Args[0] == "-S" && command.Args[4] == "attach-session" {
+		runner.once.Do(func() { close(runner.started) })
+	}
+	return runner.Runner.Run(ctx, command, stdin, stdout, stderr)
+}
+
+func waitForExternalAttachStart(t *testing.T, started <-chan struct{}, done <-chan error, diagnostic func() string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("test deadline is required to wait for external attach start")
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-started:
+		return
+	case err := <-done:
+		t.Fatalf("external attach exited before starting: %v\n%s", err, diagnosticText(diagnostic))
+	case <-timer.C:
+		t.Fatalf("external attach did not start before test deadline\n%s", diagnosticText(diagnostic))
+	}
+}
+
+func (external *externalTmuxFixture) waitForAttachedClients(t *testing.T, want int, deadline time.Duration, diagnostic func() string, dones ...<-chan error) {
+	t.Helper()
+	until := time.Now().Add(deadline)
 	var lastOutput []byte
 	var lastErr error
-	for time.Now().Before(deadline) {
+	for time.Now().Before(until) {
 		for _, done := range dones {
 			select {
 			case err := <-done:
-				t.Fatalf("external client exited before attached clients became %d: %v", want, err)
+				t.Fatalf("external client exited before attached clients became %d: %v\n%s", want, err, diagnosticText(diagnostic))
 			default:
 			}
 		}
@@ -352,7 +435,44 @@ func (external *externalTmuxFixture) waitForAttachedClients(t *testing.T, want i
 		lastOutput, lastErr = output, err
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("external attached clients did not become %d: output %q, error %v", want, lastOutput, lastErr)
+	t.Fatalf("external attached clients did not become %d: output %q, error %v\n%s", want, lastOutput, lastErr, diagnosticText(diagnostic))
+}
+
+func diagnosticText(diagnostic func() string) string {
+	if diagnostic == nil {
+		return ""
+	}
+	return diagnostic()
+}
+
+func (external *externalTmuxFixture) attachDiagnostic(fixture *disposableTmuxFixture) string {
+	query := func(args ...string) string {
+		output, err := external.runner.Output(context.Background(), externalTmuxCommand(args...))
+		return fmt.Sprintf("output=%q error=%v", output, err)
+	}
+	target, found, resolveErr := ResolveExternal(context.Background(), fixture.runner, fixture.item.Provider, fixture.item.NativeID)
+	arsErr := fixture.runner.Run(context.Background(), hasSession(Key(string(fixture.item.Provider), fixture.item.NativeID)), nil, io.Discard, io.Discard)
+	providerAlive := processExists(external.providerPID) == nil
+	return fmt.Sprintf(
+		"external socket=%t provider pid=%d alive=%t\nresolver target=%#v found=%t error=%v\nARS has-session error=%v\nexternal clients: %s\nexternal sessions: %s",
+		pathExists(external.socket), external.providerPID, providerAlive,
+		target, found, resolveErr, arsErr,
+		query("list-clients", "-F", "#{client_pid}\t#{client_tty}\t#{client_session}"),
+		query("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_attached}"),
+	)
+}
+
+func (external *externalTmuxFixture) paneID(t *testing.T) string {
+	t.Helper()
+	output, err := external.runner.Output(context.Background(), externalTmuxCommand("list-panes", "-t", "=external", "-F", "#{session_id}:#{window_index}.#{pane_index}"))
+	if err != nil {
+		t.Fatalf("read external pane id: %v", err)
+	}
+	pane := strings.TrimSpace(string(output))
+	if !validExternalPane(pane) {
+		t.Fatalf("invalid external pane id: %q", pane)
+	}
+	return pane
 }
 
 func (external *externalTmuxFixture) snapshot(t *testing.T) externalTmuxSnapshot {
