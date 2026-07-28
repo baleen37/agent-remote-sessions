@@ -58,19 +58,49 @@ func (command *AttachCommand) SetStderr(stderr io.Writer) { command.stderr = std
 
 func (command *AttachCommand) Run() error {
 	name := Key(string(command.item.Provider), command.item.NativeID)
-	if err := command.runner.Run(command.ctx, hasSession(name), nil, io.Discard, io.Discard); err != nil {
-		if createErr := command.runner.Run(
+	if err := command.runner.Run(command.ctx, hasSession(name), nil, io.Discard, io.Discard); err == nil {
+		return command.attachARS(name)
+	}
+	external, found, err := ResolveExternal(
+		command.ctx,
+		command.runner,
+		command.item.Provider,
+		command.item.NativeID,
+	)
+	if err != nil {
+		return err
+	}
+	if found {
+		return command.runner.Run(
 			command.ctx,
-			newSession(name, command.item.CWD, command.spec),
-			nil,
-			io.Discard,
+			externalAttach(external),
+			command.stdin,
+			command.stdout,
 			command.stderr,
-		); createErr != nil {
-			if checkErr := command.runner.Run(command.ctx, hasSession(name), nil, io.Discard, io.Discard); checkErr != nil {
-				return fmt.Errorf("create runtime: %w", createErr)
-			}
+		)
+	}
+	if err := command.createARS(name); err != nil {
+		return err
+	}
+	return command.attachARS(name)
+}
+
+func (command *AttachCommand) createARS(name string) error {
+	if createErr := command.runner.Run(
+		command.ctx,
+		newSession(name, command.item.CWD, command.spec),
+		nil,
+		io.Discard,
+		command.stderr,
+	); createErr != nil {
+		if checkErr := command.runner.Run(command.ctx, hasSession(name), nil, io.Discard, io.Discard); checkErr != nil {
+			return fmt.Errorf("create runtime: %w", createErr)
 		}
 	}
+	return nil
+}
+
+func (command *AttachCommand) attachARS(name string) error {
 	if err := command.runner.Run(command.ctx, bindDetach(), nil, io.Discard, command.stderr); err != nil {
 		return fmt.Errorf("bind detach key: %w", err)
 	}
@@ -87,6 +117,18 @@ func (command *AttachCommand) Run() error {
 		command.stdout,
 		command.stderr,
 	)
+}
+
+func externalAttach(target ExternalTarget) Command {
+	return Command{
+		Name: "tmux",
+		Args: []string{
+			"-S", target.Socket,
+			"-f", "/dev/null",
+			"attach-session", "-t", target.Pane,
+		},
+		Env: []string{"TMUX=", "TMUX_PANE="},
+	}
 }
 
 func hasSession(name string) Command {

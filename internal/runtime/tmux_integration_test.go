@@ -51,6 +51,85 @@ func TestDisposableTmuxSetsStatusOptionsWhileAttached(t *testing.T) {
 	fixture.defaultTmux.assertUnchanged(t)
 }
 
+func TestDisposableTmuxReusesExternalProviderWithoutDetachingExistingClient(t *testing.T) {
+	fixture := newDisposableTmuxFixture(t)
+	external := newExternalTmuxFixture(t, fixture)
+
+	firstMaster, firstTerminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = firstMaster.Close()
+		_ = firstTerminal.Close()
+	})
+	go func() { _, _ = io.Copy(io.Discard, firstMaster) }()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- external.runner.Run(
+			context.Background(), externalTmuxCommand("attach-session", "-t", "=external"),
+			firstTerminal, firstTerminal, firstTerminal,
+		)
+	}()
+	external.waitForAttachedClients(t, 1, firstDone)
+	before := external.snapshot(t)
+
+	command, err := NewAttachCommand(context.Background(), fixture.runner, fixture.item, provider.ResumeSpec{
+		Executable: "claude",
+		Args:       []string{"--resume", fixture.item.NativeID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondMaster, secondTerminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = secondMaster.Close()
+		_ = secondTerminal.Close()
+	})
+	go func() { _, _ = io.Copy(io.Discard, secondMaster) }()
+	command.SetStdin(secondTerminal)
+	command.SetStdout(secondTerminal)
+	command.SetStderr(secondTerminal)
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- command.Run() }()
+
+	external.waitForAttachedClients(t, 2, secondDone)
+	if pid := waitForProviderPID(t, external.pidPath); pid != external.providerPID {
+		t.Fatalf("external provider restarted: %d -> %d", external.providerPID, pid)
+	}
+	if err := fixture.runner.Run(context.Background(), hasSession(Key(string(fixture.item.Provider), fixture.item.NativeID)), nil, io.Discard, io.Discard); err == nil {
+		t.Fatal("ARS created a runtime for an external provider")
+	}
+
+	if _, err := secondMaster.Write([]byte{0x02, 'd'}); err != nil {
+		t.Fatalf("detach external ARS-driven client: %v", err)
+	}
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("external attach command after Ctrl+B d: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("external attach command did not return after Ctrl+B d")
+	}
+	external.waitForAttachedClients(t, 1)
+	if after := external.snapshot(t); after != before {
+		t.Fatalf("external tmux changed:\nbefore: %#v\nafter:  %#v", before, after)
+	}
+
+	external.cleanup(t)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original external client did not exit during cleanup")
+	}
+	fixture.cleanupARSServer(t)
+	fixture.defaultTmux.assertUnchanged(t)
+}
+
 func TestOwnedTmuxCleanupReportsKillError(t *testing.T) {
 	want := errors.New("kill failed")
 	err := cleanupOwnedTmux(context.Background(), func(context.Context) error { return want }, "unused", 0)
@@ -95,11 +174,12 @@ func newDisposableTmuxFixture(t *testing.T) *disposableTmuxFixture {
 	// combined with t.TempDir()'s test-name-derived prefix.
 	t.Setenv("ARS_TMUX_SOCKET", "a"+strconv.Itoa(os.Getpid()%100000))
 	root := t.TempDir()
-	tmuxTemp := filepath.Join(root, "tmux")
-	bin := filepath.Join(root, "bin")
-	if err := os.MkdirAll(tmuxTemp, 0o700); err != nil {
+	tmuxTemp, err := os.MkdirTemp("", "ars-tmux-")
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmuxTemp) })
+	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +193,13 @@ func newDisposableTmuxFixture(t *testing.T) *disposableTmuxFixture {
 	if err := os.WriteFile(providerPath, []byte(providerScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	tmuxWrapper := "#!/bin/sh\nif [ \"$1\" = -S ]; then\n  case \"$2\" in /tmp/tmux-" + strconv.Itoa(os.Getuid()) + "/*) exit 0 ;; esac\nfi\nexec \"$ARS_TEST_REAL_TMUX\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(tmuxWrapper), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ARS_TEST_REAL_TMUX", tmux)
+	t.Setenv("TMUX_TMPDIR", tmuxTemp)
 	t.Setenv("ARS_TEST_PROVIDER_PID", pidPath)
 	t.Setenv("TERM", "xterm-256color")
 
@@ -141,6 +227,140 @@ func newDisposableTmuxFixture(t *testing.T) *disposableTmuxFixture {
 		fixture.cleanupARSServer(t)
 	})
 	return fixture
+}
+
+type externalTmuxFixture struct {
+	runner      tempTmuxRunner
+	pidPath     string
+	providerPID int
+	socket      string
+	cleaned     bool
+}
+
+type externalTmuxSnapshot struct {
+	sessions       string
+	keys           string
+	statusRight    string
+	statusInterval string
+}
+
+func newExternalTmuxFixture(t *testing.T, fixture *disposableTmuxFixture) *externalTmuxFixture {
+	t.Helper()
+	providerPath := filepath.Join(filepath.Dir(fixture.pidPath), "bin", "claude")
+	if err := os.Remove(providerPath); err != nil {
+		t.Fatal(err)
+	}
+	buildExternalProvider(t, providerPath)
+	pidPath := filepath.Join(filepath.Dir(fixture.pidPath), "external-provider.pid")
+	t.Setenv("ARS_TEST_EXTERNAL_PROVIDER_PID", pidPath)
+	external := &externalTmuxFixture{
+		runner:  fixture.runner,
+		pidPath: pidPath,
+		socket: filepath.Join(
+			fixture.runner.tempDir,
+			"tmux-"+strconv.Itoa(os.Getuid()),
+			"external",
+		),
+	}
+	if err := external.runner.Run(
+		context.Background(),
+		externalTmuxCommand("new-session", "-d", "-s", "external", "-c", filepath.Dir(fixture.pidPath), providerPath, "--resume", fixture.item.NativeID),
+		nil, io.Discard, io.Discard,
+	); err != nil {
+		t.Fatalf("start external tmux provider: %v", err)
+	}
+	external.providerPID = waitForProviderPID(t, pidPath)
+	t.Cleanup(func() { external.cleanup(t) })
+	return external
+}
+
+func buildExternalProvider(t *testing.T, path string) {
+	t.Helper()
+	source := path + ".go"
+	program := `package main
+import (
+	"os"
+	"strconv"
+	"time"
+)
+func main() {
+	if path := os.Getenv("ARS_TEST_EXTERNAL_PROVIDER_PID"); path != "" {
+		if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil { panic(err) }
+	}
+	for { time.Sleep(time.Hour) }
+}
+`
+	if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-o", path, source)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build external provider: %v: %s", err, output)
+	}
+}
+
+func externalTmuxCommand(args ...string) Command {
+	return Command{
+		Name: "tmux",
+		Args: append([]string{"-L", "external", "-f", "/dev/null"}, args...),
+		Env:  []string{"TMUX=", "TMUX_PANE="},
+	}
+}
+
+func (external *externalTmuxFixture) waitForAttachedClients(t *testing.T, want int, dones ...<-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastOutput []byte
+	var lastErr error
+	for time.Now().Before(deadline) {
+		for _, done := range dones {
+			select {
+			case err := <-done:
+				t.Fatalf("external client exited before attached clients became %d: %v", want, err)
+			default:
+			}
+		}
+		output, err := external.runner.Output(context.Background(), externalTmuxCommand("list-sessions", "-F", "#{session_attached}"))
+		if err == nil && strings.TrimSpace(string(output)) == strconv.Itoa(want) {
+			return
+		}
+		lastOutput, lastErr = output, err
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("external attached clients did not become %d: output %q, error %v", want, lastOutput, lastErr)
+}
+
+func (external *externalTmuxFixture) snapshot(t *testing.T) externalTmuxSnapshot {
+	t.Helper()
+	output := func(args ...string) string {
+		value, err := external.runner.Output(context.Background(), externalTmuxCommand(args...))
+		if err != nil {
+			t.Fatalf("external tmux %q: %v", args, err)
+		}
+		return string(value)
+	}
+	return externalTmuxSnapshot{
+		sessions:       output("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_created}"),
+		keys:           output("list-keys", "-T", "root"),
+		statusRight:    output("show-options", "-g", "-v", "status-right"),
+		statusInterval: output("show-options", "-g", "-v", "status-interval"),
+	}
+}
+
+func (external *externalTmuxFixture) cleanup(t *testing.T) {
+	t.Helper()
+	if external.cleaned {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := cleanupOwnedTmux(ctx, func(ctx context.Context) error {
+		return external.runner.Run(ctx, externalTmuxCommand("kill-server"), nil, io.Discard, io.Discard)
+	}, external.socket, external.providerPID)
+	if err != nil {
+		t.Fatalf("cleanup external tmux: %v", err)
+	}
+	external.cleaned = true
 }
 
 func (fixture *disposableTmuxFixture) attachAndDetach(t *testing.T) int {
@@ -463,7 +683,7 @@ func pathExists(path string) bool {
 type tempTmuxRunner struct{ tempDir string }
 
 func (runner tempTmuxRunner) Output(ctx context.Context, command Command) ([]byte, error) {
-	return SystemRunner{}.Output(ctx, runner.command(command))
+	return externalSystemRunner{}.Output(ctx, runner.command(command))
 }
 
 func (runner tempTmuxRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {

@@ -16,7 +16,10 @@ import (
 )
 
 func TestAttachCommandCreatesBindsAndAttachesOnce(t *testing.T) {
-	runner := &attachRunner{hasErrors: []error{attachExitError{code: 1}}}
+	runner := &attachRunner{
+		hasErrors: []error{attachExitError{code: 1}},
+		outputs:   [][]byte{[]byte("none\n")},
+	}
 	item := attachedSession()
 	command, err := NewAttachCommand(context.Background(), runner, item, claudeSpec())
 	if err != nil {
@@ -34,6 +37,7 @@ func TestAttachCommandCreatesBindsAndAttachesOnce(t *testing.T) {
 	key := Key(string(item.Provider), item.NativeID)
 	want := []Command{
 		tmuxCommand("has-session", "-t", "="+key),
+		externalResolveCommand(),
 		tmuxCommand("new-session", "-d", "-s", key, "-c", item.CWD, "claude", "--resume", item.NativeID),
 		tmuxCommand("bind-key", "-n", "C-q", "detach-client"),
 		tmuxCommand("set-option", "-g", "status-right", DetachHint()),
@@ -138,10 +142,134 @@ func TestAttachCommandDoesNotRestartExistingRuntime(t *testing.T) {
 	}
 }
 
+func TestAttachCommandReusesUniqueExternalPane(t *testing.T) {
+	runner := &attachRunner{
+		hasErrors: []error{attachExitError{code: 1}},
+		outputs: [][]byte{
+			[]byte("match\t/private/tmp/tmux-502/default\t$19:0.1\n"),
+		},
+	}
+	command, err := NewAttachCommand(context.Background(), runner, attachedSession(), claudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin := strings.NewReader("input")
+	command.SetStdin(stdin)
+	command.SetStdout(io.Discard)
+	command.SetStderr(io.Discard)
+
+	if err := command.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(runner.commandNames(), "new-session") ||
+		slices.Contains(runner.commandNames(), "bind-key") ||
+		slices.Contains(runner.commandNames(), "set-option") {
+		t.Fatalf("external attach mutated ARS server: %v", runner.commandNames())
+	}
+	want := Command{
+		Name: "tmux",
+		Args: []string{
+			"-S", "/private/tmp/tmux-502/default", "-f", "/dev/null",
+			"attach-session", "-t", "$19:0.1",
+		},
+		Env: []string{"TMUX=", "TMUX_PANE="},
+	}
+	got := runner.commands[len(runner.commands)-1]
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("external attach = %#v, want %#v", got, want)
+	}
+	if runner.calls[len(runner.calls)-1].stdin != stdin ||
+		runner.calls[len(runner.calls)-1].stdout != io.Discard ||
+		runner.calls[len(runner.calls)-1].stderr != io.Discard {
+		t.Fatal("external attach lost terminal streams")
+	}
+	for _, command := range runner.commands {
+		if command.Name != "tmux" || len(command.Args) < 5 || command.Args[0] != "-S" {
+			continue
+		}
+		if slices.Contains(command.Args, "-d") || slices.Contains(command.Args, "C-q") {
+			t.Fatalf("external attach forced detach or changed Ctrl+Q: %#v", command)
+		}
+	}
+}
+
+func TestAttachCommandCreatesARSRuntimeAfterCompleteExternalMiss(t *testing.T) {
+	runAttachExternalCase(t, attachExternalCase{
+		runner: &attachRunner{
+			hasErrors: []error{attachExitError{code: 1}},
+			outputs:   [][]byte{[]byte("none\n")},
+		},
+		wantOperations: []string{"has-session", "resolve-external", "new-session", "bind-key", "set-option", "set-option", "attach-session"},
+	})
+}
+
+func TestAttachCommandKeepsExistingARSRuntimeAheadOfExternalProbe(t *testing.T) {
+	runAttachExternalCase(t, attachExternalCase{
+		runner:         &attachRunner{hasErrors: []error{nil}},
+		wantOperations: []string{"has-session", "bind-key", "set-option", "set-option", "attach-session"},
+	})
+}
+
+func TestAttachCommandDoesNotCreateAfterExternalResolverFailure(t *testing.T) {
+	resolverErr := errors.New("resolver failed")
+	runAttachExternalCase(t, attachExternalCase{
+		runner: &attachRunner{
+			hasErrors:    []error{attachExitError{code: 1}},
+			outputErrors: []error{resolverErr},
+		},
+		wantOperations: []string{"has-session", "resolve-external"},
+		wantErr:        resolverErr,
+	})
+}
+
+func TestAttachCommandDoesNotFallbackAfterExternalAttachFailure(t *testing.T) {
+	attachErr := errors.New("external attach failed")
+	runAttachExternalCase(t, attachExternalCase{
+		runner: &attachRunner{
+			hasErrors: []error{attachExitError{code: 1}},
+			outputs: [][]byte{
+				[]byte("match\t/private/tmp/tmux-502/default\t$19:0.1\n"),
+			},
+			nameErrors: map[string][]error{"attach-session": {attachErr}},
+		},
+		wantOperations: []string{"has-session", "resolve-external", "attach-session"},
+		wantErr:        attachErr,
+	})
+}
+
+type attachExternalCase struct {
+	runner         *attachRunner
+	wantOperations []string
+	wantErr        error
+}
+
+func runAttachExternalCase(t *testing.T, test attachExternalCase) {
+	t.Helper()
+	command, err := NewAttachCommand(context.Background(), test.runner, attachedSession(), claudeSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.SetStdin(strings.NewReader(""))
+	command.SetStdout(io.Discard)
+	command.SetStderr(io.Discard)
+
+	err = command.Run()
+	if test.wantErr == nil && err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+		t.Fatalf("Run() error = %v, want %v", err, test.wantErr)
+	}
+	if got := test.runner.commandNames(); !slices.Equal(got, test.wantOperations) {
+		t.Fatalf("operations = %v, want %v", got, test.wantOperations)
+	}
+}
+
 func TestAttachCommandRechecksAfterConcurrentCreate(t *testing.T) {
 	createErr := attachExitError{code: 1}
 	runner := &attachRunner{
 		hasErrors: []error{attachExitError{code: 1}, nil},
+		outputs:   [][]byte{[]byte("none\n")},
 		nameErrors: map[string][]error{
 			"new-session": {createErr},
 		},
@@ -157,7 +285,7 @@ func TestAttachCommandRechecksAfterConcurrentCreate(t *testing.T) {
 	if err := command.Run(); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	want := []string{"has-session", "new-session", "has-session", "bind-key", "set-option", "set-option", "attach-session"}
+	want := []string{"has-session", "resolve-external", "new-session", "has-session", "bind-key", "set-option", "set-option", "attach-session"}
 	if !slices.Equal(runner.commandNames(), want) {
 		t.Fatalf("commands = %v, want %v", runner.commandNames(), want)
 	}
@@ -167,6 +295,7 @@ func TestAttachCommandReturnsCreateErrorWhenRaceCheckFails(t *testing.T) {
 	createErr := attachExitError{code: 23}
 	runner := &attachRunner{
 		hasErrors: []error{attachExitError{code: 1}, attachExitError{code: 1}},
+		outputs:   [][]byte{[]byte("none\n")},
 		nameErrors: map[string][]error{
 			"new-session": {createErr},
 		},
@@ -243,6 +372,14 @@ func tmuxCommand(args ...string) Command {
 	}
 }
 
+func externalResolveCommand() Command {
+	return Command{
+		Name: "/bin/sh",
+		Args: []string{"-c", ExternalResolverScript(), "ars-external", "claude", attachedSession().NativeID},
+		Env:  []string{"TMUX=", "TMUX_PANE="},
+	}
+}
+
 type attachCall struct {
 	stdin  io.Reader
 	stdout io.Writer
@@ -250,20 +387,36 @@ type attachCall struct {
 }
 
 type attachRunner struct {
-	commands   []Command
-	calls      []attachCall
-	hasErrors  []error
-	nameErrors map[string][]error
+	commands     []Command
+	calls        []attachCall
+	hasErrors    []error
+	nameErrors   map[string][]error
+	outputs      [][]byte
+	outputErrors []error
 }
 
-func (*attachRunner) Output(context.Context, Command) ([]byte, error) {
-	return nil, errors.New("unexpected Output call")
+func (runner *attachRunner) Output(_ context.Context, command Command) ([]byte, error) {
+	runner.commands = append(runner.commands, command)
+	if len(runner.outputs) == 0 && len(runner.outputErrors) == 0 {
+		return nil, errors.New("unexpected Output call")
+	}
+	var output []byte
+	if len(runner.outputs) > 0 {
+		output = runner.outputs[0]
+		runner.outputs = runner.outputs[1:]
+	}
+	var err error
+	if len(runner.outputErrors) > 0 {
+		err = runner.outputErrors[0]
+		runner.outputErrors = runner.outputErrors[1:]
+	}
+	return output, err
 }
 
 func (runner *attachRunner) Run(_ context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
 	runner.commands = append(runner.commands, command)
 	runner.calls = append(runner.calls, attachCall{stdin: stdin, stdout: stdout, stderr: stderr})
-	name := command.Args[4]
+	name := commandOperation(command)
 	if name == "has-session" && len(runner.hasErrors) > 0 {
 		err := runner.hasErrors[0]
 		runner.hasErrors = runner.hasErrors[1:]
@@ -280,9 +433,19 @@ func (runner *attachRunner) Run(_ context.Context, command Command, stdin io.Rea
 func (runner *attachRunner) commandNames() []string {
 	names := make([]string, 0, len(runner.commands))
 	for _, command := range runner.commands {
-		names = append(names, command.Args[4])
+		names = append(names, commandOperation(command))
 	}
 	return names
+}
+
+func commandOperation(command Command) string {
+	if command.Name == "/bin/sh" {
+		return "resolve-external"
+	}
+	if command.Name == "tmux" && len(command.Args) > 4 {
+		return command.Args[4]
+	}
+	return command.Name
 }
 
 type attachExitError struct{ code int }

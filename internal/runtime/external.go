@@ -71,9 +71,6 @@ func validExternalPane(value string) bool {
 		return false
 	}
 	index := 1
-	if value[index] == '0' {
-		return false
-	}
 	for index < len(value) && value[index] >= '0' && value[index] <= '9' {
 		index++
 	}
@@ -170,7 +167,7 @@ done <"$work/candidates"
 
 match_panes() {
 	socket=$1
-	if ! tmux -S "$socket" -f /dev/null list-panes -a -F '#{session_id}:#{window_index}.#{pane_index}\t#{pane_pid}' >"$work/panes"; then
+	if ! tmux -S "$socket" -f /dev/null list-panes -a -F '#{session_id}:#{window_index}.#{pane_index}	#{pane_pid}' >"$work/panes"; then
 		echo "ars: cannot inspect external tmux socket" >&2
 		return 2
 	fi
@@ -182,7 +179,7 @@ match_panes() {
 	fi
 	if ! awk -F '\t' '
 {
-	if (NF != 2 || $1 !~ /^\$[1-9][0-9]*:[0-9]+\.[0-9]+$/ || $2 !~ /^[1-9][0-9]*$/) {
+	if (NF != 2 || $1 !~ /^\$[0-9]+:[0-9]+\.[0-9]+$/ || $2 !~ /^[1-9][0-9]*$/) {
 		invalid = 1
 		next
 	}
