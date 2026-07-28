@@ -200,13 +200,14 @@ exactly one hashed runtime for the selected `(provider, native ID)` and
 rechecks after a concurrent create instead of starting a duplicate provider
 process.
 
-When neither an ARS runtime nor a unique external exact-resume match exists,
-first selection starts the adapter's fixed native resume command in the saved
-CWD. Later selections attach that same ARS runtime. `Ctrl+Q` is a prefix-free
-binding in the ARS server and runs `detach-client`; it is not delivered to
-Claude or Codex. When another computer attaches with `ssh -tt`, tmux detaches
-the previous client back to its TUI and hands the same provider process to the
-new client.
+When an ARS runtime is absent, first selection starts the adapter's fixed
+native resume command in the saved CWD only if the external resolver returns
+exactly `none`. An ambiguous, failed, or incomplete external lookup fails
+closed and never creates an ARS runtime. Later selections attach that same ARS
+runtime. `Ctrl+Q` is a prefix-free binding in the ARS server and runs
+`detach-client`; it is not delivered to Claude or Codex. When another computer
+attaches with `ssh -tt`, tmux detaches the previous client back to its TUI and
+hands the same provider process to the new client.
 
 If the provider exits, its tmux session ends and the native history remains in
 `Recent`. A host reboot or loss of the ARS tmux server ends the live process but
