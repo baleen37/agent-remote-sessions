@@ -108,7 +108,12 @@ case "$tmp_base" in /*) ;; *) tmp_base=/tmp ;; esac
 work=$(mktemp -d "$tmp_base/ars-external.XXXXXX")
 argv_helper=
 argv_watch=
+inventory_find=
 cleanup() {
+	if [ -n "$inventory_find" ]; then
+		kill "$inventory_find" 2>/dev/null || :
+		wait "$inventory_find" 2>/dev/null || :
+	fi
 	if [ -n "$argv_watch" ]; then
 		kill "$argv_watch" 2>/dev/null || :
 		wait "$argv_watch" 2>/dev/null || :
@@ -509,8 +514,44 @@ END {
 
 : >"$work/matches"
 : >"$work/all-panes"
+mkdir "$work/socket-inventory-matches"
+: >"$work/socket-inventory"
+: >"$work/socket-inventory-status"
+printf '0\n' >"$work/socket-inventory-count"
+cat >"$work/socket-inventory-helper" <<'EOF'
+set -eu
+inventory_file=$1
+count_file=$2
+status_file=$3
+producer_file=$4
+shift 4
+stop_inventory() {
+	trap - 0 HUP INT TERM
+	printf '%s\n' "$1" >"$status_file"
+	while [ ! -s "$producer_file" ]; do :; done
+	kill -TERM "$(cat "$producer_file")" 2>/dev/null || :
+	exit 2
+}
+trap 'stop_inventory helper' 0 HUP INT TERM
+count=$(cat "$count_file")
+newline='
+'
+for entry do
+	if [ "$count" -ge 4096 ]; then
+		stop_inventory entries
+	fi
+	case "$entry" in
+	*"$newline"*)
+		stop_inventory path
+		;;
+	esac
+	count=$((count + 1))
+	printf '%s\n' "$entry"
+done >>"$inventory_file"
+printf '%s\n' "$count" >"$count_file"
+trap - 0 HUP INT TERM
+EOF
 socket_count=0
-entry_count=0
 pane_total=0
 pane_rows=0
 tmux_base=${TMUX_TMPDIR:-/tmp}
@@ -519,11 +560,11 @@ owned_path() {
 	owner=$(ls -ldn "$1" | awk 'NF >= 3 { print $3; exit }')
 	[ "$owner" = "$uid" ]
 }
-scan_socket_dir() {
+socket_dir_inode() {
+	ls -idn "$1" | awk 'NF >= 1 { print $1; exit }'
+}
+validate_socket_dir() {
 	directory=$1
-	if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
-		return 0
-	fi
 	if [ -L "$directory" ] || [ ! -d "$directory" ] || ! owned_path "$directory"; then
 		echo "ars: invalid external tmux socket directory" >&2
 		return 2
@@ -532,45 +573,86 @@ scan_socket_dir() {
 		echo "ars: cannot inspect external tmux socket directory" >&2
 		return 2
 	fi
-	for socket in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
-		if [ ! -e "$socket" ] && [ ! -L "$socket" ]; then
-			continue
-		fi
-		entry_count=$((entry_count + 1))
-		if [ "$entry_count" -gt 4096 ]; then
-			echo "ars: external tmux socket directory entries exceed limit" >&2
-			return 2
-		fi
-		if [ -L "$socket" ]; then
-			echo "ars: invalid external tmux socket" >&2
-			return 2
-		fi
-		[ -S "$socket" ] || continue
-		socket_count=$((socket_count + 1))
-		if [ "$socket_count" -gt 64 ]; then
-			echo "ars: external tmux socket count exceeds limit" >&2
-			return 2
-		fi
-	done
 }
-match_socket_dir() {
+inventory_socket_dir() {
 	directory=$1
-	if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
-		return 0
+	validate_socket_dir "$directory" || return 2
+	socket_inventory_inode=$(socket_dir_inode "$directory")
+	if [ -z "$socket_inventory_inode" ]; then
+		echo "ars: cannot inspect external tmux socket directory" >&2
+		return 2
 	fi
-	if [ -L "$directory" ] || [ ! -d "$directory" ] || [ ! -r "$directory" ] || [ ! -x "$directory" ] || ! owned_path "$directory"; then
+	: >"$work/socket-inventory-status"
+	: >"$work/socket-inventory-producer"
+	find "$directory" -mindepth 1 -maxdepth 1 -exec /bin/sh "$work/socket-inventory-helper" "$work/socket-inventory" "$work/socket-inventory-count" "$work/socket-inventory-status" "$work/socket-inventory-producer" '{}' + &
+	inventory_find=$!
+	printf '%s\n' "$inventory_find" >"$work/socket-inventory-producer"
+	if wait "$inventory_find"; then
+		inventory_result=0
+	else
+		inventory_result=$?
+	fi
+	inventory_find=
+	if [ "$inventory_result" -ne 0 ]; then
+		reason=$(cat "$work/socket-inventory-status")
+		case "$reason" in
+		entries) echo "ars: external tmux socket directory entries exceed limit" >&2 ;;
+		path) echo "ars: invalid external tmux socket path" >&2 ;;
+		*) echo "ars: cannot inspect external tmux socket directory" >&2 ;;
+		esac
+		return 2
+	fi
+}
+revalidate_socket_dir() {
+	directory=$1
+	expected_inode=$2
+	validate_socket_dir "$directory" || return 2
+	if [ "$(socket_dir_inode "$directory")" != "$expected_inode" ]; then
 		echo "ars: invalid external tmux socket directory" >&2
 		return 2
 	fi
-	for socket in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+}
+classify_socket_inventory() {
+	index=0
+	while IFS= read -r socket; do
+		index=$((index + 1))
 		if [ ! -e "$socket" ] && [ ! -L "$socket" ]; then
-			continue
+			echo "ars: invalid external tmux socket" >&2
+			return 2
 		fi
 		if [ -L "$socket" ]; then
 			echo "ars: invalid external tmux socket" >&2
 			return 2
 		fi
-		[ -S "$socket" ] || continue
+		if [ -S "$socket" ]; then
+			socket_count=$((socket_count + 1))
+			if [ "$socket_count" -gt 64 ]; then
+				echo "ars: external tmux socket count exceeds limit" >&2
+				return 2
+			fi
+			: >"$work/socket-inventory-matches/$index"
+		fi
+	done <"$work/socket-inventory"
+}
+match_socket_inventory() {
+	index=0
+	while IFS= read -r socket; do
+		index=$((index + 1))
+		if [ ! -e "$socket" ] || [ -L "$socket" ]; then
+			echo "ars: invalid external tmux socket" >&2
+			return 2
+		fi
+		if [ ! -e "$work/socket-inventory-matches/$index" ]; then
+			if [ -S "$socket" ]; then
+				echo "ars: invalid external tmux socket" >&2
+				return 2
+			fi
+			continue
+		fi
+		if [ ! -S "$socket" ]; then
+			echo "ars: invalid external tmux socket" >&2
+			return 2
+		fi
 		if ! owned_path "$socket"; then
 			echo "ars: invalid external tmux socket" >&2
 			return 2
@@ -581,19 +663,31 @@ match_socket_dir() {
 			echo "ars: cannot inspect external tmux socket" >&2
 			return 2
 		fi
-	done
+	done <"$work/socket-inventory"
 }
 
 primary_dir=$tmux_base/tmux-$uid
 fallback_dir=/tmp/tmux-$uid
-scan_socket_dir "$primary_dir" || exit 1
-if [ "$fallback_dir" != "$primary_dir" ]; then
-	scan_socket_dir "$fallback_dir" || exit 1
+primary_present=0
+fallback_present=0
+if [ -e "$primary_dir" ] || [ -L "$primary_dir" ]; then
+	primary_present=1
+	inventory_socket_dir "$primary_dir" || exit 1
+	primary_inode=$socket_inventory_inode
 fi
-match_socket_dir "$primary_dir" || exit 1
-if [ "$fallback_dir" != "$primary_dir" ]; then
-	match_socket_dir "$fallback_dir" || exit 1
+if [ "$fallback_dir" != "$primary_dir" ] && { [ -e "$fallback_dir" ] || [ -L "$fallback_dir" ]; }; then
+	fallback_present=1
+	inventory_socket_dir "$fallback_dir" || exit 1
+	fallback_inode=$socket_inventory_inode
 fi
+classify_socket_inventory || exit 1
+if [ "$primary_present" -eq 1 ]; then
+	revalidate_socket_dir "$primary_dir" "$primary_inode" || exit 1
+fi
+if [ "$fallback_present" -eq 1 ]; then
+	revalidate_socket_dir "$fallback_dir" "$fallback_inode" || exit 1
+fi
+match_socket_inventory || exit 1
 
 resolve_matches || exit 1
 

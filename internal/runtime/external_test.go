@@ -127,6 +127,8 @@ type externalFixture struct {
 	unreadableDir    bool
 	regularEntries   int
 	fallbackEntries  int
+	virtualEntries   int
+	mutateSocket     string
 	assertTmuxArgv   bool
 }
 
@@ -229,6 +231,33 @@ func TestExternalResolverScriptFailsClosedOnSocketDirectoryTraversal(t *testing.
 				t.Fatalf("ResolveExternal() = found %t, err %v, want fail-closed traversal error", found, err)
 			}
 		})
+	}
+}
+
+func TestExternalResolverScriptStopsLargeDirectoryTraversalAtEntryLimit(t *testing.T) {
+	const selected = "123e4567-e89b-42d3-a456-426614174000"
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_, found, err := runExternalFixtureContext(t, ctx, externalFixture{
+		processes:      "100 1 claude\n",
+		argv:           map[int][]string{100: {"claude", "--resume", selected}},
+		virtualEntries: 100_000,
+	}, session.Claude, selected)
+	if err == nil || found || !strings.Contains(err.Error(), "entries exceed limit") {
+		t.Fatalf("ResolveExternal() = found %t, err %v, want bounded directory entry error", found, err)
+	}
+}
+
+func TestExternalResolverScriptFailsClosedWhenInventoriedSocketChanges(t *testing.T) {
+	const selected = "123e4567-e89b-42d3-a456-426614174000"
+	_, found, err := runExternalFixture(t, externalFixture{
+		processes:    "100 1 claude\n",
+		argv:         map[int][]string{100: {"claude", "--resume", selected}},
+		panes:        map[string]string{"default": "$1:0.0|100\n"},
+		mutateSocket: "default",
+	}, session.Claude, selected)
+	if err == nil || found || !strings.Contains(err.Error(), "invalid external tmux socket") {
+		t.Fatalf("ResolveExternal() = found %t, err %v, want changed socket error", found, err)
 	}
 }
 
@@ -649,7 +678,39 @@ func runExternalFixtureContext(t *testing.T, ctx context.Context, fixture extern
 	writeExternalExecutable(t, filepath.Join(bin, "ps"), "#!/bin/sh\ncat \"$ARS_EXTERNAL_ROOT/processes\"\n")
 	writeExternalExecutable(t, filepath.Join(bin, "uname"), "#!/bin/sh\nprintf 'Linux\\n'\n")
 	writeExternalExecutable(t, filepath.Join(bin, "head"), "#!/bin/sh\npath=$3\ncase \"$path\" in /proc/*/cmdline) pid=${path#/proc/}; pid=${pid%/cmdline}; exec /usr/bin/head -c \"$2\" \"$ARS_EXTERNAL_ROOT/argv/$pid\" ;; *) exec /usr/bin/head \"$@\" ;; esac\n")
-	writeExternalExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\nfor value in \"$@\"; do path=$value; done\nif [ \"$path\" = \"$ARS_BAD_OWNER\" ]; then printf 'srwx------ 1 999 0 0 Jan 1 00:00 %s\\n' \"$path\"; exit 0; fi\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
+	writeExternalExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\nfor value in \"$@\"; do path=$value; done\nif [ -n \"$ARS_MUTATE_SOCKET\" ] && [ \"$path\" = \"$ARS_MUTATE_DIRECTORY\" ] && [ -e \"$ARS_EXTERNAL_ROOT/find-complete\" ] && [ ! -e \"$ARS_EXTERNAL_ROOT/socket-mutated\" ]; then\n  rm -f -- \"$ARS_MUTATE_SOCKET\"\n  : >\"$ARS_MUTATE_SOCKET\"\n  : >\"$ARS_EXTERNAL_ROOT/socket-mutated\"\nfi\nif [ \"$path\" = \"$ARS_BAD_OWNER\" ]; then printf 'srwx------ 1 999 0 0 Jan 1 00:00 %s\\n' \"$path\"; exit 0; fi\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
+	find := `#!/bin/sh
+if [ "${ARS_VIRTUAL_ENTRIES:-0}" -eq 0 ]; then
+	/usr/bin/find "$@"
+	status=$?
+	: >"$ARS_EXTERNAL_ROOT/find-complete"
+	exit "$status"
+fi
+directory=$1
+while [ "$#" -gt 0 ] && [ "$1" != -exec ]; do shift; done
+	[ "$#" -ge 8 ] || exit 2
+	shift
+	shell=$1
+	helper=$2
+	inventory=$3
+	count_file=$4
+	status_file=$5
+	producer_file=$6
+	limit=$ARS_VIRTUAL_ENTRIES
+emitted=0
+while [ "$emitted" -lt "$limit" ]; do
+	set --
+	batch=0
+	while [ "$batch" -lt 1024 ] && [ "$emitted" -lt "$limit" ]; do
+		set -- "$@" "$directory/virtual-$emitted"
+		batch=$((batch + 1))
+		emitted=$((emitted + 1))
+	done
+	"$shell" "$helper" "$inventory" "$count_file" "$status_file" "$producer_file" "$@" || :
+done
+: >"$ARS_EXTERNAL_ROOT/find-overrun"
+`
+	writeExternalExecutable(t, filepath.Join(bin, "find"), find)
 	tmux := "#!/bin/sh\nsocket=$2\nname=$(basename \"$socket\")\nprintf '%s\\n' \"$@\" >>\"$ARS_EXTERNAL_ROOT/tmux-args\"\nif [ \"$name\" = \"$ARS_FAIL_SOCKET\" ]; then exit 1; fi\nif [ \"${ARS_SANITIZE_PANE_TAB:-}\" = 1 ]; then\n  previous=\n  format=\n  for value in \"$@\"; do\n    if [ \"$previous\" = -F ]; then format=$value; fi\n    previous=$value\n  done\n  case \"$format\" in *'|'*) printf '$1:0.0|100\\n' ;; *) printf '$1:0.0_100\\n' ;; esac\n  exit 0\nfi\ncat \"$ARS_EXTERNAL_PANES/$name\"\n"
 	writeExternalExecutable(t, filepath.Join(bin, "tmux"), tmux)
 	t.Setenv("ARS_EXTERNAL_ROOT", root)
@@ -664,10 +725,22 @@ func runExternalFixtureContext(t *testing.T, ctx context.Context, fixture extern
 	}
 	t.Setenv("ARS_BAD_OWNER", badOwner)
 	t.Setenv("ARS_FAKE_UID", uid)
+	t.Setenv("ARS_VIRTUAL_ENTRIES", strconv.Itoa(fixture.virtualEntries))
+	t.Setenv("ARS_MUTATE_DIRECTORY", tmuxDirectory)
+	mutateSocket := ""
+	if fixture.mutateSocket != "" {
+		mutateSocket = filepath.Join(tmuxDirectory, fixture.mutateSocket)
+	}
+	t.Setenv("ARS_MUTATE_SOCKET", mutateSocket)
 	t.Setenv("TMUX_TMPDIR", root)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	target, found, err := ResolveExternal(ctx, externalSystemRunner{}, name, nativeID)
 	assertNoExternalResolverWorkdirs(t, root)
+	if fixture.virtualEntries > 0 {
+		if _, statErr := os.Stat(filepath.Join(root, "find-overrun")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("large directory producer was not stopped: %v", statErr)
+		}
+	}
 	if fixture.assertTmuxArgv {
 		got, readErr := os.ReadFile(filepath.Join(root, "tmux-args"))
 		if readErr != nil {

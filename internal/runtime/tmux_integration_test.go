@@ -398,12 +398,39 @@ func (runner *arsCreateRunner) Run(ctx context.Context, command Command, stdin i
 	return err
 }
 
+func TestARSCreateWaitDeadlineUsesShorterLimit(t *testing.T) {
+	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name         string
+		testDeadline time.Time
+		want         time.Time
+	}{
+		{name: "fixed timeout", testDeadline: now.Add(time.Minute), want: now.Add(5 * time.Second)},
+		{name: "test deadline", testDeadline: now.Add(time.Second), want: now.Add(time.Second)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := arsCreateWaitDeadline(now, test.testDeadline); !got.Equal(test.want) {
+				t.Fatalf("arsCreateWaitDeadline() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func arsCreateWaitDeadline(now, testDeadline time.Time) time.Time {
+	fixedDeadline := now.Add(5 * time.Second)
+	if testDeadline.Before(fixedDeadline) {
+		return testDeadline
+	}
+	return fixedDeadline
+}
+
 func waitForARSCreate(t *testing.T, created <-chan struct{}, done <-chan error) {
 	t.Helper()
-	deadline, ok := t.Deadline()
+	testDeadline, ok := t.Deadline()
 	if !ok {
 		t.Fatal("test deadline is required to wait for ARS creation")
 	}
+	deadline := arsCreateWaitDeadline(time.Now(), testDeadline)
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
@@ -411,7 +438,7 @@ func waitForARSCreate(t *testing.T, created <-chan struct{}, done <-chan error) 
 	case err := <-done:
 		t.Fatalf("attach exited before ARS creation: %v", err)
 	case <-timer.C:
-		t.Fatal("ARS creation did not finish before test deadline")
+		t.Fatal("ARS creation did not finish before wait deadline")
 	}
 }
 
