@@ -146,7 +146,7 @@ func TestAttachCommandReusesUniqueExternalPane(t *testing.T) {
 	runner := &attachRunner{
 		hasErrors: []error{attachExitError{code: 1}},
 		outputs: [][]byte{
-			[]byte("match\t/private/tmp/tmux-502/default\t$19:0.1\n"),
+			[]byte("match\t/private/tmp/tmux-502/default\t%42\t1234\t1a\t2b\t502\tsocket\n"),
 		},
 	}
 	command, err := NewAttachCommand(context.Background(), runner, attachedSession(), claudeSpec())
@@ -167,10 +167,10 @@ func TestAttachCommandReusesUniqueExternalPane(t *testing.T) {
 		t.Fatalf("external attach mutated ARS server: %v", runner.commandNames())
 	}
 	want := Command{
-		Name: "tmux",
+		Name: "/bin/sh",
 		Args: []string{
-			"-S", "/private/tmp/tmux-502/default", "-f", "/dev/null",
-			"attach-session", "-t", "$19:0.1",
+			"-c", ExternalAttachScript(), "ars-external-attach",
+			"/private/tmp/tmux-502/default", "%42", "1234", "1a", "2b", "502", "tmux",
 		},
 		Env: []string{"TMUX=", "TMUX_PANE="},
 	}
@@ -184,7 +184,7 @@ func TestAttachCommandReusesUniqueExternalPane(t *testing.T) {
 		t.Fatal("external attach lost terminal streams")
 	}
 	for _, command := range runner.commands {
-		if command.Name != "tmux" || len(command.Args) < 5 || command.Args[0] != "-S" {
+		if command.Name != "/bin/sh" || len(command.Args) < 3 || command.Args[2] != "ars-external-attach" {
 			continue
 		}
 		if slices.Contains(command.Args, "-d") || slices.Contains(command.Args, "C-q") {
@@ -228,7 +228,7 @@ func TestAttachCommandDoesNotFallbackAfterExternalAttachFailure(t *testing.T) {
 		runner: &attachRunner{
 			hasErrors: []error{attachExitError{code: 1}},
 			outputs: [][]byte{
-				[]byte("match\t/private/tmp/tmux-502/default\t$19:0.1\n"),
+				[]byte("match\t/private/tmp/tmux-502/default\t%42\t1234\t1a\t2b\t502\tsocket\n"),
 			},
 			nameErrors: map[string][]error{"attach-session": {attachErr}},
 		},
@@ -440,6 +440,9 @@ func (runner *attachRunner) commandNames() []string {
 
 func commandOperation(command Command) string {
 	if command.Name == "/bin/sh" {
+		if len(command.Args) > 2 && command.Args[2] == "ars-external-attach" {
+			return "attach-session"
+		}
 		return "resolve-external"
 	}
 	if command.Name == "tmux" && len(command.Args) > 4 {

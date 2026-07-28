@@ -85,10 +85,18 @@ func testDisposableTmuxReusesExternalProvider(t *testing.T, resolverDelay, clien
 
 	attachBase := Runner(fixture.runner)
 	if resolverDelay > 0 {
+		target, found, resolveErr := ResolveExternal(context.Background(), fixture.runner, fixture.item.Provider, fixture.item.NativeID)
+		if resolveErr != nil || !found {
+			t.Fatalf("resolve delayed external target = (%#v, %t, %v)", target, found, resolveErr)
+		}
 		attachBase = resolverDelayRunner{
 			Runner: attachBase,
 			delay:  resolverDelay,
-			output: []byte("match\t" + external.socket + "\t" + external.paneID(t) + "\n"),
+			output: []byte(fmt.Sprintf(
+				"match\t%s\t%s\t%d\t%x\t%x\t%d\tsocket\n",
+				target.Socket, target.PaneID, target.PanePID,
+				target.SocketDev, target.SocketInode, target.SocketUID,
+			)),
 		}
 	}
 	attachRunner := newExternalAttachStartRunner(attachBase)
@@ -461,7 +469,7 @@ func newExternalAttachStartRunner(runner Runner) *externalAttachStartRunner {
 }
 
 func (runner *externalAttachStartRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
-	if command.Name == "tmux" && len(command.Args) > 4 && command.Args[0] == "-S" && command.Args[4] == "attach-session" {
+	if command.Name == "/bin/sh" && len(command.Args) > 2 && command.Args[2] == "ars-external-attach" {
 		runner.once.Do(func() { close(runner.started) })
 	}
 	return runner.Runner.Run(ctx, command, stdin, stdout, stderr)
@@ -534,12 +542,12 @@ func (external *externalTmuxFixture) attachDiagnostic(fixture *disposableTmuxFix
 
 func (external *externalTmuxFixture) paneID(t *testing.T) string {
 	t.Helper()
-	output, err := external.runner.Output(context.Background(), externalTmuxCommand("list-panes", "-t", "=external", "-F", "#{session_id}:#{window_index}.#{pane_index}"))
+	output, err := external.runner.Output(context.Background(), externalTmuxCommand("list-panes", "-t", "=external", "-F", "#{pane_id}"))
 	if err != nil {
 		t.Fatalf("read external pane id: %v", err)
 	}
 	pane := strings.TrimSpace(string(output))
-	if !validExternalPane(pane) {
+	if !validExternalPaneID(pane) {
 		t.Fatalf("invalid external pane id: %q", pane)
 	}
 	return pane

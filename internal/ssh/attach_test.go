@@ -144,13 +144,6 @@ func TestRemoteAttachEmbedsSharedExternalResolverBeforeCreate(t *testing.T) {
 	if !strings.Contains(script, "ars-external 'claude' '"+item.NativeID+"'") {
 		t.Fatalf("resolver does not pass provider and ID as separate quoted words:\n%s", script)
 	}
-	resolver := arsruntime.ExternalResolverScript()
-	if !strings.Contains(resolver, "-F '#{session_id}:#{window_index}.#{pane_index}|#{pane_pid}'") {
-		t.Fatalf("resolver does not use a printable pane-table separator:\n%s", resolver)
-	}
-	if !strings.Contains(resolver, `printf 'match\t%s\t%s\n' "$socket" "$pane"`) {
-		t.Fatalf("resolver does not preserve the public tab-separated match protocol:\n%s", resolver)
-	}
 }
 
 func TestRemoteExternalAttachPreservesClientsAndServerOptions(t *testing.T) {
@@ -160,7 +153,7 @@ func TestRemoteExternalAttachPreservesClientsAndServerOptions(t *testing.T) {
 	}
 	if !strings.Contains(calls, "list-panes -a") ||
 		!strings.Contains(calls, "-S ") ||
-		!strings.Contains(calls, "attach-session -t $1:0.0") {
+		!strings.Contains(calls, "attach-session -t %1") {
 		t.Fatalf("external target was not listed then attached:\n%s", calls)
 	}
 	for _, forbidden := range []string{"new-session", "bind-key", "set-option", "attach-session -d"} {
@@ -206,7 +199,7 @@ func TestRemoteVanishedExternalTargetCannotReachNewSession(t *testing.T) {
 	if !strings.Contains(output, "vanished external target") {
 		t.Fatalf("remote vanished target did not reach external attach; output: %s", output)
 	}
-	for _, want := range []string{"list-panes -a", "attach-session -t $1:0.0"} {
+	for _, want := range []string{"list-panes -a", "attach-session -t %1"} {
 		if !strings.Contains(calls, want) {
 			t.Fatalf("remote vanished external target did not call %q:\n%s", want, calls)
 		}
@@ -247,7 +240,7 @@ func runRemoteAttachScriptFixture(t *testing.T, mode string) (string, string, er
 	writeRemoteAttachExecutable(t, filepath.Join(bin, "uname"), "#!/bin/sh\nprintf 'Linux\\n'\n")
 	writeRemoteAttachExecutable(t, filepath.Join(bin, "head"), "#!/bin/sh\nprintf 'claude\\000--resume\\000123e4567-e89b-42d3-a456-426614174000\\000'\n")
 	writeRemoteAttachExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
-	writeRemoteAttachExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$ARS_REMOTE_ATTACH_CALLS\"\nif [ \"$1\" = -L ]; then\n  case \"$5\" in has-session) exit 1 ;; *) exit 0 ;; esac\nfi\nif [ \"$1\" = -S ]; then\n  case \"$5\" in\n    list-panes)\n      [ \"$2\" = \"$ARS_REMOTE_ATTACH_SOCKET\" ] || exit 0\n      case \"$ARS_REMOTE_ATTACH_MODE\" in conflict) printf '$1:0.0|100\\n$2:0.0|100\\n' ;; *) printf '$1:0.0|100\\n' ;; esac\n      exit 0 ;;\n    attach-session)\n      if [ \"$ARS_REMOTE_ATTACH_MODE\" = vanished ]; then echo 'vanished external target' >&2; exit 1; fi\n      exit 0 ;;\n  esac\nfi\nexit 1\n")
+	writeRemoteAttachExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$ARS_REMOTE_ATTACH_CALLS\"\nif [ \"$1\" = -L ]; then\n  case \"$5\" in has-session) exit 1 ;; *) exit 0 ;; esac\nfi\nif [ \"$1\" = -S ]; then\n  case \"$5\" in\n    list-panes)\n      [ \"$2\" = \"$ARS_REMOTE_ATTACH_SOCKET\" ] || exit 0\n      case \"$ARS_REMOTE_ATTACH_MODE\" in conflict) printf '%%1|100\\n%%2|100\\n' ;; *) printf '%%1|100\\n' ;; esac\n      exit 0 ;;\n    attach-session)\n      if [ \"$ARS_REMOTE_ATTACH_MODE\" = vanished ]; then echo 'vanished external target' >&2; exit 1; fi\n      exit 0 ;;\n  esac\nfi\nexit 1\n")
 	item := remoteAttachedSession()
 	attach, err := NewAttachCommand(context.Background(), item.Host, item, remoteClaudeSpec())
 	if err != nil {

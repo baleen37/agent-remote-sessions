@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
 	"github.com/baleen37/agent-remote-sessions/internal/session"
@@ -121,15 +122,32 @@ func (command *AttachCommand) attachARS(name string) error {
 
 func externalAttach(target ExternalTarget) Command {
 	return Command{
-		Name: "tmux",
+		Name: "/bin/sh",
 		Args: []string{
-			"-S", target.Socket,
-			"-f", "/dev/null",
-			"attach-session", "-t", target.Pane,
+			"-c", ExternalAttachScript(), "ars-external-attach",
+			target.Socket,
+			target.PaneID,
+			strconv.FormatUint(target.PanePID, 10),
+			strconv.FormatUint(target.SocketDev, 16),
+			strconv.FormatUint(target.SocketInode, 16),
+			strconv.FormatUint(target.SocketUID, 10),
+			"tmux",
 		},
 		Env: []string{"TMUX=", "TMUX_PANE="},
 	}
 }
+
+func ExternalAttachScript() string {
+	return externalAttachScript
+}
+
+const externalAttachScript = `set -eu
+command -v python3 >/dev/null 2>&1 || {
+	echo "ars: cannot validate external tmux target" >&2
+	exit 1
+}
+exec python3 -c '` + externalTmuxPythonScript + `' attach 30 "$@"
+`
 
 func hasSession(name string) Command {
 	return arsTMUXCommand("has-session", "-t", "="+name)

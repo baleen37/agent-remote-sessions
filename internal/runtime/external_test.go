@@ -57,7 +57,7 @@ func TestResolveExternalReturnsNoneForCompleteEmptyScan(t *testing.T) {
 
 func TestResolveExternalReturnsOneValidatedTarget(t *testing.T) {
 	runner := &externalRunner{
-		output: []byte("match\t/private/tmp/tmux-502/default\t$19:0.1\n"),
+		output: []byte("match\t/private/tmp/tmux-502/default\t%42\t1234\t1a\t2b\t502\tsocket\n"),
 	}
 	target, found, err := ResolveExternal(
 		context.Background(),
@@ -66,8 +66,12 @@ func TestResolveExternalReturnsOneValidatedTarget(t *testing.T) {
 		"019fa13c-3a32-7922-b8c2-4b4adf8eadac",
 	)
 	want := ExternalTarget{
-		Socket: "/private/tmp/tmux-502/default",
-		Pane:   "$19:0.1",
+		Socket:      "/private/tmp/tmux-502/default",
+		PaneID:      "%42",
+		PanePID:     1234,
+		SocketDev:   0x1a,
+		SocketInode: 0x2b,
+		SocketUID:   502,
 	}
 	if err != nil || !found || target != want {
 		t.Fatalf("ResolveExternal() = (%#v, %t, %v), want %#v, true, nil", target, found, err, want)
@@ -88,12 +92,15 @@ func TestResolveExternalRejectsInvalidInputsAndResults(t *testing.T) {
 		{name: "non canonical ID", runner: &externalRunner{}, nameID: session.Claude, id: "123E4567-e89b-42d3-a456-426614174000"},
 		{name: "missing newline", runner: &externalRunner{output: []byte("none")}, nameID: session.Claude, id: validID},
 		{name: "extra line", runner: &externalRunner{output: []byte("none\nnone\n")}, nameID: session.Claude, id: validID},
-		{name: "extra fields", runner: &externalRunner{output: []byte("match\t/socket\t$1:0.0\textra\n")}, nameID: session.Claude, id: validID},
-		{name: "relative socket", runner: &externalRunner{output: []byte("match\tsocket\t$1:0.0\n")}, nameID: session.Claude, id: validID},
-		{name: "tab in socket", runner: &externalRunner{output: []byte("match\t/socket\tpart\t$1:0.0\n")}, nameID: session.Claude, id: validID},
-		{name: "NUL in socket", runner: &externalRunner{output: []byte("match\t/socket\x00part\t$1:0.0\n")}, nameID: session.Claude, id: validID},
-		{name: "invalid pane", runner: &externalRunner{output: []byte("match\t/socket\t$:0.0\n")}, nameID: session.Claude, id: validID},
-		{name: "duplicate fields", runner: &externalRunner{output: []byte("match\t/socket\t$1:0.0\nmatch\t/socket\t$1:0.0\n")}, nameID: session.Claude, id: validID},
+		{name: "extra fields", runner: &externalRunner{output: []byte("match\t/socket\t%1\t10\t1\t2\t3\tsocket\textra\n")}, nameID: session.Claude, id: validID},
+		{name: "relative socket", runner: &externalRunner{output: []byte("match\tsocket\t%1\t10\t1\t2\t3\tsocket\n")}, nameID: session.Claude, id: validID},
+		{name: "tab in socket", runner: &externalRunner{output: []byte("match\t/socket\tpart\t%1\t10\t1\t2\t3\tsocket\n")}, nameID: session.Claude, id: validID},
+		{name: "NUL in socket", runner: &externalRunner{output: []byte("match\t/socket\x00part\t%1\t10\t1\t2\t3\tsocket\n")}, nameID: session.Claude, id: validID},
+		{name: "invalid pane", runner: &externalRunner{output: []byte("match\t/socket\t$1:0.0\t10\t1\t2\t3\tsocket\n")}, nameID: session.Claude, id: validID},
+		{name: "invalid pid", runner: &externalRunner{output: []byte("match\t/socket\t%1\t0\t1\t2\t3\tsocket\n")}, nameID: session.Claude, id: validID},
+		{name: "invalid identity", runner: &externalRunner{output: []byte("match\t/socket\t%1\t10\tnot-hex\t2\t3\tsocket\n")}, nameID: session.Claude, id: validID},
+		{name: "invalid type", runner: &externalRunner{output: []byte("match\t/socket\t%1\t10\t1\t2\t3\tother\n")}, nameID: session.Claude, id: validID},
+		{name: "duplicate fields", runner: &externalRunner{output: []byte("match\t/socket\t%1\t10\t1\t2\t3\tsocket\nmatch\t/socket\t%1\t10\t1\t2\t3\tsocket\n")}, nameID: session.Claude, id: validID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.output != "" {
@@ -158,15 +165,15 @@ func (externalSystemRunner) Run(ctx context.Context, value Command, stdin io.Rea
 	return SystemRunner{}.Run(ctx, value, stdin, stdout, stderr)
 }
 
-func TestExternalResolverScriptAcceptsZeroSessionID(t *testing.T) {
+func TestExternalResolverScriptAcceptsZeroPaneID(t *testing.T) {
 	const selected = "123e4567-e89b-42d3-a456-426614174000"
 	target, found, err := runExternalFixture(t, externalFixture{
 		processes: "100 1 zsh\n101 100 claude\n",
 		argv:      map[int][]string{101: {"claude", "--resume", selected}},
-		panes:     map[string]string{"default": "$0:0.0|100\n"},
+		panes:     map[string]string{"default": "%0|100\n"},
 	}, session.Claude, selected)
-	if err != nil || !found || target.Pane != "$0:0.0" {
-		t.Fatalf("ResolveExternal() = (%#v, %t, %v), want pane %q, true, nil", target, found, err, "$0:0.0")
+	if err != nil || !found || target.PaneID != "%0" {
+		t.Fatalf("ResolveExternal() = (%#v, %t, %v), want pane %q, true, nil", target, found, err, "%0")
 	}
 }
 
@@ -175,14 +182,11 @@ func TestExternalResolverScriptUsesPrintablePaneSeparator(t *testing.T) {
 	_, found, err := runExternalFixture(t, externalFixture{
 		processes:       "100 1 zsh\n101 100 claude\n",
 		argv:            map[int][]string{101: {"claude", "--resume", selected}},
-		panes:           map[string]string{"default": "$1:0.0|100\n"},
+		panes:           map[string]string{"default": "%1|100\n"},
 		sanitizePaneTab: true,
 	}, session.Claude, selected)
 	if err != nil || !found {
 		t.Fatalf("ResolveExternal() = found %t, err %v, want a printable tmux pane separator", found, err)
-	}
-	if !strings.Contains(ExternalResolverScript(), "#{session_id}:#{window_index}.#{pane_index}|#{pane_pid}") {
-		t.Fatal("external resolver does not request pipe-delimited pane rows")
 	}
 }
 
@@ -191,7 +195,7 @@ func TestExternalResolverScriptUsesExactTmuxInspectionArgv(t *testing.T) {
 	_, found, err := runExternalFixture(t, externalFixture{
 		processes:      "100 1 zsh\n101 100 claude\n",
 		argv:           map[int][]string{101: {"claude", "--resume", selected}},
-		panes:          map[string]string{"default": "$1:0.0|100\n"},
+		panes:          map[string]string{"default": "%1|100\n"},
 		assertTmuxArgv: true,
 	}, session.Claude, selected)
 	if err != nil || !found {
@@ -207,7 +211,7 @@ func TestExternalResolverScriptMatchesHiddenSocket(t *testing.T) {
 	target, found, err := runExternalFixture(t, externalFixture{
 		processes: "100 1 zsh\n101 100 claude\n",
 		argv:      map[int][]string{101: {"claude", "--resume", selected}},
-		panes:     map[string]string{".hidden": "$1:0.0|100\n"},
+		panes:     map[string]string{".hidden": "%1|100\n"},
 	}, session.Claude, selected)
 	if err != nil || !found || filepath.Base(target.Socket) != ".hidden" {
 		t.Fatalf("ResolveExternal() = (%#v, %t, %v), want hidden socket match", target, found, err)
@@ -257,7 +261,7 @@ func TestExternalResolverScriptFailsClosedWhenInventoriedSocketIsReplacedAtSameP
 	_, found, err := runExternalFixture(t, externalFixture{
 		processes:    "100 1 claude\n",
 		argv:         map[int][]string{100: {"claude", "--resume", selected}},
-		panes:        map[string]string{"default": "$1:0.0|100\n"},
+		panes:        map[string]string{"default": "%1|100\n"},
 		mutateSocket: "default",
 	}, session.Claude, selected)
 	if err == nil || found || !strings.Contains(err.Error(), "invalid external tmux socket") {
@@ -311,7 +315,7 @@ func TestExternalResolverScriptUsesExactLinuxArgv(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := externalFixture{
 				processes: "100 1 claude\n",
-				panes:     map[string]string{"default": "$1:0.0|100\n"},
+				panes:     map[string]string{"default": "%1|100\n"},
 			}
 			if test.argv != nil {
 				fixture.argv = map[int][]string{100: test.argv}
@@ -420,7 +424,7 @@ func TestExternalResolverScriptUsesExactDarwinArgv(t *testing.T) {
 			}
 			writeExternalExecutable(t, filepath.Join(bin, "ps"), ps)
 			writeExternalExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
-			writeExternalExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\nprintf '$1:0.0|%s\\n' \"$ARS_CHILD_PID\"\n")
+			writeExternalExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\nprintf '%%1|%s\\n' \"$ARS_CHILD_PID\"\n")
 			t.Setenv("ARS_CHILD_PID", strconv.Itoa(child.Process.Pid))
 			t.Setenv("ARS_FAKE_UID", fakeUID)
 			t.Setenv("TMUX_TMPDIR", root)
@@ -497,6 +501,187 @@ func TestDarwinArgvWatchdogTimesOutAndReapsOSAScript(t *testing.T) {
 	}
 }
 
+func TestExternalTmuxInspectorTimesOutAndReapsClientForStoppedServer(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required for the external tmux watchdog fixture")
+	}
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is required for the external tmux watchdog fixture")
+	}
+	root, err := os.MkdirTemp("/tmp", "ars-tmux-watchdog-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	socket := filepath.Join(root, "socket")
+	start := exec.Command(tmux, "-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "watchdog")
+	if output, err := start.CombinedOutput(); err != nil {
+		t.Fatalf("start disposable tmux: %v: %s", err, output)
+	}
+	serverOutput, err := exec.Command(tmux, "-S", socket, "-f", "/dev/null", "display-message", "-p", "#{pid}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverPID, err := strconv.Atoi(strings.TrimSpace(string(serverOutput)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	serverRunning := true
+	t.Cleanup(func() {
+		if stopped {
+			_ = syscall.Kill(serverPID, syscall.SIGCONT)
+		}
+		if serverRunning {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = exec.CommandContext(ctx, tmux, "-S", socket, "-f", "/dev/null", "kill-server").Run()
+		}
+	})
+
+	runner := filepath.Join(root, "tmux-inspector.py")
+	if err := os.WriteFile(runner, []byte(externalTmuxPythonScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clientPIDFile := filepath.Join(root, "client.pid")
+	wrapper := filepath.Join(root, "tmux")
+	writeExternalExecutable(t, wrapper, "#!/bin/sh\nprintf '%s\\n' \"$$\" >\"$ARS_TMUX_CLIENT_PID\"\nexec \"$ARS_REAL_TMUX\" \"$@\"\n")
+	if err := syscall.Kill(serverPID, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	stopped = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, python, runner, "inspect", "1", socket, wrapper)
+	command.Env = append(os.Environ(), "ARS_TMUX_CLIENT_PID="+clientPIDFile, "ARS_REAL_TMUX="+tmux)
+	if err := command.Run(); err == nil {
+		t.Fatal("external tmux inspector succeeded for a stopped server")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("external tmux inspector exceeded test deadline: %v", ctx.Err())
+	}
+	data, err := os.ReadFile(clientPIDFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := os.FindProcess(clientPID)
+	if err == nil && process.Signal(os.Signal(syscall.Signal(0))) == nil {
+		t.Fatalf("timed-out tmux client PID %d is still alive", clientPID)
+	}
+	if err := syscall.Kill(serverPID, syscall.SIGCONT); err != nil {
+		t.Fatal(err)
+	}
+	stopped = false
+	if output, err := exec.Command(tmux, "-S", socket, "-f", "/dev/null", "kill-server").CombinedOutput(); err != nil {
+		t.Fatalf("stop disposable tmux: %v: %s", err, output)
+	}
+	serverRunning = false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && syscall.Kill(serverPID, 0) == nil {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(serverPID, 0); err == nil {
+		t.Fatalf("disposable tmux server PID %d is still alive", serverPID)
+	}
+}
+
+func TestExternalAttachRejectsReusedPaneIdentity(t *testing.T) {
+	target, listener := externalSocketTarget(t)
+	defer listener.Close()
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attached := filepath.Join(root, "attached")
+	writeExternalExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\ncase \"$5\" in\nlist-panes) printf '%%2|200\\n' ;;\nattach-session) : >\"$ARS_ATTACHED\" ;;\nesac\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ARS_ATTACHED", attached)
+
+	var stderr bytes.Buffer
+	if err := (SystemRunner{}).Run(context.Background(), externalAttach(target), nil, io.Discard, &stderr); err == nil {
+		t.Fatal("external attach accepted a replaced pane identity")
+	}
+	if _, err := os.Stat(attached); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("external attach reached tmux attach-session: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "invalid external tmux target") {
+		t.Fatalf("external attach error = %q", stderr.String())
+	}
+}
+
+func TestExternalAttachRejectsSocketReplacedAfterResolve(t *testing.T) {
+	target, listener := externalSocketTarget(t)
+	path := target.Socket
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	called := filepath.Join(root, "tmux-called")
+	writeExternalExecutable(t, filepath.Join(bin, "tmux"), "#!/bin/sh\n: >\"$ARS_TMUX_CALLED\"\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ARS_TMUX_CALLED", called)
+
+	var stderr bytes.Buffer
+	if err := (SystemRunner{}).Run(context.Background(), externalAttach(target), nil, io.Discard, &stderr); err == nil {
+		t.Fatal("external attach accepted a replaced socket")
+	}
+	if _, err := os.Stat(called); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("external attach invoked tmux for replaced socket: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "invalid external tmux target") {
+		t.Fatalf("external attach error = %q", stderr.String())
+	}
+}
+
+func externalSocketTarget(t *testing.T) (ExternalTarget, net.Listener) {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "ars-external-attach-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	path := filepath.Join(root, "socket")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		listener.Close()
+		t.Fatal(err)
+	}
+	value, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		listener.Close()
+		t.Fatal("Unix socket stat did not return syscall.Stat_t")
+	}
+	return ExternalTarget{
+		Socket:      path,
+		PaneID:      "%1",
+		PanePID:     100,
+		SocketDev:   uint64(value.Dev),
+		SocketInode: uint64(value.Ino),
+		SocketUID:   uint64(value.Uid),
+	}, listener
+}
+
 func TestExternalResolverScript(t *testing.T) {
 	const selected = "123e4567-e89b-42d3-a456-426614174000"
 	tests := []struct {
@@ -514,9 +699,9 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "100 1 zsh\n101 100 claude\n",
 				argv:      map[int][]string{101: {"claude", "--resume", selected}},
-				panes:     map[string]string{"default": "$1:0.0|100\n"},
+				panes:     map[string]string{"default": "%1|100\n"},
 			},
-			wantPane: "$1:0.0", wantSocket: "default", wantFound: true,
+			wantPane: "%1", wantSocket: "default", wantFound: true,
 		},
 		{
 			name:     "Claude absolute comm with spaces",
@@ -524,9 +709,9 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "110 1 zsh\n111 110 /Applications/Claude Code/claude\n",
 				argv:      map[int][]string{111: {"/Applications/Claude Code/claude", "--resume", selected}},
-				panes:     map[string]string{"default": "$11:0.0|110\n"},
+				panes:     map[string]string{"default": "%11|110\n"},
 			},
-			wantPane: "$11:0.0", wantSocket: "default", wantFound: true,
+			wantPane: "%11", wantSocket: "default", wantFound: true,
 		},
 		{
 			name:     "exact Codex through wrapper",
@@ -534,22 +719,22 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "200 1 zsh\n201 200 env\n202 201 codex\n",
 				argv:      map[int][]string{202: {"codex", "resume", selected}},
-				panes:     map[string]string{"default": "$2:1.0|200\n"},
+				panes:     map[string]string{"default": "%2|200\n"},
 			},
-			wantPane: "$2:1.0", wantSocket: "default", wantFound: true,
+			wantPane: "%2", wantSocket: "default", wantFound: true,
 		},
 		{
 			name: "bare provider", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "300 1 claude\n", argv: map[int][]string{300: {"claude"}},
-				panes: map[string]string{"default": "$3:0.0|300\n"},
+				panes: map[string]string{"default": "%3|300\n"},
 			},
 		},
 		{
 			name: "shell text is not provider process", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "400 1 sh\n", argv: map[int][]string{400: {"sh", "-c", "echo claude --resume " + selected}},
-				panes: map[string]string{"default": "$4:0.0|400\n"},
+				panes: map[string]string{"default": "%4|400\n"},
 			},
 		},
 		{
@@ -557,7 +742,7 @@ func TestExternalResolverScript(t *testing.T) {
 			fixture: externalFixture{
 				processes: "500 1 claude\n600 1 claude\n",
 				argv:      map[int][]string{500: {"claude", "--resume", selected}, 600: {"claude", "--resume", selected}},
-				panes:     map[string]string{"default": "$5:0.0|500\n", "other": "$6:0.0|600\n"},
+				panes:     map[string]string{"default": "%5|500\n", "other": "%6|600\n"},
 			},
 			wantError: "external tmux conflict",
 		},
@@ -573,7 +758,7 @@ func TestExternalResolverScript(t *testing.T) {
 			name: "rejects symlinked socket", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "700 1 claude\n", argv: map[int][]string{700: {"claude", "--resume", selected}},
-				panes: map[string]string{"default": "$7:0.0|700\n"}, symlinkSocket: "default",
+				panes: map[string]string{"default": "%7|700\n"}, symlinkSocket: "default",
 			},
 			wantError: "resolve external tmux",
 		},
@@ -581,7 +766,7 @@ func TestExternalResolverScript(t *testing.T) {
 			name: "rejects symlinked socket directory", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "800 1 claude\n", argv: map[int][]string{800: {"claude", "--resume", selected}},
-				panes: map[string]string{"default": "$8:0.0|800\n"}, symlinkDirectory: true,
+				panes: map[string]string{"default": "%8|800\n"}, symlinkDirectory: true,
 			},
 			wantError: "resolve external tmux",
 		},
@@ -589,7 +774,7 @@ func TestExternalResolverScript(t *testing.T) {
 			name: "rejects socket owned by another user", provider: session.Claude,
 			fixture: externalFixture{
 				processes: "900 1 claude\n", argv: map[int][]string{900: {"claude", "--resume", selected}},
-				panes: map[string]string{"default": "$9:0.0|900\n"}, badOwner: "default",
+				panes: map[string]string{"default": "%9|900\n"}, badOwner: "default",
 			},
 			wantError: "resolve external tmux",
 		},
@@ -603,7 +788,7 @@ func TestExternalResolverScript(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || found != test.wantFound || target.Pane != test.wantPane ||
+			if err != nil || found != test.wantFound || target.PaneID != test.wantPane ||
 				(found && filepath.Base(target.Socket) != test.wantSocket) {
 				t.Fatalf("ResolveExternal() = (%#v, %t, %v), want socket %q pane %q found %t", target, found, err, test.wantSocket, test.wantPane, test.wantFound)
 			}
@@ -617,18 +802,18 @@ func TestExternalResolverScriptRejectsBoundaries(t *testing.T) {
 		name    string
 		fixture externalFixture
 	}{
-		{name: "65 sockets", fixture: externalFixture{processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}, panes: externalPanes(65, "$1:0.0|1\n")}},
-		{name: "16385 panes", fixture: externalFixture{processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}, panes: map[string]string{"default": externalRows(16_385, "$1:0.", "|1\n")}}},
+		{name: "65 sockets", fixture: externalFixture{processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}, panes: externalPanes(65, "%1|1\n")}},
+		{name: "16385 panes", fixture: externalFixture{processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}, panes: map[string]string{"default": externalRows(16_385, "%", "|1\n")}}},
 		{name: "16385 panes across sockets", fixture: externalFixture{panes: map[string]string{
-			"first":  externalRows(8_192, "$1:0.", "|1\n"),
-			"second": externalRows(8_193, "$1:0.", "|1\n"),
+			"first":  externalRows(8_192, "%", "|1\n"),
+			"second": externalRows(8_193, "%", "|1\n"),
 		}, processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}}},
 		{name: "65537 processes", fixture: externalFixture{processes: externalProcesses(65_537)}},
 		{name: "257 candidates", fixture: externalFixture{processes: externalCandidateProcesses(257)}},
-		{name: "257 deep chain", fixture: externalFixture{processes: externalChain(258, selected), argv: map[int][]string{258: {"claude", "--resume", selected}}, panes: map[string]string{"default": "$1:0.0|1\n"}}},
+		{name: "257 deep chain", fixture: externalFixture{processes: externalChain(258, selected), argv: map[int][]string{258: {"claude", "--resume", selected}}, panes: map[string]string{"default": "%1|1\n"}}},
 		{name: "malformed process", fixture: externalFixture{processes: "bad row\n"}},
 		{name: "malformed pane", fixture: externalFixture{processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}, panes: map[string]string{"default": "$1:0.0 bad\n"}}},
-		{name: "oversized pane output", fixture: externalFixture{processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}, panes: map[string]string{"default": strings.Repeat("$1:0.0|1\n", maxInspectOutputBytes/9+1)}}},
+		{name: "oversized pane output", fixture: externalFixture{processes: "1 0 claude\n", argv: map[int][]string{1: {"claude", "--resume", selected}}, panes: map[string]string{"default": strings.Repeat("%1|1\n", maxInspectOutputBytes/5+1)}}},
 		{name: "oversized process output", fixture: externalFixture{processes: strings.Repeat("1 0 sh\n", maxInspectOutputBytes/7+1)}},
 	}
 	for _, test := range tests {
@@ -648,7 +833,7 @@ func TestExternalResolverScriptBoundsCandidateAncestryWork(t *testing.T) {
 	_, found, err := runExternalFixtureContext(t, ctx, externalFixture{
 		processes: externalCandidateChains(17, 256),
 		argv:      externalCandidateChainArgs(17, 256, selected),
-		panes:     map[string]string{"default": "$1:0.0|1\n"},
+		panes:     map[string]string{"default": "%1|1\n"},
 	}, session.Claude, selected)
 	if err == nil || found || !strings.Contains(err.Error(), "external tmux resolver work exceeds limit") {
 		t.Fatalf("ResolveExternal() = found %t, err %v, want bounded work error", found, err)
@@ -808,7 +993,7 @@ for raw in sys.stdin:
 			"\"$ARS_REAL_PYTHON\" \"$ARS_EXTERNAL_ROOT/transform-helper.py\" \"$ARS_FAKE_UID\" \"$ARS_BAD_OWNER\" \"${2:-}\" \"${3:-}\" \"${4:-}\" <\"$output\"\n"
 	}
 	writeExternalExecutable(t, filepath.Join(bin, "python3"), python)
-	tmux := "#!/bin/sh\nsocket=$2\nname=$(basename \"$socket\")\nprintf '%s\\n' \"$@\" >>\"$ARS_EXTERNAL_ROOT/tmux-args\"\nif [ \"$name\" = \"$ARS_FAIL_SOCKET\" ]; then exit 1; fi\nif [ \"${ARS_SANITIZE_PANE_TAB:-}\" = 1 ]; then\n  previous=\n  format=\n  for value in \"$@\"; do\n    if [ \"$previous\" = -F ]; then format=$value; fi\n    previous=$value\n  done\n  case \"$format\" in *'|'*) printf '$1:0.0|100\\n' ;; *) printf '$1:0.0_100\\n' ;; esac\n  exit 0\nfi\ncat \"$ARS_EXTERNAL_PANES/$name\"\n"
+	tmux := "#!/bin/sh\nsocket=$2\nname=$(basename \"$socket\")\nprintf '%s\\n' \"$@\" >>\"$ARS_EXTERNAL_ROOT/tmux-args\"\nif [ \"$name\" = \"$ARS_FAIL_SOCKET\" ]; then exit 1; fi\nif [ \"${ARS_SANITIZE_PANE_TAB:-}\" = 1 ]; then\n  previous=\n  format=\n  for value in \"$@\"; do\n    if [ \"$previous\" = -F ]; then format=$value; fi\n    previous=$value\n  done\n  case \"$format\" in *'|'*) printf '%%1|100\\n' ;; *) printf '%%1_100\\n' ;; esac\n  exit 0\nfi\ncat \"$ARS_EXTERNAL_PANES/$name\"\n"
 	writeExternalExecutable(t, filepath.Join(bin, "tmux"), tmux)
 	t.Setenv("ARS_EXTERNAL_ROOT", root)
 	t.Setenv("ARS_EXTERNAL_PANES", panes)
@@ -868,7 +1053,7 @@ for raw in sys.stdin:
 		socket := filepath.Join(tmuxDirectory, "default")
 		want := strings.Join([]string{
 			"-S", socket, "-f", "/dev/null", "list-panes", "-a", "-F",
-			"#{session_id}:#{window_index}.#{pane_index}|#{pane_pid}",
+			"#{pane_id}|#{pane_pid}",
 		}, "\n") + "\n"
 		if string(got) != want {
 			t.Fatalf("tmux argv:\n%s\nwant:\n%s", got, want)

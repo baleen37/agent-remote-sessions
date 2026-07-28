@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/baleen37/agent-remote-sessions/internal/provider"
@@ -12,8 +13,12 @@ import (
 )
 
 type ExternalTarget struct {
-	Socket string
-	Pane   string
+	Socket      string
+	PaneID      string
+	PanePID     uint64
+	SocketDev   uint64
+	SocketInode uint64
+	SocketUID   uint64
 }
 
 func ResolveExternal(
@@ -56,41 +61,67 @@ func parseExternalResult(output []byte) (ExternalTarget, bool, error) {
 		return ExternalTarget{}, false, nil
 	}
 	fields := strings.Split(line, "\t")
-	if len(fields) != 3 || fields[0] != "match" {
+	if len(fields) != 8 || fields[0] != "match" || fields[7] != "socket" {
 		return ExternalTarget{}, false, errors.New("invalid external tmux result")
 	}
-	target := ExternalTarget{Socket: fields[1], Pane: fields[2]}
-	if !filepath.IsAbs(target.Socket) || strings.ContainsAny(target.Socket, "\t\r\n\x00") || !validExternalPane(target.Pane) {
+	if !validDecimal(fields[3]) || !validHex(fields[4]) || !validHex(fields[5]) || !validDecimal(fields[6]) {
+		return ExternalTarget{}, false, errors.New("invalid external tmux target")
+	}
+	panePID, paneErr := strconv.ParseUint(fields[3], 10, 64)
+	socketDev, devErr := strconv.ParseUint(fields[4], 16, 64)
+	socketInode, inodeErr := strconv.ParseUint(fields[5], 16, 64)
+	socketUID, uidErr := strconv.ParseUint(fields[6], 10, 64)
+	target := ExternalTarget{
+		Socket:      fields[1],
+		PaneID:      fields[2],
+		PanePID:     panePID,
+		SocketDev:   socketDev,
+		SocketInode: socketInode,
+		SocketUID:   socketUID,
+	}
+	if !filepath.IsAbs(target.Socket) || strings.ContainsAny(target.Socket, "\t\r\n\x00") ||
+		!validExternalPaneID(target.PaneID) || paneErr != nil || panePID == 0 ||
+		devErr != nil || inodeErr != nil || uidErr != nil {
 		return ExternalTarget{}, false, errors.New("invalid external tmux target")
 	}
 	return target, true, nil
 }
 
-func validExternalPane(value string) bool {
-	if len(value) < 6 || value[0] != '$' {
+func validExternalPaneID(value string) bool {
+	if len(value) < 2 || value[0] != '%' {
 		return false
 	}
-	index := 1
-	for index < len(value) && value[index] >= '0' && value[index] <= '9' {
-		index++
+	for index := 1; index < len(value); index++ {
+		if value[index] < '0' || value[index] > '9' {
+			return false
+		}
 	}
-	if index == 1 || index == len(value) || value[index] != ':' {
+	return true
+}
+
+func validDecimal(value string) bool {
+	if value == "" {
 		return false
 	}
-	index++
-	windowStart := index
-	for index < len(value) && value[index] >= '0' && value[index] <= '9' {
-		index++
+	for index := range len(value) {
+		if value[index] < '0' || value[index] > '9' {
+			return false
+		}
 	}
-	if index == windowStart || index == len(value) || value[index] != '.' {
+	return true
+}
+
+func validHex(value string) bool {
+	if value == "" {
 		return false
 	}
-	index++
-	paneStart := index
-	for index < len(value) && value[index] >= '0' && value[index] <= '9' {
-		index++
+	for index := range len(value) {
+		if (value[index] < '0' || value[index] > '9') &&
+			(value[index] < 'a' || value[index] > 'f') {
+			return false
+		}
 	}
-	return index == len(value) && index > paneStart
+	return true
 }
 
 func ExternalResolverScript() string {
@@ -131,6 +162,88 @@ try:
         seen.add(candidate)
     with open(output_path, "wb") as destination:
         destination.write(output)
+except (OSError, ValueError, subprocess.SubprocessError):
+    fail()
+`
+
+const externalTmuxPythonScript = `import math
+import os
+import stat
+import subprocess
+import sys
+
+MAX_OUTPUT = 2 << 20
+MAX_ROWS = 16384
+FORMAT = "#{pane_id}|#{pane_pid}"
+
+def fail():
+    print("ars: invalid external tmux target", file=sys.stderr)
+    raise SystemExit(1)
+
+def parse_timeout(value):
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0:
+        fail()
+    return timeout
+
+def inspect(timeout, socket_path, executable):
+    completed = subprocess.run(
+        [executable, "-S", socket_path, "-f", "/dev/null", "list-panes", "-a", "-F", FORMAT],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+        check=True,
+    )
+    output = completed.stdout
+    if len(output) > MAX_OUTPUT or (output and not output.endswith(b"\n")):
+        fail()
+    seen = set()
+    rows = output.splitlines()
+    if len(rows) > MAX_ROWS:
+        fail()
+    for row in rows:
+        fields = row.split(b"|")
+        if len(fields) != 2 or len(fields[0]) < 2 or fields[0][:1] != b"%" or not fields[0][1:].isdigit():
+            fail()
+        if not fields[1].isdigit() or fields[1][:1] == b"0" or fields[0] in seen:
+            fail()
+        seen.add(fields[0])
+    return output
+
+def identity(path):
+    value = os.lstat(path)
+    if not stat.S_ISSOCK(value.st_mode):
+        fail()
+    return value.st_dev, value.st_ino, value.st_uid
+
+def main(arguments):
+    if len(arguments) == 4 and arguments[0] == "inspect":
+        sys.stdout.buffer.write(inspect(parse_timeout(arguments[1]), arguments[2], arguments[3]))
+        return
+    if len(arguments) != 9 or arguments[0] != "attach":
+        fail()
+    timeout = parse_timeout(arguments[1])
+    socket_path, pane_id, pane_pid = arguments[2:5]
+    if len(pane_id) < 2 or pane_id[0] != "%" or not pane_id[1:].isdigit():
+        fail()
+    expected = (int(arguments[5], 16), int(arguments[6], 16), int(arguments[7], 10))
+    if identity(socket_path) != expected:
+        fail()
+    rows = inspect(timeout, socket_path, arguments[8]).splitlines()
+    wanted = (pane_id + "|" + pane_pid).encode()
+    if wanted not in rows:
+        fail()
+    if identity(socket_path) != expected:
+        fail()
+    os.environ.pop("TMUX", None)
+    os.environ.pop("TMUX_PANE", None)
+    os.execvp(arguments[8], [
+        arguments[8], "-S", socket_path, "-f", "/dev/null",
+        "attach-session", "-t", pane_id,
+    ])
+
+try:
+    main(sys.argv[1:])
 except (OSError, ValueError, subprocess.SubprocessError):
     fail()
 `
@@ -422,7 +535,10 @@ fi
 
 match_panes() {
 	socket=$1
-	if ! tmux -S "$socket" -f /dev/null list-panes -a -F '#{session_id}:#{window_index}.#{pane_index}|#{pane_pid}' >"$work/panes"; then
+	socket_dev=$2
+	socket_inode=$3
+	socket_owner=$4
+	if ! python3 "$work/external-tmux.py" inspect 30 "$socket" tmux >"$work/panes"; then
 		echo "ars: cannot inspect external tmux socket" >&2
 		return 2
 	fi
@@ -432,25 +548,13 @@ match_panes() {
 		echo "ars: external tmux pane table exceeds limit" >&2
 		return 2
 	fi
-	if ! awk -F '|' '
-{
-	if (NF != 2 || $1 !~ /^\$[0-9]+:[0-9]+\.[0-9]+$/ || $2 !~ /^[1-9][0-9]*$/) {
-		invalid = 1
-		next
-	}
-	if (seen[$1]++) invalid = 1
-}
-END { if (NR > 16384 || invalid) exit 1 }
-' "$work/panes"; then
-		echo "ars: invalid external tmux pane table" >&2
-		return 2
-	fi
 	pane_rows=$((pane_rows + $(awk 'END { print NR }' "$work/panes")))
 	if [ "$pane_rows" -gt 16384 ]; then
 		echo "ars: external tmux pane row count exceeds limit" >&2
 		return 2
 	fi
-	awk -F '|' -v socket="$socket" '{ print socket "\t" $1 "\t" $2 }' "$work/panes" >>"$work/all-panes"
+	awk -F '|' -v socket="$socket" -v dev="$socket_dev" -v inode="$socket_inode" -v owner="$socket_owner" \
+		'{ print socket "\t" $1 "\t" $2 "\t" dev "\t" inode "\t" owner }' "$work/panes" >>"$work/all-panes"
 }
 
 resolve_matches() {
@@ -466,7 +570,7 @@ FILENAME == candidates {
 	next
 }
 {
-	targets[$3] = targets[$3] $1 "\t" $2 "\n"
+	targets[$3] = targets[$3] $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\n"
 }
 END {
 	for (start in candidate) {
@@ -529,6 +633,8 @@ END {
 mkdir "$work/socket-paths"
 : >"$work/socket-inventory"
 : >"$work/socket-inventory-sockets"
+cat >"$work/external-tmux.py" <<'PY'
+` + externalTmuxPythonScript + `PY
 cat >"$work/socket-inventory.py" <<'PY'
 import os
 import stat
@@ -709,7 +815,7 @@ match_socket_inventory() {
 			echo "ars: invalid external tmux socket path" >&2
 			return 2
 		}
-		if ! match_panes "$socket"; then
+		if ! match_panes "$socket" "$dev" "$inode" "$owner"; then
 			status=$?
 			[ "$status" -eq 2 ] && return 2
 			echo "ars: cannot inspect external tmux socket" >&2
@@ -748,8 +854,9 @@ case "$match_count" in
 0) printf 'none\n' ;;
 1)
 tab=$(printf '\t')
-IFS="$tab" read -r socket pane <"$work/matches"
-	printf 'match\t%s\t%s\n' "$socket" "$pane"
+IFS="$tab" read -r socket pane pane_pid socket_dev socket_inode socket_uid <"$work/matches"
+	printf 'match\t%s\t%s\t%s\t%s\t%s\t%s\tsocket\n' \
+		"$socket" "$pane" "$pane_pid" "$socket_dev" "$socket_inode" "$socket_uid"
 	;;
 *) echo "ars: external tmux conflict" >&2; exit 1 ;;
 esac`
