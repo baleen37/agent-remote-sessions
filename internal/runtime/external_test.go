@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/baleen37/agent-remote-sessions/internal/session"
 )
@@ -112,10 +113,13 @@ func TestResolveExternalRejectsOversizedRunnerOutput(t *testing.T) {
 }
 
 type externalFixture struct {
-	processes  string
-	args       map[int]string
-	panes      map[string]string
-	failSocket string
+	processes        string
+	args             map[int]string
+	panes            map[string]string
+	failSocket       string
+	symlinkDirectory bool
+	symlinkSocket    string
+	badOwner         string
 }
 
 type externalSystemRunner struct{}
@@ -162,6 +166,16 @@ func TestExternalResolverScript(t *testing.T) {
 			wantPane: "$1:0.0", wantSocket: "default", wantFound: true,
 		},
 		{
+			name:     "Claude absolute comm with spaces",
+			provider: session.Claude,
+			fixture: externalFixture{
+				processes: "110 1 zsh\n111 110 /Applications/Claude Code/claude\n",
+				args:      map[int]string{111: "/Applications/Claude Code/claude --resume " + selected},
+				panes:     map[string]string{"default": "$11:0.0\t110\n"},
+			},
+			wantPane: "$11:0.0", wantSocket: "default", wantFound: true,
+		},
+		{
 			name:     "exact Codex through wrapper",
 			provider: session.Codex,
 			fixture: externalFixture{
@@ -197,6 +211,30 @@ func TestExternalResolverScript(t *testing.T) {
 		{
 			name: "eligible socket inspection failure", provider: session.Claude,
 			fixture:   externalFixture{panes: map[string]string{"default": ""}, failSocket: "default"},
+			wantError: "resolve external tmux",
+		},
+		{
+			name: "rejects symlinked socket", provider: session.Claude,
+			fixture: externalFixture{
+				processes: "700 1 claude\n", args: map[int]string{700: "claude --resume " + selected},
+				panes: map[string]string{"default": "$7:0.0\t700\n"}, symlinkSocket: "default",
+			},
+			wantError: "resolve external tmux",
+		},
+		{
+			name: "rejects symlinked socket directory", provider: session.Claude,
+			fixture: externalFixture{
+				processes: "800 1 claude\n", args: map[int]string{800: "claude --resume " + selected},
+				panes: map[string]string{"default": "$8:0.0\t800\n"}, symlinkDirectory: true,
+			},
+			wantError: "resolve external tmux",
+		},
+		{
+			name: "rejects socket owned by another user", provider: session.Claude,
+			fixture: externalFixture{
+				processes: "900 1 claude\n", args: map[int]string{900: "claude --resume " + selected},
+				panes: map[string]string{"default": "$9:0.0\t900\n"}, badOwner: "default",
+			},
 			wantError: "resolve external tmux",
 		},
 	}
@@ -242,7 +280,25 @@ func TestExternalResolverScriptRejectsBoundaries(t *testing.T) {
 	}
 }
 
+func TestExternalResolverScriptBoundsCandidateAncestryWork(t *testing.T) {
+	const selected = "123e4567-e89b-42d3-a456-426614174000"
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	_, found, err := runExternalFixtureContext(t, ctx, externalFixture{
+		processes: externalCandidateChains(80, 256),
+		args:      externalCandidateChainArgs(80, 256, selected),
+		panes:     map[string]string{"default": "$1:0.0\t1\n"},
+	}, session.Claude, selected)
+	if err == nil || found || !strings.Contains(err.Error(), "external tmux resolver work exceeds limit") {
+		t.Fatalf("ResolveExternal() = found %t, err %v, want bounded work error", found, err)
+	}
+}
+
 func runExternalFixture(t *testing.T, fixture externalFixture, name session.Provider, nativeID string) (ExternalTarget, bool, error) {
+	return runExternalFixtureContext(t, context.Background(), fixture, name, nativeID)
+}
+
+func runExternalFixtureContext(t *testing.T, ctx context.Context, fixture externalFixture, name session.Provider, nativeID string) (ExternalTarget, bool, error) {
 	t.Helper()
 	root, err := os.MkdirTemp("/tmp", "ars-external-test-")
 	if err != nil {
@@ -268,30 +324,55 @@ func runExternalFixture(t *testing.T, fixture externalFixture, name session.Prov
 	if err := os.WriteFile(filepath.Join(root, "args"), []byte(args.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	tmuxDirectory := filepath.Join(root, "tmux-"+uid)
+	if fixture.symlinkDirectory {
+		tmuxDirectory = filepath.Join(root, "real-tmux-"+uid)
+	}
 	for socket, rows := range fixture.panes {
 		if err := os.WriteFile(filepath.Join(panes, socket), []byte(rows), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		path := filepath.Join(root, "tmux-"+uid, socket)
+		path := filepath.Join(tmuxDirectory, socket)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		listener, err := net.Listen("unix", path)
+		listenPath := path
+		if fixture.symlinkSocket == socket {
+			listenPath = filepath.Join(root, "socket-"+socket)
+		}
+		listener, err := net.Listen("unix", listenPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = listener.Close() })
+		if fixture.symlinkSocket == socket {
+			if err := os.Symlink(listenPath, path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if fixture.symlinkDirectory {
+		if err := os.Symlink(tmuxDirectory, filepath.Join(root, "tmux-"+uid)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	writeExternalExecutable(t, filepath.Join(bin, "id"), "#!/bin/sh\necho "+uid+"\n")
 	writeExternalExecutable(t, filepath.Join(bin, "ps"), "#!/bin/sh\nif [ \"$1\" = \"-U\" ]; then cat \"$ARS_EXTERNAL_ROOT/processes\"; exit 0; fi\nawk -F '\\t' -v pid=\"$2\" '$1 == pid {sub(/^[^\\t]*\\t/, \"\"); print; exit}' \"$ARS_EXTERNAL_ROOT/args\"\n")
+	writeExternalExecutable(t, filepath.Join(bin, "ls"), "#!/bin/sh\nfor value in \"$@\"; do path=$value; done\nif [ \"$path\" = \"$ARS_BAD_OWNER\" ]; then printf 'srwx------ 1 999 0 0 Jan 1 00:00 %s\\n' \"$path\"; exit 0; fi\n/bin/ls \"$@\" | awk -v uid=\"$ARS_FAKE_UID\" '{$3 = uid; print}'\n")
 	tmux := "#!/bin/sh\nsocket=$2\nname=$(basename \"$socket\")\nprintf '%s\\n' \"$@\" >>\"$ARS_EXTERNAL_ROOT/tmux-args\"\nif [ \"$name\" = \"$ARS_FAIL_SOCKET\" ]; then exit 1; fi\ncat \"$ARS_EXTERNAL_PANES/$name\"\n"
 	writeExternalExecutable(t, filepath.Join(bin, "tmux"), tmux)
 	t.Setenv("ARS_EXTERNAL_ROOT", root)
 	t.Setenv("ARS_EXTERNAL_PANES", panes)
 	t.Setenv("ARS_FAIL_SOCKET", fixture.failSocket)
+	badOwner := filepath.Join(root, "no-bad-owner")
+	if fixture.badOwner != "" {
+		badOwner = filepath.Join(tmuxDirectory, fixture.badOwner)
+	}
+	t.Setenv("ARS_BAD_OWNER", badOwner)
+	t.Setenv("ARS_FAKE_UID", uid)
 	t.Setenv("TMUX_TMPDIR", root)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return ResolveExternal(context.Background(), externalSystemRunner{}, name, nativeID)
+	return ResolveExternal(ctx, externalSystemRunner{}, name, nativeID)
 }
 
 func writeExternalExecutable(t *testing.T, path, content string) {
@@ -336,4 +417,32 @@ func externalChain(depth int, selected string) string {
 		rows.WriteString(strconv.Itoa(pid) + " " + strconv.Itoa(parent) + " " + name + "\n")
 	}
 	return rows.String()
+}
+
+func externalCandidateChains(count, depth int) string {
+	var rows strings.Builder
+	for chain := 0; chain < count; chain++ {
+		start := chain*depth + 1
+		for offset := 0; offset < depth; offset++ {
+			pid := start + offset
+			parent := 0
+			if offset > 0 {
+				parent = pid - 1
+			}
+			name := "sh"
+			if offset == depth-1 {
+				name = "claude"
+			}
+			rows.WriteString(strconv.Itoa(pid) + " " + strconv.Itoa(parent) + " " + name + "\n")
+		}
+	}
+	return rows.String()
+}
+
+func externalCandidateChainArgs(count, depth int, selected string) map[int]string {
+	args := make(map[int]string, count)
+	for chain := 0; chain < count; chain++ {
+		args[(chain+1)*depth] = "claude --resume " + selected
+	}
+	return args
 }

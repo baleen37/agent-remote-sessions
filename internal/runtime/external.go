@@ -108,7 +108,7 @@ tmp_base=${TMPDIR:-/tmp}
 case "$tmp_base" in /*) ;; *) tmp_base=/tmp ;; esac
 work=$(mktemp -d "$tmp_base/ars-external.XXXXXX")
 cleanup() {
-	rm -f -- "$work/processes" "$work/candidates" "$work/valid-candidates" "$work/panes" "$work/matches"
+	rm -f -- "$work/processes" "$work/parents" "$work/candidates" "$work/valid-candidates" "$work/panes" "$work/all-panes" "$work/matches" "$work/resolve-status" "$work/resolve-steps"
 	rmdir -- "$work"
 }
 trap cleanup EXIT
@@ -120,21 +120,34 @@ process_bytes=$(wc -c <"$work/processes" | tr -d ' ')
 	echo "ars: external process table exceeds limit" >&2
 	exit 1
 }
-if ! awk '
+: >"$work/parents"
+: >"$work/candidates"
+if ! awk -v provider="$provider" -v parents="$work/parents" -v candidates="$work/candidates" '
 {
-	if (NF != 3 || $1 !~ /^[1-9][0-9]*$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[^[:space:]]+$/) {
+	pid = $1
+	ppid = $2
+	comm = $0
+	sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]*/, "", comm)
+	if (pid !~ /^[1-9][0-9]*$/ || ppid !~ /^[0-9]+$/ || comm == "") {
 		invalid = 1
 		next
 	}
-	if (seen[$1]++) invalid = 1
+	if (seen[pid]++) invalid = 1
+	print pid "\t" ppid > parents
+	name = comm
+	sub(/^.*\//, "", name)
+	if (name == provider) print pid > candidates
 }
-END { if (NR > 65536 || invalid) exit 1 }
+END {
+	close(parents)
+	close(candidates)
+	if (NR > 65536 || invalid) exit 1
+}
 ' "$work/processes"; then
 	echo "ars: invalid external process table" >&2
 	exit 1
 fi
 
-awk -v provider="$provider" '$3 == provider { print $1 }' "$work/processes" >"$work/candidates"
 : >"$work/valid-candidates"
 while IFS= read -r candidate; do
 	args=$(ps -p "$candidate" -o args=)
@@ -154,31 +167,6 @@ while IFS= read -r candidate; do
 	*) : ;;
 	esac
 done <"$work/candidates"
-
-is_ancestor() {
-	pane_pid=$1
-	current=$2
-	depth=0
-	seen=" $current "
-	while :; do
-		[ "$current" = "$pane_pid" ] && return 0
-		parent=$(awk -v pid="$current" '$1 == pid { print $2; exit }' "$work/processes")
-		[ -n "$parent" ] || return 1
-		depth=$((depth + 1))
-		if [ "$depth" -gt 256 ]; then
-			echo "ars: external process ancestry exceeds limit" >&2
-			return 2
-		fi
-		case "$seen" in
-		*" $parent "*)
-			echo "ars: external process ancestry cycle" >&2
-			return 2
-			;;
-		esac
-		seen="$seen$parent "
-		current=$parent
-	done
-}
 
 match_panes() {
 	socket=$1
@@ -205,32 +193,112 @@ END { if (NR > 16384 || invalid) exit 1 }
 		echo "ars: invalid external tmux pane table" >&2
 		return 2
 	fi
-	tab=$(printf '\t')
-	while IFS="$tab" read -r pane pane_pid; do
-		while IFS= read -r candidate; do
-			if is_ancestor "$pane_pid" "$candidate"; then
-				printf '%s\t%s\n' "$socket" "$pane" >>"$work/matches"
+	awk -F '\t' -v socket="$socket" '{ print socket "\t" $1 "\t" $2 }' "$work/panes" >>"$work/all-panes"
+}
+
+resolve_matches() {
+	: >"$work/resolve-status"
+	: >"$work/resolve-steps"
+	if ! awk -F '\t' -v parents="$work/parents" -v candidates="$work/valid-candidates" -v status="$work/resolve-status" -v steps_file="$work/resolve-steps" -v max_steps="20000" '
+FILENAME == parents {
+	parent[$1] = $2
+	next
+}
+FILENAME == candidates {
+	candidate[$1] = 1
+	next
+}
+{
+	targets[$3] = targets[$3] $1 "\t" $2 "\n"
+}
+END {
+	for (start in candidate) {
+		current = start
+		depth = 0
+		seen[start SUBSEP current] = 1
+		while (1) {
+			steps++
+			if (steps > max_steps) {
+				error = "work"
 				break
-			else
-				status=$?
-				if [ "$status" -eq 2 ]; then
-					return 2
-				fi
-			fi
-		done <"$work/valid-candidates"
-	done <"$work/panes"
+			}
+			if (current in targets) {
+				count = split(targets[current], matched, "\n")
+				for (match_index = 1; match_index < count; match_index++) {
+					if (!emitted[matched[match_index]]++) print matched[match_index]
+				}
+			}
+			if (!(current in parent)) break
+			next_pid = parent[current]
+			depth++
+			if (depth > 256) {
+				error = "ancestry"
+				break
+			}
+			if (seen[start SUBSEP next_pid]++) {
+				error = "cycle"
+				break
+			}
+			current = next_pid
+		}
+		if (error != "") break
+	}
+	print steps > steps_file
+	close(steps_file)
+	if (error != "") {
+		print error > status
+		close(status)
+		exit 1
+	}
+}
+' "$work/parents" "$work/valid-candidates" "$work/all-panes" >>"$work/matches"; then
+	if [ -s "$work/resolve-status" ]; then
+		reason=$(cat "$work/resolve-status")
+		case "$reason" in
+		work) echo "ars: external tmux resolver work exceeds limit" >&2 ;;
+		ancestry) echo "ars: external process ancestry exceeds limit" >&2 ;;
+		cycle) echo "ars: external process ancestry cycle" >&2 ;;
+		*) echo "ars: invalid external tmux resolver" >&2 ;;
+		esac
+	else
+		echo "ars: invalid external tmux resolver" >&2
+	fi
+	return 2
+	fi
 }
 
 : >"$work/matches"
+: >"$work/all-panes"
 socket_count=0
 pane_total=0
 tmux_base=${TMUX_TMPDIR:-/tmp}
 case "$tmux_base" in /*) ;; *) tmux_base=/tmp ;; esac
+owned_path() {
+	owner=$(ls -ldn "$1" | awk 'NF >= 3 { print $3; exit }')
+	[ "$owner" = "$uid" ]
+}
 inspect_socket_dir() {
 	directory=$1
-	[ -d "$directory" ] || return 0
+	if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+		return 0
+	fi
+	if [ -L "$directory" ] || [ ! -d "$directory" ] || ! owned_path "$directory"; then
+		echo "ars: invalid external tmux socket directory" >&2
+		return 2
+	fi
 	for socket in "$directory"/*; do
+		if [ ! -e "$socket" ] && [ ! -L "$socket" ]; then
+			continue
+		fi
+		if [ -L "$socket" ]; then
+			echo "ars: invalid external tmux socket" >&2
+			return 2
+		fi
 		[ -S "$socket" ] || continue
+		if ! owned_path "$socket"; then
+			echo "ars: invalid external tmux socket" >&2
+			return 2
+		fi
 		socket_count=$((socket_count + 1))
 		if [ "$socket_count" -gt 64 ]; then
 			echo "ars: external tmux socket count exceeds limit" >&2
@@ -251,6 +319,8 @@ inspect_socket_dir "$primary_dir" || exit 1
 if [ "$fallback_dir" != "$primary_dir" ]; then
 	inspect_socket_dir "$fallback_dir" || exit 1
 fi
+
+resolve_matches || exit 1
 
 match_count=$(wc -l <"$work/matches" | tr -d ' ')
 case "$match_count" in
