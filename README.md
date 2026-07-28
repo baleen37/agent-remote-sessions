@@ -192,13 +192,17 @@ absent-provider result, not a host failure.
 ## Persistent provider runtime
 
 ARS uses a dedicated versioned, per-user tmux server (`ars-v1`) with
-`-f /dev/null`. It does not use, configure, rename, attach, or bind keys in the
-user's default tmux server. It creates exactly one hashed runtime for the
-selected `(provider, native ID)` and rechecks after a concurrent create instead
-of starting a duplicate provider process.
+`-f /dev/null`. Its own server never configures, renames, binds keys in, or
+creates sessions in the user's standard per-user tmux servers. A unique
+external exact-resume match is the attach-only exception: it leaves that
+server's settings, keys, sessions, and existing clients unchanged. ARS creates
+exactly one hashed runtime for the selected `(provider, native ID)` and
+rechecks after a concurrent create instead of starting a duplicate provider
+process.
 
-On first selection, ARS starts the adapter's fixed native resume command in the
-saved CWD. Later selections attach that same runtime. `Ctrl+Q` is a prefix-free
+When neither an ARS runtime nor a unique external exact-resume match exists,
+first selection starts the adapter's fixed native resume command in the saved
+CWD. Later selections attach that same ARS runtime. `Ctrl+Q` is a prefix-free
 binding in the ARS server and runs `detach-client`; it is not delivered to
 Claude or Codex. When another computer attaches with `ssh -tt`, tmux detaches
 the previous client back to its TUI and hands the same provider process to the
@@ -326,7 +330,7 @@ git diff --check
 The ephemeral loopback sshd integration is disposable and opt-in:
 
 ```sh
-ARS_RUN_SSHD_INTEGRATION=1 go test ./internal/ssh -run TestEphemeralSSHDCollectsAndAttaches -count=1 -v
+ARS_TEST_EPHEMERAL_SSHD=1 go test ./internal/ssh -run TestEphemeralSSHDCollectsAndAttaches -count=1 -v
 ```
 
 It generates temporary host/client keys, `authorized_keys`, `known_hosts`, and
@@ -359,8 +363,9 @@ itself and its configured SSH target to its peer. Verify:
 6. Repeat steps 2–5 for Codex.
 7. Network loss returns to the TUI without killing the provider, and an
    unreachable peer remains visible beside healthy sessions.
-8. The user's default tmux server, configuration, keys, and sessions are
-   unchanged.
+8. The user's standard per-user tmux server configuration, keys, and sessions
+   are unchanged; a unique external match may have the temporary attach-only
+   client described above.
 
 If inventory, SSH, DNS, tmux, or provider readiness is missing, record this
 manual gate as incomplete. Disposable or simulated results are never a real
