@@ -263,6 +263,10 @@ func TestExternalResolverScriptRejectsBoundaries(t *testing.T) {
 	}{
 		{name: "65 sockets", fixture: externalFixture{panes: externalPanes(65, "$1:0.0\t1\n")}},
 		{name: "16385 panes", fixture: externalFixture{panes: map[string]string{"default": externalRows(16_385, "$1:0.", "\t1\n")}}},
+		{name: "16385 panes across sockets", fixture: externalFixture{panes: map[string]string{
+			"first":  externalRows(8_192, "$1:0.", "\t1\n"),
+			"second": externalRows(8_193, "$1:0.", "\t1\n"),
+		}}},
 		{name: "65537 processes", fixture: externalFixture{processes: externalProcesses(65_537)}},
 		{name: "257 deep chain", fixture: externalFixture{processes: externalChain(258, selected), args: map[int]string{258: "claude --resume " + selected}, panes: map[string]string{"default": "$1:0.0\t1\n"}}},
 		{name: "malformed process", fixture: externalFixture{processes: "bad row\n"}},

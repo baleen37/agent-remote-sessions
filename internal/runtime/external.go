@@ -193,6 +193,11 @@ END { if (NR > 16384 || invalid) exit 1 }
 		echo "ars: invalid external tmux pane table" >&2
 		return 2
 	fi
+	pane_rows=$((pane_rows + $(awk 'END { print NR }' "$work/panes")))
+	if [ "$pane_rows" -gt 16384 ]; then
+		echo "ars: external tmux pane row count exceeds limit" >&2
+		return 2
+	fi
 	awk -F '\t' -v socket="$socket" '{ print socket "\t" $1 "\t" $2 }' "$work/panes" >>"$work/all-panes"
 }
 
@@ -271,6 +276,7 @@ END {
 : >"$work/all-panes"
 socket_count=0
 pane_total=0
+pane_rows=0
 tmux_base=${TMUX_TMPDIR:-/tmp}
 case "$tmux_base" in /*) ;; *) tmux_base=/tmp ;; esac
 owned_path() {
