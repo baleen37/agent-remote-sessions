@@ -169,8 +169,16 @@ func TestExternalTmuxSnapshotDetectsWindowPaneAndGlobalOptionChanges(t *testing.
 	if afterWindow.windows == before.windows {
 		t.Fatal("external snapshot ignored window changes")
 	}
-	if afterWindow.panes == before.panes {
-		t.Fatal("external snapshot ignored pane changes")
+	if err := external.runner.Run(
+		context.Background(),
+		externalTmuxCommand("split-window", "-d", "-t", "review-window"),
+		nil, io.Discard, io.Discard,
+	); err != nil {
+		t.Fatalf("split external review window: %v", err)
+	}
+	afterPane := external.snapshot(t)
+	if afterPane.panes == afterWindow.panes {
+		t.Fatal("external snapshot ignored pane-only changes")
 	}
 	if err := external.runner.Run(
 		context.Background(),
@@ -179,7 +187,7 @@ func TestExternalTmuxSnapshotDetectsWindowPaneAndGlobalOptionChanges(t *testing.
 	); err != nil {
 		t.Fatalf("set external review option: %v", err)
 	}
-	if afterOptions := external.snapshot(t); afterOptions.globalOptions == afterWindow.globalOptions {
+	if afterOptions := external.snapshot(t); afterOptions.globalOptions == afterPane.globalOptions {
 		t.Fatal("external snapshot ignored global option changes")
 	}
 }
